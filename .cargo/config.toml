@@ -1,0 +1,6 @@
+# Linux GNU only: redirect our `fmod` references to `__wrap_fmod`
+# (src/shim.rs) so the final .so carries no versioned libm symbols
+# newer than the Steam Runtime provides. macOS/Windows linkers do not
+# support --wrap, hence the target gate.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-Wl,--wrap=fmod"]
