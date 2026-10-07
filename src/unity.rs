@@ -61,6 +61,10 @@ pub struct UnityCache {
 
 /// `KeyCode.O` as Unity defines it (letters follow ASCII: `A = 97 … Z = 122`).
 pub const KEYCODE_O: i32 = 111;
+/// `KeyCode.F9` (`F1 = 282`, so `F9 = 290`) — UI capture toggle.
+pub const KEYCODE_F9: i32 = 290;
+/// `KeyCode.F8` (`F8 = 289`) — combined UI + capture toggle.
+pub const KEYCODE_F8: i32 = 289;
 
 // SAFETY: raw handles are just addresses; synchronized by callers.
 unsafe impl Send for UnityCache {}

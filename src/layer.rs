@@ -144,6 +144,13 @@ struct LayerState {
     /// images) for the overlay. Filled at CreateSwapchain, dropped at
     /// DestroySwapchain.
     swaps: HashMap<usize, SwapchainInfo>,
+    /// Whether each object kind was ever observed. Combined with the
+    /// live maps below this detects teardown: objects that existed
+    /// and are all gone mean the game is exiting (as opposed to not
+    /// started yet). See [`shutting_down`].
+    had_swaps: bool,
+    had_devices: bool,
+    had_instances: bool,
     /// Whether the unknown-queue fallback already logged once.
     fallback_logged: bool,
 }
@@ -171,6 +178,9 @@ impl LayerState {
             queues: HashMap::new(),
             last_device: None,
             swaps: HashMap::new(),
+            had_swaps: false,
+            had_devices: false,
+            had_instances: false,
             fallback_logged: false,
         }
     }
@@ -182,6 +192,23 @@ static STATE: std::sync::LazyLock<Mutex<LayerState>> =
 /// us as a layer (as opposed to `dlopen` injection). [`crate::render`]
 /// prefers this routing and skips GOT/inline patching entirely.
 static LAYER_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Whether the game is tearing down.
+///
+/// True when object kinds that existed are ALL gone: swapchains AND
+/// devices AND instances empty after having been observed. During play
+/// at least the rendering device + instance stay alive, so this only
+/// fires on the way out (or before anything started — callers combine
+/// with init state as needed). While true the tick thread stops all
+/// IL2CPP use: Unity kills its scripting domain during teardown and a
+/// single call into the corpse segfaults (caught live via Player.log).
+/// SDL/X11/log paths are unaffected (no Unity contact).
+pub fn shutting_down() -> bool {
+    let st = STATE.lock().unwrap();
+    (st.had_swaps && st.swaps.is_empty())
+        || (st.had_devices && st.devices.is_empty())
+        || (st.had_instances && st.live_instances.is_empty())
+}
 
 /// True once the Vulkan loader negotiated with us as a layer.
 #[inline]
@@ -425,6 +452,7 @@ unsafe extern "C" fn layer_create_instance(
             // (see DestroyInstance) instead of lingering as corpses.
             let inst = unsafe { *p_instance };
             st.live_instances.insert(inst);
+            st.had_instances = true;
         }
         crate::log_line("render/layer: instance created, chain captured");
     } else {
@@ -495,6 +523,7 @@ unsafe extern "C" fn layer_create_device(
                 st.devices.insert(dev, d);
                 st.dev_phys.insert(dev, physical);
                 st.last_device = Some(dev);
+                st.had_devices = true;
                 crate::log_line("render/layer: device created, chain captured");
             }
             None => {
@@ -738,6 +767,7 @@ unsafe extern "C" fn layer_create_swapchain(
             images,
         },
     );
+    STATE.lock().unwrap().had_swaps = true;
     crate::log_line(&format!(
         "render/layer: swapchain {swap:#x} captured (format={format} extent={}x{})",
         extent.0, extent.1,
@@ -846,8 +876,14 @@ unsafe extern "C" fn layer_present(
         None => return VK_SUCCESS,
     };
     crate::render::on_frame();
-    // Overlay gate: idle framework costs zero GPU work.
-    if crate::mod_api::get_mod_manager().enabled_count() == 0 {
+    // Overlay gate: draw when mod effects run OR framework windows are
+    // shown. Gating on mods alone blanks the UI exactly when the user
+    // opens an empty menu (no mods armed yet): status/manager windows
+    // need ui_visible, not mod state. Skip only when truly nothing
+    // could draw (idle framework costs zero GPU work).
+    if crate::mod_api::get_mod_manager().enabled_count() == 0
+        && !crate::hotkey::ui_visible()
+    {
         // SAFETY: resolved from the live loader chain for this device.
         return unsafe { real(queue, info) };
     }
@@ -948,7 +984,10 @@ unsafe extern "C" fn layer_present(
                 // Re-target the present at OUR semaphore (single-wait
                 // rule: the game's waits were consumed by our submit).
                 // NOTE: this local struct mirrors VkPresentInfoKHR with
-                // correct C padding (repr(C) handles it).
+                // correct C padding (repr(C) handles it — WITHOUT the
+                // attribute Rust layout is unspecified and the driver
+                // would read garbage!).
+                crate::render::note_overlay_drew();
                 #[repr(C)]
                 struct PresentInfo {
                     s_type: u32,
@@ -982,6 +1021,7 @@ unsafe extern "C" fn layer_present(
                         "render/overlay: frame draw failed — presenting untouched",
                     );
                 }
+                crate::render::note_overlay_skipped();
                 real(queue, info)
             }
         }

@@ -155,9 +155,9 @@ impl FpvCameraMod {
         // SAFETY: called on attached framework threads with the
         // published API; every step below is null-checked.
         let cache = unsafe {
-            let domain = match api.domain() {
-                Ok(d) => d,
-                Err(_) => return false,
+            let domain = match crate::il2cpp::domain_checked(api) {
+                Some(d) => d,
+                None => return false,
             };
             match crate::unity::init(api, domain) {
                 Some(c) => c,
@@ -264,7 +264,7 @@ impl Mod for FpvCameraMod {
         }
 
         egui::Window::new("FPV Camera Controls")
-            .anchor(egui::Align2::LEFT_TOP, egui::vec2(0.0, 0.0))
+            .default_pos(egui::pos2(0.0, 0.0))
             .resizable(true)
             .show(ctx, |ui| {
                 ui.heading("FPV Camera Mod");

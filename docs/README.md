@@ -10,6 +10,7 @@ This directory contains the technical documentation for the CarX Street Framewor
 - [Mod Development](mod_development.md) - Guide for creating new mods
 - [Injection Guide](injection.md) - Platform-specific injection methods
 - [Field Notes](field-notes.md) - Verified in-game findings (input, IL2CPP, incidents)
+- [Overlay screenshot](overlay-proof.png) - egui UI live in CarX Street
 
 ## Quick Links
 

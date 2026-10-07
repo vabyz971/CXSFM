@@ -62,7 +62,24 @@ struct SwapchainState {
     extent: vk::Extent2D,
     images: Vec<usize>,
     ctx: egui::Context,
-    pending_frees: Vec<egui::TextureId>,
+    /// Frees deferred one frame: `(texture id, emission frame)`.
+    /// A free is obsolete iff its id was (re-)set at the emission
+    /// frame or later (`set_textures` destroys/replaces same-id
+    /// occupants internally — e.g. atlas resizes — so freeing one
+    /// afterwards would destroy the NEW texture).
+    pending_frees: Vec<(egui::TextureId, u64)>,
+    /// Last frame each texture id was uploaded (same numbering).
+    last_set: std::collections::HashMap<egui::TextureId, u64>,
+    /// Monotonic frame counter for the generation protocol above.
+    frame: u64,
+    /// Earliest time egui wants repainting (static UI sleeps instead
+    /// of re-running; the last recorded command buffer is REPLAYED
+    /// every present regardless — see below).
+    next_repaint: Option<std::time::Instant>,
+    /// A command buffer with UI already recorded (replayable without
+    /// re-running egui). False until the first non-empty draw and
+    /// after any invalidation (UI vanished).
+    recorded: bool,
 }
 
 /// Global overlay state: swapchain handle -> renderer state, plus the
@@ -92,10 +109,21 @@ static FAILED_SWAPS: LazyLock<Mutex<HashSet<usize>>> =
 pub fn drop_swapchain(swap: usize) {
     let mut g = GLOBALS.lock().unwrap();
     if let Some(st) = g.states.remove(&swap) {
-        // SAFETY: all handles owned by this state; nothing in flight
-        // (every present fence-waits its predecessor).
+        // SAFETY: all handles owned by this state. Fence-wait (bounded)
+        // instead of device_wait_idle: only OUR submissions touch OUR
+        // objects, and an unbounded device-wide wait can hang teardown
+        // behind unrelated (or stuck) queue work. On timeout we destroy
+        // anyway — leaking GPU objects is safer than hanging the game.
         unsafe {
-            let _ = st.device.device_wait_idle();
+            if st
+                .device
+                .wait_for_fences(&[st.fence], true, 1_000_000_000)
+                .is_err()
+            {
+                crate::log_line(&format!(
+                    "render/overlay: fence timeout dropping swapchain {swap:#x} (destroying anyway)"
+                ));
+            }
             for v in &st.views {
                 st.device.destroy_image_view(*v, None);
             }
@@ -129,8 +157,10 @@ pub fn drop_device(dev: usize) {
         .collect();
     for swap in dead {
         if let Some(st) = g.states.remove(&swap) {
-            // SAFETY: best-effort teardown (see above); results ignored.
+            // SAFETY: bounded fence wait (see `drop_swapchain`), then
+            // best-effort teardown; results ignored.
             unsafe {
+                let _ = st.device.wait_for_fences(&[st.fence], true, 1_000_000_000);
                 for v in &st.views {
                     let _ = st.device.destroy_image_view(*v, None);
                 }
@@ -422,38 +452,84 @@ fn create_state(
             images: info.images.clone(),
             ctx: egui::Context::default(),
             pending_frees: Vec::new(),
+            last_set: std::collections::HashMap::new(),
+            frame: 0,
+            next_repaint: None,
+            recorded: false,
         })
     }
 }
 
 /// One headless egui run: primitives to draw plus texture deltas to
 /// upload/free. Same draw calls as the headless UI check, with a real
-/// context. Empty input (non-interactive v1): the UI is visible,
-/// clicks come later.
+/// context. `events` come from the capture pump (empty when passive);
+/// a software cursor is painted in the foreground while captured (the
+/// game hides/confines the OS cursor, so egui would otherwise fly
+/// blind).
 struct UiOutput {
     primitives: Vec<egui::ClippedPrimitive>,
     set: Vec<(egui::TextureId, egui::epaint::ImageDelta)>,
     free: Vec<egui::TextureId>,
+    /// How long egui wants to wait before the next repaint (static UI
+    /// sleeps; animations/interaction repaint immediately).
+    repaint_delay: std::time::Duration,
+    /// Pixels per point used for tessellation (must match `cmd_draw`).
+    pixels_per_point: f32,
 }
 
-fn run_ui(ctx: &egui::Context, extent: vk::Extent2D) -> UiOutput {
-    let input = egui::RawInput {
+/// Monotonic seconds for `RawInput::time` (animations, double-click).
+static T0: LazyLock<std::time::Instant> = LazyLock::new(std::time::Instant::now);
+
+fn run_ui(
+    ctx: &egui::Context,
+    extent: vk::Extent2D,
+    events: Vec<egui::Event>,
+) -> UiOutput {
+    let mut input = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
             egui::Pos2::ZERO,
             egui::vec2(extent.width as f32, extent.height as f32),
         )),
+        time: Some(T0.elapsed().as_secs_f64()),
+        focused: crate::hotkey::is_captured(),
         ..Default::default()
     };
+    input.events = events;
     let output = ctx.run(input, |ui_ctx| {
         crate::mod_api::draw_status_ui(ui_ctx);
         crate::mod_api::draw_manager_ui(ui_ctx);
-        crate::mod_api::draw_ui_all(ui_ctx);
+        // Mod windows honor the framework visibility flag too: closing
+        // the menu hides every window while enabled mods keep their
+        // effects running in the background (UI vs effects are
+        // independent — see the F8 wiring in lib.rs).
+        if crate::hotkey::ui_visible() {
+            crate::mod_api::draw_ui_all(ui_ctx);
+        }
+        // Software cursor on top while captured.
+        if crate::hotkey::is_captured() {
+            let (x, y) = crate::hotkey::cursor_pos();
+            egui::Area::new("cxsfm_cursor".into())
+                .order(egui::Order::Foreground)
+                .show(ui_ctx, |ui| {
+                    let p = ui.painter();
+                    let c = egui::pos2(x, y);
+                    p.circle_filled(c, 7.0, egui::Color32::from_white_alpha(96));
+                    p.circle_filled(c, 2.5, egui::Color32::WHITE);
+                });
+        }
     });
     let primitives = ctx.tessellate(output.shapes, output.pixels_per_point);
+    let repaint_delay = output
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .map(|v| v.repaint_delay)
+        .unwrap_or(std::time::Duration::ZERO);
     UiOutput {
         primitives,
         set: output.textures_delta.set,
         free: output.textures_delta.free,
+        repaint_delay,
+        pixels_per_point: output.pixels_per_point,
     }
 }
 
@@ -530,41 +606,160 @@ pub fn draw_frame(
     // queue; any Vulkan error aborts to the untouched-present fallback.
     unsafe {
         let q = vk::Queue::from_raw(queue as u64);
-        // 1. Previous frame must be done (vertex buffers + frees reuse).
+        // 0. Freshness: drain events (cheap) and detect UI-state
+        // changes (mod toggles alter content without input events).
+        // A re-run is needed when: input pending, repaint due, never
+        // recorded yet, or the enabled set changed. Otherwise the
+        // last recorded command buffer is REPLAYED below — this is
+        // what kills the flicker (skipped frames used to present
+        // WITHOUT ui) while keeping idle cost near zero (no egui
+        // run, no tessellation, no texture work — just a submit).
+        let events = crate::hotkey::drain_input_events();
+        static LAST_ENABLED: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(usize::MAX);
+        let enabled = crate::mod_api::get_mod_manager().enabled_count();
+        let enabled_changed =
+            LAST_ENABLED.swap(enabled, std::sync::atomic::Ordering::SeqCst) != enabled;
+        let repaint_due = match st.next_repaint {
+            Some(next) => std::time::Instant::now() >= next,
+            None => true,
+        };
+        let dirty = !events.is_empty() || repaint_due || !st.recorded || enabled_changed;
+        // Run egui only when dirty; replayed frames reuse everything.
+        let ui = if dirty {
+            let ui = run_ui(&st.ctx, st.extent, events);
+            // Schedule the next repaint. `repaint_delay` is unbounded
+            // for static UI (`Duration::MAX` = "never") — a plain
+            // `Instant +` OVERFLOWS and panics (killed a session via
+            // abort in the present thread!). Saturate instead; events
+            // always bypass the gate regardless of this deadline.
+            st.next_repaint = Some(
+                std::time::Instant::now()
+                    .checked_add(ui.repaint_delay)
+                    .unwrap_or_else(|| {
+                        std::time::Instant::now() + std::time::Duration::from_secs(3600)
+                    }),
+            );
+            Some(ui)
+        } else {
+            None
+        };
+        // TEMPORARY text-mesh census (titles/labels missing while
+        // shapes draw): first NON-EMPTY frame counts textured (glyph)
+        // vs solid vertices plus the glyph UV bounding box. Solid
+        // fills share the font texture at WHITE_UV; glyphs use varied
+        // UVs. Zero textured verts = tessellation/culling issue; sane
+        // UVs + blank text = sampling/atlas issue; insane UVs =
+        // transform bug.
+        static CENSUS_LOGGED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if !CENSUS_LOGGED.load(std::sync::atomic::Ordering::SeqCst) {
+            if let Some(ui) = ui.as_ref() {
+                if !ui.primitives.is_empty() {
+                    CENSUS_LOGGED.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let mut prims = 0usize;
+                    let mut solid_verts = 0usize;
+                    let mut textured_verts = 0usize;
+                    let mut umin = f32::MAX;
+                    let mut umax = f32::MIN;
+                    let mut vmin = f32::MAX;
+                    let mut vmax = f32::MIN;
+                    for prim in &ui.primitives {
+                        prims += 1;
+                        if let egui::epaint::Primitive::Mesh(mesh) = &prim.primitive {
+                            let textured = mesh
+                                .vertices
+                                .iter()
+                                .any(|v| v.uv != egui::epaint::WHITE_UV);
+                            if textured {
+                                textured_verts += mesh.vertices.len();
+                                for v in &mesh.vertices {
+                                    umin = umin.min(v.uv.x);
+                                    umax = umax.max(v.uv.x);
+                                    vmin = vmin.min(v.uv.y);
+                                    vmax = vmax.max(v.uv.y);
+                                }
+                            } else {
+                                solid_verts += mesh.vertices.len();
+                            }
+                        }
+                    }
+                    crate::log_line(&format!(
+                        "render/overlay: mesh census (primitives={prims} solid_verts={solid_verts} textured_verts={textured_verts} uv=[{umin:.3}..{umax:.3}]x[{vmin:.3}..{vmax:.3}])"
+                    ));
+                }
+            }
+        }
+        // `fresh` holds this frame's UI (None = replay cached commands).
+        // Empty UI invalidates the recording (hidden/disabled mods must
+        // not leave stale frames replaying) and presents untouched.
+        let fresh: Option<UiOutput> = ui;
+        match &fresh {
+            Some(u) if u.primitives.is_empty() && u.set.is_empty() => {
+                st.recorded = false;
+                return Err(());
+            }
+            _ => {}
+        }
+        st.frame += 1;
+        let frame = st.frame;
+        // Previous frame must be done (renderer buffers are reused
+        // across frames with in_flight_frames = 1; replayed submits
+        // included — the fence tracks every submit).
         st.device
             .wait_for_fences(&[st.fence], true, u64::MAX)
             .map_err(|_| ())?;
         st.device.reset_fences(&[st.fence]).map_err(|_| ())?;
-        if !st.pending_frees.is_empty() {
-            let frees = std::mem::take(&mut st.pending_frees);
-            let _ = st.renderer.free_textures(&frees);
+        if let Some(u) = &fresh {
+            // Free textures egui abandoned — EXCEPT ids (re-)set at
+            // their free's emission frame or later (see field docs).
+            for (id, _) in &u.set {
+                st.last_set.insert(*id, frame);
+            }
+            // Atlas-resize witness (rare by design).
+            if u.set.iter().any(|(id, _)| u.free.contains(id)) {
+                crate::log_line("render/overlay: font atlas resized (free+set same id)");
+            }
+            let mut pending = std::mem::take(&mut st.pending_frees);
+            pending.retain(|(id, emitted)| {
+                st.last_set.get(id).copied().unwrap_or(0) < *emitted
+            });
+            if !pending.is_empty() {
+                let ids: Vec<egui::TextureId> =
+                    pending.iter().map(|(id, _)| *id).collect();
+                let _ = st.renderer.free_textures(&ids);
+            }
+            // Upload new textures (font atlas lands on the first drawn
+            // frame). Synchronous inside the renderer (own submit + wait).
+            if !u.set.is_empty() {
+                st.renderer
+                    .set_textures(q, st.pool, &u.set)
+                    .map_err(|_| ())?;
+            }
         }
-        // 2. Run egui. Nothing to draw and nothing to upload = skip
-        // the submit entirely (present goes untouched, zero cost).
-        let ui = run_ui(&st.ctx, st.extent);
-        if ui.primitives.is_empty() && ui.set.is_empty() {
-            return Err(());
-        }
+        // 4. Record fresh commands, or replay the cached buffer.
+        // Replay keeps every present showing the UI (skipping the
+        // submit would flicker: the game redraws its image each
+        // frame) at near-zero CPU cost (no egui run, no tessellation).
         let fb = *st.framebuffers.get(image_index as usize).ok_or(())?;
         let img_raw = *st.images.get(image_index as usize).ok_or(())?;
         let img = vk::Image::from_raw(img_raw as u64);
-        // 3. Upload new textures (font atlas lands on the first drawn
-        // frame). Synchronous inside the renderer (own submit + wait).
-        if !ui.set.is_empty() {
-            st.renderer
-                .set_textures(q, st.pool, &ui.set)
-                .map_err(|_| ())?;
-        }
+        if let Some(u) = fresh.as_ref() {
         // 4. Record: barrier into COLOR_ATTACHMENT, render pass with
         // loadOp=LOAD (game image preserved), UI draws, barrier back
         // to PRESENT_SRC for the real present.
         st.device
             .reset_command_buffer(st.cmd, vk::CommandBufferResetFlags::empty())
             .map_err(|_| ())?;
+        // Record path ONLY (replay re-submits the cached buffer
+        // untouched). No ONE_TIME_SUBMIT: that flag promises a single
+        // submit per recording, and re-submitting such a buffer is
+        // undefined (blank/garbage frames — the flicker). Our buffer
+        // is explicitly reset before every re-record instead.
         let begin_info = vk::CommandBufferBeginInfo {
             s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
             p_next: std::ptr::null(),
-            flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
+            flags: vk::CommandBufferUsageFlags::empty(),
             p_inheritance_info: std::ptr::null(),
             ..Default::default()
         };
@@ -620,7 +815,7 @@ pub fn draw_frame(
             vk::SubpassContents::INLINE,
         );
         st.renderer
-            .cmd_draw(st.cmd, st.extent, 1.0, &ui.primitives)
+            .cmd_draw(st.cmd, st.extent, u.pixels_per_point, &u.primitives)
             .map_err(|_| ())?;
         st.device.cmd_end_render_pass(st.cmd);
         let to_present = vk::ImageMemoryBarrier {
@@ -646,9 +841,11 @@ pub fn draw_frame(
             &[to_present],
         );
         st.device.end_command_buffer(st.cmd).map_err(|_| ())?;
-        // 5. Submit waiting on the present's own semaphores (covers the
-        // game's prior work, cross-queue included), signaling ours.
-        // The real present then waits ONLY on ours (single-wait rule).
+        } // end `if let Some(u)` — replay path skips recording entirely.
+        // 5. Submit (freshly recorded or replayed) waiting on the
+        // present's own semaphores (covers the game's prior work,
+        // cross-queue included), signaling ours. The real present then
+        // waits ONLY on ours (single-wait rule).
         let wait_sems: Vec<vk::Semaphore> = waits
             .iter()
             .map(|s| vk::Semaphore::from_raw(*s as u64))
@@ -670,7 +867,10 @@ pub fn draw_frame(
         st.device
             .queue_submit(q, &[submit], st.fence)
             .map_err(|_| ())?;
-        st.pending_frees = ui.free;
+        if let Some(u) = fresh {
+            st.recorded = true;
+            st.pending_frees = u.free.into_iter().map(|id| (id, frame)).collect();
+        }
         Ok(st.signal.as_raw() as usize)
     }
 }

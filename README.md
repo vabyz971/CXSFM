@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Rust Edition](https://img.shields.io/badge/Rust-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/editions/2024.html)
-[![egui](https://img.shields.io/badge/egui->=0.36-FF0000)](https://github.com/emilk/egui)
+[![egui](https://img.shields.io/badge/egui-0.29-FF0000)](https://github.com/emilk/egui)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)](https://github.com/CXSFM/cxsfm)
 
 ## What is CXSFM?
@@ -16,6 +16,25 @@ CXSFM is a **framework for creating in-game mods** for CarX Street. It provides:
 - 🛡️ **Anti-Cheat Compliant** - Focuses on visual modifications only
 - 🔌 **Modular Architecture** - Easy-to-implement trait-based mod system
 - 🚀 **Cross-Platform** - Supports Windows (.dll), Linux (.so), macOS (.dylib)
+
+![CXSFM overlay in CarX Street: egui windows, software cursor, and the
+HUD version tag applied to the game's own nickname label](docs/overlay-proof.png)
+
+## Status (proven in-game, Linux)
+
+- ✅ Implicit Vulkan layer negotiated, `vkQueuePresentKHR` routed
+- ✅ egui overlay rendered into swapchain images (draggable windows,
+  checkboxes, software cursor, full text)
+- ✅ X11 input capture (grab + event pump) — the UI is clickable
+- ✅ IL2CPP bridge: Unity input polling, camera FOV, UI text read/write
+- ✅ Bundled mods: HUD Scout (read-only inventory), HUD Hide, HUD
+  Version Tag (all with restore-on-disable)
+- ⏸️ FPV Camera mod (parked until per-frame application is possible)
+- 🔑 Single hotkey: **F8** = UI visibility + input capture (mods
+  persist independently, toggled from the manager window)
+
+See [docs/field-notes.md](docs/field-notes.md) for the full verified
+findings log (input paths, layer bring-up, incidents and fixes).
 
 ## Why CXSFM Respects CarX Street's CGU
 
@@ -40,26 +59,26 @@ We strictly adhere to CarX Street's Terms of Service by focusing **exclusively**
 
 ### Prerequisites
 
-- Rust >= 1.75 (Edition 2024)
-- CMake / Ninja (for egui renderer)
-- C++ build tools
+- Nix with flakes enabled (`nix develop` provides the pinned Rust
+  toolchain — no system Rust/CMake/C++ needed, everything is pure Rust)
+- Or plain Rust >= 1.75 (Edition 2024) with network access for crates
 
 ### Building
 
 ```bash
-# Clone the repository
-git clone https://github.com/CXSFM/cxsfm.git
-cd cxsfm
+# Nix (recommended, pinned toolchain)
+nix develop --command cargo build --release
 
-# Build for Windows (x86_64)
-cargo build --target x86_64-pc-windows-msvc --release
+# Then stage the Vulkan layer (after every rebuild)
+./tools/cxsfm-setup.sh
 
-# Build for Linux
-cargo build --target x86_64-unknown-linux-gnu --release
-
-# Build for macOS
-cargo build --target x86_64-apple-darwin --release
+# Plain cargo
+cargo build --release
 ```
+
+Cross-compiling uses the standard target triples
+(`--target x86_64-pc-windows-msvc`, `x86_64-unknown-linux-gnu`,
+`x86_64-apple-darwin`).
 
 ### Output Files
 
@@ -191,26 +210,49 @@ cxsfm/
 ├── README.md            # This file
 ├── CONTRIBUTING.md      # Contribution guidelines
 ├── OBJECTIVES.md        # Roadmap
+├── flake.nix            # Pinned Nix toolchain
 ├── docs/
 │   ├── README.md        # Documentation overview
-│   └── architecture.md  # System architecture
+│   ├── architecture.md  # System architecture
+│   ├── field-notes.md   # Verified in-game findings log
+│   └── overlay-proof.png # Screenshot: overlay in CarX Street
+├── tools/
+│   ├── cxsfm-setup.sh   # Stage the Vulkan layer + manifest
+│   ├── cxsfm-watchdog.sh # ptrace injection for running games
+│   └── cxsym-inject     # ptrace injector (+ --self-test)
 └── src/
-    ├── lib.rs          # Main entry point
-    ├── memory.rs       # Memory scanning & operations
-    ├── mod_api.rs      # Mod trait & manager
+    ├── lib.rs          # Entry point (#[ctor], init + tick threads)
+    ├── layer.rs        # Implicit Vulkan layer (present routing)
+    ├── render.rs       # Render-hook dispatcher + frame counters
+    ├── render/
+    │   ├── vk.rs       # GOT/inline Vulkan fallback (static volk defeats it)
+    │   ├── dxgi.rs     # Windows DXGI scaffold
+    │   ├── metal.rs    # macOS stub
+    │   └── overlay.rs  # egui-into-swapchain renderer
+    ├── il2cpp.rs       # IL2CPP embedding bridge
+    ├── unity.rs        # Unity helpers (Input, Camera, Text/TMP)
+    ├── hotkey.rs       # SDL/Unity/X11 hotkeys + X11 input capture
+    ├── memory.rs       # Maps/AOB scanning utilities
+    ├── mod_api.rs      # Mod trait + ModManager
+    ├── mods.rs         # Mod registry
     └── mods/
-        └── fpv_camera.rs  # Example FPV camera mod
+        ├── fpv_camera.rs  # FPV camera mod (parked)
+        └── hud.rs         # HUD Scout / Hide / Version Tag
 ```
 
 ## Dependencies
 
 | Crate | Version | Purpose |
 |-------|---------|---------|
-| egui | >=0.36 | In-game UI rendering |
-| glam | >=0.29 | 3D math vectors/matrices |
+| egui | 0.29 (+`default_fonts`) | In-game UI rendering |
+| egui-ash-renderer | 0.6 | egui → Vulkan pipeline (last line for egui 0.29) |
+| ash | 0.38 | Vulkan calls through layer-resolved pointers |
+| glam | 0.29 | 3D math vectors/matrices |
 | ctor | 0.2 | Library constructor (auto-init) |
 | libc | 0.2 | Cross-platform C library bindings |
-| windows-sys | 0.59 | Windows API bindings |
+| iced-x86 | 1 | Instruction decoding (inline-hook analysis) |
+| bitflags | 2.9 | Bitflag types |
+| windows-sys | 0.59 | Windows API bindings (Windows only) |
 
 ## Thread Safety
 

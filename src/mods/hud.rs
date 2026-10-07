@@ -12,8 +12,9 @@
 //! HUD-rewrite mod. Nothing to restore on disable — nothing was ever
 //! touched.
 //!
-//! Armed at registration and re-armed by the O key (see tick thread):
-//! press O in each scene/menu to inventory that scene's texts.
+//! Disarmed at registration like every mod; armed by O/F8 (see tick
+//! thread): pressing it in each scene/menu inventories that scene's
+//! texts.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -62,7 +63,7 @@ pub struct HudScoutMod {
 }
 
 impl HudScoutMod {
-    /// Create a new (disarmed — registration arms it) scout.
+    /// Create a new disarmed scout (arming runs the one-shot).
     pub fn new() -> Self {
         Self {
             enabled: AtomicBool::new(false),
@@ -90,9 +91,9 @@ impl HudScoutMod {
         // SAFETY: called on attached framework threads with the
         // published API; every step below is null-checked.
         let cache = unsafe {
-            let domain = match api.domain() {
-                Ok(d) => d,
-                Err(_) => return false,
+            let domain = match crate::il2cpp::domain_checked(api) {
+                Some(d) => d,
+                None => return false,
             };
             match crate::unity::init(api, domain) {
                 Some(c) => c,
@@ -211,7 +212,7 @@ impl Mod for HudScoutMod {
             return;
         }
         egui::Window::new("HUD Scout")
-            .anchor(egui::Align2::LEFT_TOP, egui::vec2(0.0, 220.0))
+            .default_pos(egui::pos2(0.0, 220.0))
             .resizable(false)
             .show(ctx, |ui| {
                 ui.heading("HUD Scout");
@@ -237,11 +238,11 @@ impl Mod for HudScoutMod {
     }
 }
 
-/// Register the scout and arm it immediately: the one-shot inventory
-/// needs no keypress and no render hook, just a resolved Unity cache.
+/// Register the scout disarmed: like every mod it boots quiet and the
+/// user opts in with O/F8 (which re-arms the one-shot inventory for the
+/// current scene). No UI, no log spam before an explicit action.
 pub fn register_hud_scout() {
     crate::mod_api::register_mod(Box::new(HudScoutMod::new()));
-    crate::mod_api::get_mod_manager().enable_mod("HUD Scout");
 }
 
 /// Hide target: the proven `Net.` label (hide confirmed on screen).
@@ -323,9 +324,9 @@ impl HudHideMod {
         };
         // SAFETY: attached framework threads, null-checked chain.
         let cache = unsafe {
-            let domain = match api.domain() {
-                Ok(d) => d,
-                Err(_) => return false,
+            let domain = match crate::il2cpp::domain_checked(api) {
+                Some(d) => d,
+                None => return false,
             };
             match crate::unity::init(api, domain) {
                 Some(c) => c,
@@ -555,7 +556,7 @@ impl Mod for HudHideMod {
             "Status: target not in this scene."
         };
         egui::Window::new("HUD Hide")
-            .anchor(egui::Align2::LEFT_TOP, egui::vec2(0.0, 260.0))
+            .default_pos(egui::pos2(0.0, 260.0))
             .resizable(false)
             .show(ctx, |ui| {
                 ui.heading("HUD Hide");
@@ -658,9 +659,9 @@ impl HudVersionMod {
         };
         // SAFETY: attached framework threads, null-checked chain.
         let cache = unsafe {
-            let domain = match api.domain() {
-                Ok(d) => d,
-                Err(_) => return false,
+            let domain = match crate::il2cpp::domain_checked(api) {
+                Some(d) => d,
+                None => return false,
             };
             match crate::unity::init(api, domain) {
                 Some(c) => c,
@@ -875,7 +876,7 @@ impl Mod for HudVersionMod {
             "Status: target not in this scene."
         };
         egui::Window::new("HUD Version Tag")
-            .anchor(egui::Align2::LEFT_TOP, egui::vec2(0.0, 300.0))
+            .default_pos(egui::pos2(0.0, 300.0))
             .resizable(false)
             .show(ctx, |ui| {
                 ui.heading("HUD Version Tag");

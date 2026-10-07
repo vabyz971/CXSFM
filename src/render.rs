@@ -96,6 +96,12 @@ static INSTALLED: AtomicBool = AtomicBool::new(false);
 /// Presents intercepted since install. Proves the hook is live; doubles
 /// as a cheap frame clock for future mods.
 static FRAME_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Overlay submits performed (UI actually drawn into the frame).
+static OVERLAY_DREW: AtomicU64 = AtomicU64::new(0);
+/// Overlay attempts that fell back to the untouched present (per-step
+/// failures, unknown swapchains, multi-presents...). A high
+/// skipped/(drew+skipped) ratio with visible UI means flicker.
+static OVERLAY_SKIPPED: AtomicU64 = AtomicU64::new(0);
 
 /// Whether a render hook is currently installed.
 #[inline]
@@ -107,6 +113,30 @@ pub fn is_installed() -> bool {
 #[inline]
 pub fn frame_count() -> u64 {
     FRAME_COUNT.load(Ordering::SeqCst)
+}
+
+/// Overlay draws performed so far.
+#[inline]
+pub fn overlay_drew() -> u64 {
+    OVERLAY_DREW.load(Ordering::SeqCst)
+}
+
+/// Overlay fallbacks to untouched presents so far.
+#[inline]
+pub fn overlay_skipped() -> u64 {
+    OVERLAY_SKIPPED.load(Ordering::SeqCst)
+}
+
+/// Record one overlay draw (called on the present path).
+#[inline]
+pub(crate) fn note_overlay_drew() {
+    OVERLAY_DREW.fetch_add(1, Ordering::SeqCst);
+}
+
+/// Record one overlay fallback (called on the present path).
+#[inline]
+pub(crate) fn note_overlay_skipped() {
+    OVERLAY_SKIPPED.fetch_add(1, Ordering::SeqCst);
 }
 
 /// Per-present callback, invoked by every backend hook.

@@ -372,7 +372,7 @@ fn log_line(msg: &str) {
     eprint!("{}", line);
 }
 
-/// Framework-level O edge via Unity's `Input.GetKey`.
+/// Framework-level key edge via Unity's `Input.GetKey`.
 ///
 /// The SDL path (`hotkey::poll_toggle_edge`) proved deaf inside the game
 /// process, so the tick ORs both sources. This one owns a small dedicated
@@ -380,7 +380,7 @@ fn log_line(msg: &str) {
 /// logs its resolve outcome exactly once for in-game diagnosis.
 ///
 /// Returns false outside Unity (no API yet).
-fn poll_framework_input_edge() -> bool {
+fn poll_framework_input_edge(keycode: i32) -> bool {
     static CACHE: LazyLock<Mutex<Option<unity::UnityCache>>> =
         LazyLock::new(|| Mutex::new(None));
     static LOGGED: AtomicBool = AtomicBool::new(false);
@@ -401,9 +401,10 @@ fn poll_framework_input_edge() -> bool {
         None => {
             // SAFETY: tick thread is IL2CPP-attached (see
             // `spawn_tick_thread`); resolve-once, reuse afterwards.
+            // `domain_checked` parks IL2CPP use if the runtime is
+            // dying (teardown) instead of crashing in its corpse.
             let resolved = unsafe {
-                api.domain()
-                    .ok()
+                crate::il2cpp::domain_checked(api)
                     .and_then(|domain| unity::init(api, domain))
             };
             match resolved {
@@ -440,7 +441,23 @@ fn poll_framework_input_edge() -> bool {
         ));
     }
     // SAFETY: same attached thread + cached methods as above.
-    unsafe { hotkey::poll_unity_edge(api, &cache) == Some(true) }
+    unsafe { hotkey::poll_unity_edge(api, &cache, keycode) == Some(true) }
+}
+
+/// Whether the game is tearing down.
+///
+/// Cross-platform shim: only Linux tracks Vulkan object lifetimes yet.
+/// Elsewhere the tick keeps polling (Windows/macOS teardown hardening
+/// is future work alongside their render hooks).
+#[cfg(target_os = "linux")]
+#[inline]
+fn game_shutting_down() -> bool {
+    crate::layer::shutting_down()
+}
+#[cfg(not(target_os = "linux"))]
+#[inline]
+fn game_shutting_down() -> bool {
+    false
 }
 
 /// Spawn the ~60 Hz tick thread driving `on_update` on all enabled mods.
@@ -448,9 +465,10 @@ fn poll_framework_input_edge() -> bool {
 /// Detached on purpose: it lives as long as the game process. `dt` is
 /// clamped so a hitch (alt-tab, loading screen) can't destabilize mods.
 /// Also attaches this thread to IL2CPP (mods may call into it from
-/// `on_update`) and polls the O toggle at ~10 Hz from three independent
+/// `on_update`) and polls toggles at ~10 Hz from three independent
 /// sources: SDL (`hotkey`), Unity `Input` (this module) and the X server
-/// itself (`hotkey` X11 path — the Wayland-session-proof one).
+/// itself (`hotkey` X11 path — the Wayland-session-proof one). O drives
+/// the HUD mods, F9 the UI input capture, F8 both at once.
 fn spawn_tick_thread() {
     let _ = std::thread::Builder::new()
         .name("cxsfm-tick".into())
@@ -466,71 +484,76 @@ fn spawn_tick_thread() {
             }
             let mut last = std::time::Instant::now();
             let mut tick: u64 = 0;
+            // Pre-start the X11 event thread (grab window ready before
+            // the first F8/F9 press — no activation delay).
+            hotkey::ensure_capture_thread();
             loop {
                 std::thread::sleep(Duration::from_millis(16));
                 let dt = last.elapsed().as_secs_f32().min(0.1);
                 last = std::time::Instant::now();
                 tick += 1;
+                // During teardown (swapchains/devices/instances all
+                // gone) Unity kills its scripting domain: ANY IL2CPP
+                // call can segfault instead of erroring (caught live
+                // via Player.log). SDL/X11/log paths stay alive —
+                // only IL2CPP-touching work stops below.
+                let down = game_shutting_down();
                 // Render heartbeat: proves presents keep routing through
                 // us long after init (a stuck count with a live game
                 // means present routing died silently).
                 if tick % 900 == 0 {
                     log_line(&format!(
-                        "render: {} presents intercepted so far",
-                        render::frame_count()
+                        "render: {} presents ({} overlay, {} plain)",
+                        render::frame_count(),
+                        render::overlay_drew(),
+                        render::overlay_skipped()
                     ));
                 }
                 if tick % 6 == 0 {
-                    // Any input path fires the toggle: SDL (dead when the
-                    // game never pumps SDL keyboard), Unity Input (primary
-                    // in theory) or X11 (bypasses both — decisive on
-                    // Wayland sessions where the game reads via XWayland).
-                    let sdl_edge = hotkey::poll_toggle_edge() == Some(true);
-                    let unity_edge = poll_framework_input_edge();
-                    let x11_edge = hotkey::poll_x11_edge() == Some(true);
-                    if sdl_edge || unity_edge || x11_edge {
-                        let src = if unity_edge {
+                    // F8 is the ONLY hotkey: UI visibility + input
+                    // capture, aligned in one direction (shown/captured
+                    // or hidden/released) across three independent input
+                    // sources (SDL, Unity Input, X11 — first edge wins).
+                    // It deliberately does NOT touch mods: menu
+                    // visibility and mod effects are independent —
+                    // closing the menu hides windows but running mods
+                    // keep working (their state persists). Mods toggle
+                    // from the manager window while the UI is open.
+                    let sdl_combo = hotkey::poll_scancode_edge(hotkey::COMBO_SCANCODE_F8)
+                        == Some(true);
+                    // No Unity polling during teardown (see above).
+                    let unity_combo = if down {
+                        false
+                    } else {
+                        poll_framework_input_edge(crate::unity::KEYCODE_F8)
+                    };
+                    let x11_combo =
+                        hotkey::poll_x11_key_edge(hotkey::X11_KEYCODE_F8) == Some(true);
+                    if sdl_combo || unity_combo || x11_combo {
+                        let src = if unity_combo {
                             "unity"
-                        } else if sdl_edge {
+                        } else if sdl_combo {
                             "sdl"
                         } else {
                             "x11"
                         };
-                        let now_on = hotkey::toggle_ui();
-                        log_line(&format!(
-                            "hotkey O ({}): framework UI {}",
-                            src,
-                            if now_on { "shown" } else { "hidden" }
-                        ));
-                        // Drive the HUD mods with the same key: enabling
-                        // re-arms the scout (inventory this scene),
-                        // hides the target label and stamps the version
-                        // text; disabling restores everything. One
-                        // keypress = full HUD cycle for the scene.
-                        // (FPV is unregistered; see registration above.)
-                        let mgr = mod_api::get_mod_manager();
-                        let hud_on =
-                            !matches!(mgr.is_mod_enabled("HUD Hide"), Some(true));
-                        if hud_on {
-                            mgr.enable_mod("HUD Scout");
-                            mgr.enable_mod("HUD Hide");
-                            mgr.enable_mod("HUD Version Tag");
-                        } else {
-                            mgr.disable_mod("HUD Scout");
-                            mgr.disable_mod("HUD Hide");
-                            mgr.disable_mod("HUD Version Tag");
+                        let target = !hotkey::ui_visible();
+                        if hotkey::ui_visible() != target {
+                            hotkey::toggle_ui();
                         }
+                        hotkey::set_captured(target);
                         log_line(&format!(
-                            "hotkey O: HUD {}",
-                            if hud_on {
-                                "on (scout + hide + version)"
-                            } else {
-                                "off (label restored)"
-                            }
+                            "hotkey F8 ({src}): UI + capture {} (mods untouched)",
+                            if target { "ON" } else { "OFF" }
                         ));
                     }
                 }
-                mod_api::update_all_mods(dt);
+                // Mod updates touch IL2CPP: skip them entirely during
+                // teardown (see above). The tick itself (heartbeat,
+                // SDL/X11 polls) keeps running.
+                if !down {
+                    mod_api::update_all_mods(dt);
+                }
             }
         });
 }

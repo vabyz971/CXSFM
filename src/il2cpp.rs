@@ -185,8 +185,7 @@ impl Il2cppApi {
     ///
     /// # Safety
     /// Same contract as [`Il2cppApi::domain`].
-    pub unsafe fn assembly_count(
-        &self,
+    pub unsafe fn assembly_count(        &self,
         domain: *mut std::ffi::c_void,
     ) -> Result<usize, Il2cppError> {
         let mut n: usize = 0;
@@ -197,6 +196,50 @@ impl Il2cppApi {
             return Err(Il2cppError::NullResult("assemblies"));
         }
         Ok(n)
+    }
+}
+
+/// Consecutive `domain()` failures before the runtime is declared dead.
+const DOMAIN_DEATH_STRIKES: u32 = 3;
+/// Consecutive failure count (any success resets it).
+static DOMAIN_FAILURES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// Set once the runtime is declared dead: all further IL2CPP use stops
+/// for the rest of the process (see below).
+static DOMAIN_DEAD: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Fetch the domain, declaring the runtime dead after repeated failure.
+///
+/// A healthy runtime never fails `domain_get`; a dying one (Unity
+/// teardown) fails persistently — and heavier calls on a half-torn
+/// runtime segfault instead of erroring (caught live: tick thread
+/// inside `poll_framework_input_edge` during game exit). After
+/// [`DOMAIN_DEATH_STRIKES`] consecutive failures this returns `None`
+/// forever: mods park, input falls back to SDL/X11, the process exits
+/// cleanly instead of crashing in Unity's corpse.
+///
+/// # Safety
+/// Same contract as [`Il2cppApi::domain`].
+pub unsafe fn domain_checked(api: &Il2cppApi) -> Option<*mut std::ffi::c_void> {
+    use std::sync::atomic::Ordering;
+    if DOMAIN_DEAD.load(Ordering::SeqCst) {
+        return None;
+    }
+    // SAFETY: same contract, enforced by the caller.
+    match unsafe { api.domain() } {
+        Ok(d) => {
+            DOMAIN_FAILURES.store(0, Ordering::SeqCst);
+            Some(d)
+        }
+        Err(_) => {
+            let strikes = DOMAIN_FAILURES.fetch_add(1, Ordering::SeqCst) + 1;
+            if strikes >= DOMAIN_DEATH_STRIKES
+                && !DOMAIN_DEAD.swap(true, Ordering::SeqCst)
+            {
+                crate::log_line("il2cpp: runtime unresponsive, parking IL2CPP use");
+            }
+            None
+        }
     }
 }
 

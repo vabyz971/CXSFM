@@ -255,13 +255,133 @@ Diagnostic line (zero keypresses needed):
   Rule: NEVER store a Vulkan handle across calls without tracking its
   destruction (`vkDestroyDevice` interception + full state cleanup
   included for the same reason — driver handle reuse).
+- TEXTURE USE-AFTER-FREE (invisible text, working shapes/clicks):
+  on atlas resize egui emits free+set for the SAME TextureId in one
+  delta, and `set_textures` already destroys/replaces same-id
+  occupants internally — so a deferred `free_textures` for a re-set
+  id destroys the NEW texture. Fix: run egui first, drop pending
+  frees for ids in the current set, then free, then upload. Rule: a
+  pending free is obsolete iff its id is (re-)set. (Trigger here:
+  non-ASCII titles like the em-dash force the first atlas growth.)
 - Heartbeat: tick logs `render: N presents intercepted so far` every
   ~15 s (routing-liveness proof); `CreateDevice entry` logs every
   device creation (a bypassed second device would otherwise be
   invisible).
+- TEARDOWN CRASH (sigsegv in tick `poll_framework_input_edge`,
+  caught via Player.log stack): Unity kills its scripting domain
+  while our tick keeps polling IL2CPP → Unity's crash handler hangs
+  on black screen (Steam kill required). Fix layers: (1)
+  `layer::shutting_down()` — true when object kinds that existed are
+  all gone (swaps/devices/instances + had_* flags); tick skips ALL
+  IL2CPP touch (framework input Unity path + `update_all_mods`) while
+  true, SDL/X11/log keep running. (2) `il2cpp::domain_checked` —
+  permanent IL2CPP stop after 3 consecutive `domain()` failures.
+  Rule: teardown is detected via object lifetimes, never probed via
+  the dying runtime itself.
+
+## Overlay input: X11 capture + event pump (2026-10-07)
+
+- Showing UI is not interacting: while the game owns input, clicks
+  also drive the game. **F8** now toggles UI capture (F9/O retired,
+  see hotkey section): `XGrabPointer` + `XGrabKeyboard` to our own invisible 1x1
+  InputOnly window (mapped once by a dedicated event thread on its
+  OWN display connection; `XInitThreads` once; `XSetErrorHandler`
+  no-op installed — Xlib's default handler would `exit(1)` the game
+  on any protocol error).
+- Event thread blocks in `XNextEvent`, translates to `egui::Event`
+  (buttons/wheel/motion/keys + `XLookupString` text, modifiers from
+  the event state mask), pushes to a queue drained per frame. Keycode
+  table is positional (same physical keys QWERTY/AZERTY); Shift/Ctrl/
+  Alt/Caps produce no Key events (modifiers only). No key-repeat v1.
+- Release pushes `PointerGone` (no stuck hover). Overlay paints a
+  software cursor (halo + dot) in the foreground while captured —
+  the game hides/confines the OS cursor.
+- Edge states are per (source, key) (`edge()` map): O + F9 share no
+  state across SDL/Unity/X11 paths.
+- F8 (SDL 65, Unity 289, X11 74) is the ONLY hotkey: UI visibility
+  + capture, both directions. O and F9 bindings removed (helpers
+  stay, unused). F8 never touches mods (see decoupling below).
+- UI/effects decoupled: F8 flips visibility + capture only, never
+  mods (manager checkboxes own them; effects persist with menu
+  closed). Overlay gate = mods-enabled OR ui-visible (gating on
+  mods alone blanked empty menus — caught live: 21k presents, 0
+  overlay attempts). `run_ui` gates `draw_ui_all` on `ui_visible`
+  (mod windows hide with the menu, `on_update` effects continue).
+- Heartbeat reports `presents (overlay, plain)` counters: a high
+  plain/(overlay+plain) ratio with visible UI quantifies flicker
+  (fallback rate) instead of guessing.
+- CAUGHT: the re-targeted `VkPresentInfoKHR` local lost its
+  `#[repr(C)]` during an edit — Rust layout is unspecified without
+  it and the driver would read garbage. Always re-verify ABI markers
+  after touching FFI structs.
+
+## Code review pass (2026-10-07, user-reported fan noise + missing text)
+
+## Full overlay victory (2026-10-07, screenshot: docs/overlay-proof.png)
+
+- Text + flicker fixed together: `default_fonts` (glyphs exist) and
+  record/replay without `ONE_TIME_SUBMIT` (steady frames).
+- On screen simultaneously: framework status + manager windows, HUD
+  Scout/Hide/Version windows (all draggable, checkboxes working),
+  software cursor, AND the game's own HUD showing
+  `VABYZ971 | CXSFM v0.1.0` (version tag through the game's renderer).
+- F8 = UI + capture only; mods persist via manager checkboxes.
+
+- NO DEFAULT FONTS: `egui = { default-features = false }` drops
+  `default_fonts` → zero glyphs tessellated, shapes fine (white UV).
+  The census hinted it (94 textured verts total — starved font).
+  Fix: `features = ["default_fonts"]` (no version change). Visible
+  proof in the binary: .so 2.5 MB → 4 MB (embedded TTFs).
+- REPLAY vs ONE_TIME_SUBMIT: recording with ONE_TIME_SUBMIT then
+  re-submitting is undefined (blank/garbage frames). Fresh records
+  (dragging = dirty every frame) looked fine, replays flickered —
+  exactly the reported symptom. Fix: empty usage flags + explicit
+  reset before re-record (fence still serializes).
+
+- Record/replay (flicker fix): the naive gate (skip submit when
+  idle) caused FLICKER — skipped frames present WITHOUT ui because
+  the game redraws every frame. Now: egui re-runs only when dirty
+  (events, repaint due, never recorded, enabled-set changed); the
+  last recorded command buffer is REPLAYED every present
+  (fence-cycled). No flicker, near-zero idle CPU (no egui run, no
+  tessellation on replay). UI-hide invalidates the recording (no
+  stale frames). `pixels_per_point` flows tessellate→cmd_draw.
+- Teardown waits bounded: `drop_swapchain`/`drop_device` fence-wait
+  with 1 s timeout instead of `device_wait_idle` (an unbounded device
+  wait can hang quit behind stuck queue work); destroy anyway on
+  timeout (leak beats hang).
+- Mesh census upgraded: first NON-EMPTY frame with glyph UV bbox
+  (sane [0,1] = sampling/atlas suspect; insane = transform bug;
+  zero textured verts = tessellation).
+- Shader review (`egui-ash-renderer` frag/vert): `oColor * tex`
+  with `(ONE, ONE_MINUS_SRC_ALPHA)` blend + premultiplied font texels
+  is correct by construction; solids sample the same atlas at
+  WHITE_UV, so working shapes prove texture/descriptor/pipeline —
+  narrowing text failure to atlas CONTENT or UVs.
+- Fan-noise assessment: overlay adds one fullscreen LOAD+STORE pass +
+  per-frame CPU wakeups; the dominant load remains the game's own
+  (uncapped menus). Repaint gating removes the idle cost; remaining
+  noise under interaction is expected overlay cost.
+- INSTANT OVERFLOW ABORT (menu-open freeze/crash, caught via
+  Player.log stack: `Instant::add` inside `draw_frame` ← present):
+  `repaint_delay` is `Duration::MAX` for static UI and plain
+  `Instant + delay` panics → abort through foreign frames → SIGABRT.
+  Fix: `checked_add` saturating to +1h (events bypass the gate
+  anyway). RULE: no unbounded arithmetic on render/present paths —
+  panics there can't unwind (abort), so every op must be
+  checked/saturating by construction.
+- Open text hypotheses if census shows glyph verts present: font
+  sampler/descriptor staleness across atlas resizes (beyond the fixed
+  use-after-free), or partial-update (`delta.pos`) path in the
+  renderer.
+- Boot-quiet rule (2026-10-07): `UI_VISIBLE` defaults to false AND
+  every mod registers disarmed (scout included — no more auto-arm).
+  Nothing on screen or in the log until O/F8. Mod windows use
+  `default_pos` (initial stagger) instead of `anchor` so all are
+  draggable by title bar; positions persist in ctx memory.
 
 ## In-game test protocol
 
 1. Rebuild, `./tools/cxsfm-setup.sh`, empty the log, launch.
 2. Expect init block → `input: ...` line with no keypress.
-3. Press O → `hotkey O (...)` + mod lines. Report the `(src)`.
+3. Press F8 → `hotkey F8 (...)` + mod lines. Report the `(src)`.
