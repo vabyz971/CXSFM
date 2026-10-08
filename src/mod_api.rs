@@ -66,7 +66,11 @@ impl ModManager {
     }
 
     /// Set a mod's on/off state by name (menu tile toggle path).
-    /// Returns true when a mod with that name exists.
+    ///
+    /// Records the intent and returns immediately: the transition hook
+    /// runs on the tick thread (see `ModRegistry::update_all`), never
+    /// on the calling thread. Returns true when a mod with that name
+    /// exists.
     pub fn set_mod_enabled(&self, name: &str, enabled: bool) -> bool {
         self.registry.set_enabled(name, enabled)
     }

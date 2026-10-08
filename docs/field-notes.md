@@ -436,3 +436,29 @@ Diagnostic line (zero keypresses needed):
 1. Rebuild, `./tools/cxsfm-setup.sh`, empty the log, launch.
 2. Expect init block → `input: ...` line with no keypress.
 3. Press F8 → `hotkey F8 (...)` + mod lines. Report the `(src)`.
+
+## Transitions de mods sur le thread de tick
+
+- Symptôme : freeze à la **désactivation** du mod camera (image
+  figée, son vivant) — `CameraMod::on_disable()` → `restore()` fait
+  3 `FindObjectsOfType` + écritures Unity. Et si le tick est bloqué
+  dans `on_update` pendant un churn de scène, le thread UI attend le
+  verrou d'entrée partagé et gèle aussi (processus ensuite tué comme
+  "crashé" : Player.log fini en `SIGINT`+`SIGTERM`, pas de segfault).
+- Cause : `set_enabled` exécutait `on_enable`/`on_disable` de façon
+  synchrone, sous verrou, depuis le thread UI/present.
+- Règle : `on_enable`/`on_disable` **ne s'exécutent jamais sur le
+  thread UI**. `set_enabled` n'enregistre que l'intention (`desired`,
+  verrou d'état, retour immédiat) ; le tick (`update_all`) applique
+  les transitions en attente avant `on_update` — une désactivation
+  exécute donc `restore()` là où Unity est appelable. Entrées à
+  verrous séparés état/code : le present ne touche que l'état (+ cache
+  avec `try_lock`, stale servi sinon) et ne peut plus se garer
+  derrière un mod enlisé dans Unity. Pendant le teardown le tick
+  saute `update_all` : les transitions en attente ne s'appliquent
+  pas — voulu (jamais d'IL2CPP pendant que Unity démonte son domaine).
+- `apply()` sans snapshot : `apply()`/`do_boost()` réutilisent leur
+  propre énumération pour rafraîchir les lignes UI (offset relu après
+  écriture) au lieu de relancer `snapshot()` (~5 énumérations
+  juste après avoir écrit). Durées loggées
+  (`camera: apply/boost/snapshot/restore took X ms, N enumerations`).

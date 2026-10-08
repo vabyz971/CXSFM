@@ -12,6 +12,12 @@
 //!   split exists.
 //! - The registry lock is NEVER held across mod code. Entry handles
 //!   are cloned under a short lock; hooks run lock-free otherwise.
+//! - State transitions (`on_enable`/`on_disable`) NEVER run on the UI
+//!   thread: `set_enabled` records the intent (`desired`) under the
+//!   state lock and returns; the tick thread (`update_all`) applies
+//!   pending transitions before calling `on_update`. This is what
+//!   makes `restore()`-style hooks (HUD hide/text, video, camera)
+//!   safe — they run where Unity calls are legal, never on present.
 //! - Every hook (`on_update`, `on_draw_ui`, `on_enable`,
 //!   `on_disable`, `menu_label_key`, `menu_icon`) runs inside
 //!   `catch_unwind`. A panic quarantines that mod (auto-disabled,
@@ -19,7 +25,16 @@
 //! - Poisoned mutexes (a panic while locked) are recovered via
 //!   `into_inner`, never `unwrap`-crashed.
 //! - `unregister` runs `on_disable` first when the mod was enabled,
-//!   so removal always restores game state.
+//!   so removal always restores game state. It takes the inner lock
+//!   across the hook: call only off the UI thread (no in-tree callers
+//!   today).
+//!
+//! # Teardown
+//!
+//! During game shutdown the tick skips `update_all_mods` entirely
+//! (see `game_shutting_down` in lib.rs): pending transitions then
+//! never apply. That is deliberate — no IL2CPP call may run while
+//! Unity tears its scripting domain down.
 
 use super::api::{Mod, ModTile, TileIcon};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -39,7 +54,11 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// `draw_ui_all`, counts) touch state alone and can never stall
 /// behind a mod blocked inside Unity.
 struct EntryState {
+    /// Actually applied (drives `update_all`/`draw_ui_all` dispatch).
     enabled: bool,
+    /// User intent, recorded by `set_enabled` (drives all UI reads so
+    /// the tile reacts instantly; applied by the tick).
+    desired: bool,
     /// A quarantined mod stays registered and visible but can never
     /// run again until explicitly re-enabled (which clears the flag).
     quarantined: bool,
@@ -88,11 +107,15 @@ fn try_inner(handle: &Arc<Entry>) -> Option<MutexGuard<'_, Box<dyn Mod>>> {
     }
 }
 
-/// Mark an entry quarantined + disabled (short state lock only).
+/// Mark an entry quarantined + disabled, intent cleared (short state
+/// lock only). Clearing `desired` stops the tick from retrying the
+/// failed transition every frame; only an explicit re-enable (which
+/// lifts the quarantine) runs hooks again.
 fn quarantine(handle: &Arc<Entry>) {
     let mut s = lock(&handle.state);
     s.quarantined = true;
     s.enabled = false;
+    s.desired = false;
 }
 
 /// Owns every mod. All public methods are thread-safe.
@@ -146,6 +169,7 @@ impl ModRegistry {
             name: name.clone(),
             state: Mutex::new(EntryState {
                 enabled: false,
+                desired: false,
                 quarantined: false,
                 cached_label: label,
                 cached_icon: icon,
@@ -163,6 +187,9 @@ impl ModRegistry {
 
     /// Unregister by name. Runs `on_disable` first when enabled, so
     /// removal always restores game state. Returns true if found.
+    ///
+    /// Takes the inner lock across the hook: call ONLY off the UI
+    /// thread (tick or init). No in-tree callers today.
     pub fn unregister(&self, name: &str) -> bool {
         let taken = {
             let mut entries = lock(&self.entries);
@@ -171,24 +198,30 @@ impl ModRegistry {
                 None => return false,
             }
         };
+        // Bind-then-match: the guard below is dropped before any
+        // re-lock; the `if` body never matches on a live guard.
         let was_enabled = lock(&taken.state).enabled;
         if was_enabled {
+            let name = taken.name.clone();
             let mut inner = lock(&taken.inner);
-            let ((), bad) = guard(&taken.name, "on_disable", || inner.on_disable());
+            let ((), bad) = guard(&name, "on_disable", || inner.on_disable());
             drop(inner);
             if bad {
                 quarantine(&taken);
             } else {
-                lock(&taken.state).enabled = false;
+                let mut s = lock(&taken.state);
+                s.enabled = false;
+                s.desired = false;
             }
         }
         true
     }
 
     /// Owned `(name, enabled, description)` snapshot for the About
-    /// page. State lock only; stale descriptions refresh
-    /// opportunistically (`describe_in` is a pure string match — never
-    /// Unity — and contention serves stale cache).
+    /// page. `enabled` is the desired (UI) state. State lock only;
+    /// stale descriptions refresh opportunistically (`describe_in` is
+    /// a pure string match — never Unity — and contention serves
+    /// stale cache instead of stalling the present thread).
     pub fn describe_all(&self, lang_code: &str) -> Vec<(String, bool, &'static str)> {
         let rev = crate::i18n::lang_rev();
         self.snapshot()
@@ -197,7 +230,7 @@ impl ModRegistry {
                 {
                     let s = lock(&handle.state);
                     if s.rev == rev || s.quarantined {
-                        return (handle.name.clone(), s.enabled, s.cached_desc);
+                        return (handle.name.clone(), s.desired, s.cached_desc);
                     }
                 }
                 if let Some(inner) = try_inner(handle) {
@@ -208,32 +241,35 @@ impl ModRegistry {
                     if bad {
                         s.quarantined = true;
                         s.enabled = false;
+                        s.desired = false;
                     } else {
                         s.cached_desc = desc;
                         s.rev = rev;
                     }
                 }
                 let s = lock(&handle.state);
-                (handle.name.clone(), s.enabled, s.cached_desc)
+                (handle.name.clone(), s.desired, s.cached_desc)
             })
             .collect()
     }
 
-    /// Snapshot of `(name, enabled)` for every registered mod.
+    /// Snapshot of `(name, desired-enabled)` for every registered mod.
     pub fn mod_list(&self) -> Vec<(String, bool)> {
         self.snapshot()
             .iter()
             .map(|e| {
                 let s = lock(&e.state);
-                (e.name.clone(), s.enabled)
+                (e.name.clone(), s.desired)
             })
             .collect()
     }
 
-    /// Owned per-mod tile snapshot for the menu grid. State lock only;
-    /// stale presentation refreshes opportunistically (getters return
-    /// static data — never Unity — and contention serves stale cache
-    /// instead of stalling the present thread).
+    /// Owned per-mod tile snapshot for the menu grid. `enabled` is the
+    /// desired state so the tile reacts on click, before the tick
+    /// applies the transition. State lock only; stale presentation
+    /// refreshes opportunistically (getters return static data — never
+    /// Unity — and contention serves stale cache instead of stalling
+    /// the present thread).
     pub fn tile_info(&self) -> Vec<ModTile> {
         let rev = crate::i18n::lang_rev();
         self.snapshot()
@@ -249,6 +285,7 @@ impl ModRegistry {
                     if bad_pin {
                         s.quarantined = true;
                         s.enabled = false;
+                        s.desired = false;
                     } else {
                         s.cached_pinned = pinned;
                     }
@@ -258,7 +295,7 @@ impl ModRegistry {
                     if s.rev == rev || s.quarantined {
                         return ModTile {
                             name: handle.name.clone(),
-                            enabled: s.enabled,
+                            enabled: s.desired,
                             label_key: s.cached_label,
                             icon: s.cached_icon,
                         };
@@ -268,23 +305,22 @@ impl ModRegistry {
                     let (label, bad_label) =
                         guard(&handle.name, "menu_label_key", || inner.menu_label_key());
                     let (icon, bad_icon) = guard(&handle.name, "menu_icon", || inner.menu_icon());
-                    let (pinned, bad_pin) = guard(&handle.name, "is_pinned", || inner.is_pinned());
                     drop(inner);
                     let mut s = lock(&handle.state);
-                    if bad_label || bad_icon || bad_pin {
+                    if bad_label || bad_icon {
                         s.quarantined = true;
                         s.enabled = false;
+                        s.desired = false;
                     } else {
                         s.cached_label = label;
                         s.cached_icon = icon;
-                        s.cached_pinned = pinned;
                         s.rev = rev;
                     }
                 }
                 let s = lock(&handle.state);
                 ModTile {
                     name: handle.name.clone(),
-                    enabled: s.enabled,
+                    enabled: s.desired,
                     label_key: s.cached_label,
                     icon: s.cached_icon,
                 }
@@ -292,62 +328,87 @@ impl ModRegistry {
             .collect()
     }
 
-    /// Set a mod's on/off state by name. Runs the transition hook
-    /// (`on_enable`/`on_disable`) only on a real transition, guarded.
-    /// Re-enabling clears a quarantine. Returns true if found.
+    /// Record the user's intent only (state lock, instant return).
+    ///
+    /// The transition itself (`on_enable`/`on_disable`) runs on the
+    /// tick thread inside [`update_all`](Self::update_all) — never on
+    /// the calling (UI) thread, and never holding the inner lock here.
+    /// Re-enabling lifts a quarantine. Returns true if found.
     pub fn set_enabled(&self, name: &str, enabled: bool) -> bool {
-        let handle = self.snapshot().into_iter().find(|e| e.name == name);
-        let handle = match handle {
+        let handle = match self.snapshot().into_iter().find(|e| e.name == name) {
             Some(h) => h,
             None => return false,
         };
-        {
-            let mut s = lock(&handle.state);
-            if s.enabled == enabled && !s.quarantined {
-                return true;
-            }
-            s.quarantined = false;
+        let mut s = lock(&handle.state);
+        if s.desired == enabled && (!enabled || !s.quarantined) {
+            // Already in the desired state (enabling a healthy enabled
+            // mod is a no-op).
+            return true;
         }
-        let what = if enabled { "on_enable" } else { "on_disable" };
-        let mut inner = lock(&handle.inner);
-        let ((), bad) = guard(&handle.name, what, || {
-            if enabled {
-                inner.on_enable();
-            } else {
-                inner.on_disable();
-            }
-        });
-        drop(inner);
-        if bad {
-            quarantine(&handle);
-        } else {
-            lock(&handle.state).enabled = enabled;
+        s.desired = enabled;
+        if enabled {
+            s.quarantined = false;
         }
         true
     }
 
-    /// Enable a mod by name (transition hook only on off→on).
+    /// Enable a mod by name (records intent; tick applies the hook).
     pub fn enable(&self, name: &str) -> bool {
         self.set_enabled(name, true)
     }
 
-    /// Disable a mod by name (transition hook only on on→off).
+    /// Disable a mod by name (records intent; tick applies the hook).
     pub fn disable(&self, name: &str) -> bool {
         self.set_enabled(name, false)
     }
 
-    /// Query a mod's on/off state by name.
+    /// Query a mod's desired on/off state by name.
+    #[inline]
     pub fn is_enabled(&self, name: &str) -> Option<bool> {
         self.snapshot()
             .iter()
             .find(|e| e.name == name)
-            .map(|e| lock(&e.state).enabled)
+            .map(|e| lock(&e.state).desired)
     }
 
-    /// Call `on_update` on all enabled mods (tick thread). The inner
-    /// lock alone is held across the hook: a mod stalled inside Unity
-    /// delays only the tick thread, never the present thread.
+    /// Drive every mod (tick thread only).
+    ///
+    /// Pass 1 — pending transitions (`desired != enabled`, skipping
+    /// quarantined): runs `on_enable`/`on_disable` here, where Unity
+    /// calls (e.g. `restore()`) are legal. A disable therefore fully
+    /// executes before `enabled` flips, and an enable runs before the
+    /// first `on_update` of the same tick.
+    /// Pass 2 — `on_update` on applied-enabled, non-quarantined mods.
     pub fn update_all(&self, delta_time: f32) {
+        // Pass 1: transitions.
+        for handle in self.snapshot() {
+            // Bind-then-match: snapshot the decision, drop the guard,
+            // then act — the hook below must never run under the state
+            // lock (the tick itself would self-deadlock on re-lock).
+            let (wants, needs) = {
+                let s = lock(&handle.state);
+                (s.desired, s.desired != s.enabled && !s.quarantined)
+            };
+            if !needs {
+                continue;
+            }
+            let what = if wants { "on_enable" } else { "on_disable" };
+            let mut inner = lock(&handle.inner);
+            let ((), bad) = guard(&handle.name, what, || {
+                if wants {
+                    inner.on_enable();
+                } else {
+                    inner.on_disable();
+                }
+            });
+            drop(inner);
+            if bad {
+                quarantine(&handle);
+            } else {
+                lock(&handle.state).enabled = wants;
+            }
+        }
+        // Pass 2: updates.
         for handle in self.snapshot() {
             {
                 let s = lock(&handle.state);
@@ -368,14 +429,14 @@ impl ModRegistry {
 
     /// Call `on_draw_ui` on enabled mods (render thread).
     ///
-    /// When the menu is closed only pinned mods draw (see
-    /// `Mod::is_pinned`); the menu window itself stays gated by the
-    /// caller.
+    /// Dispatch uses the applied state; the inner lock is taken with
+    /// `try_inner`, so a mod stuck inside Unity skips this frame
+    /// instead of stalling the present thread. When the menu is closed
+    /// only pinned (cached) mods draw; the menu window itself stays
+    /// gated by the caller.
     pub fn draw_ui_all(&self, ctx: &egui::Context, menu_open: bool) {
         for handle in self.snapshot() {
-            // State checks first (microsecond lock). The inner lock is
-            // taken with try_inner: a mod stuck inside Unity must skip
-            // this frame, never stall the present thread.
+            // State checks first (microsecond lock).
             let pinned = {
                 let s = lock(&handle.state);
                 if !s.enabled || s.quarantined {
@@ -400,8 +461,8 @@ impl ModRegistry {
         }
     }
 
-    /// Whether any enabled mod is currently pinned (state only — safe
-    /// at present rate even mid-stall).
+    /// Whether any applied-enabled mod is currently pinned (state only —
+    /// safe at present rate even mid-stall).
     pub fn has_pinned_visible(&self) -> bool {
         self.snapshot().into_iter().any(|handle| {
             let s = lock(&handle.state);
@@ -419,13 +480,15 @@ impl ModRegistry {
         lock(&self.entries).len()
     }
 
-    /// Number of currently enabled mods.
+    /// Number of mods the user wants on (desired state, UI intent).
+    /// The overlay uses this for repaint invalidation, so a tile click
+    /// refreshes the UI before the tick applies the transition.
     pub fn enabled_count(&self) -> usize {
         lock(&self.entries)
             .iter()
             .filter(|e| {
                 let s = lock(&e.state);
-                s.enabled && !s.quarantined
+                s.desired && !s.quarantined
             })
             .count()
     }
@@ -441,6 +504,8 @@ impl Default for ModRegistry {
 mod tests {
     use super::super::api::Mod;
     use super::ModRegistry;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
 
     struct DummyMod {
         panic_on_update: bool,
@@ -455,6 +520,74 @@ mod tests {
             if self.panic_on_update {
                 panic!("boom");
             }
+        }
+    }
+
+    /// Test mod with observable hook calls (per-test Arcs: no shared
+    /// statics, tests stay parallel-safe).
+    struct CountingMod {
+        enables: Arc<AtomicUsize>,
+        disables: Arc<AtomicUsize>,
+        updates: Arc<AtomicUsize>,
+        order: Arc<Mutex<Vec<&'static str>>>,
+        panic_on_disable: Arc<AtomicBool>,
+    }
+
+    // `AtomicUsize` lives one import up; alias locally for brevity.
+    use std::sync::atomic::AtomicUsize;
+
+    impl CountingMod {
+        fn new() -> (
+            Self,
+            Arc<AtomicUsize>,
+            Arc<AtomicUsize>,
+            Arc<AtomicUsize>,
+            Arc<Mutex<Vec<&'static str>>>,
+            Arc<AtomicBool>,
+        ) {
+            let enables = Arc::new(AtomicUsize::new(0));
+            let disables = Arc::new(AtomicUsize::new(0));
+            let updates = Arc::new(AtomicUsize::new(0));
+            let order = Arc::new(Mutex::new(Vec::new()));
+            let panic_on_disable = Arc::new(AtomicBool::new(false));
+            (
+                Self {
+                    enables: enables.clone(),
+                    disables: disables.clone(),
+                    updates: updates.clone(),
+                    order: order.clone(),
+                    panic_on_disable: panic_on_disable.clone(),
+                },
+                enables,
+                disables,
+                updates,
+                order,
+                panic_on_disable,
+            )
+        }
+    }
+
+    impl Mod for CountingMod {
+        fn name(&self) -> &'static str {
+            "Counter"
+        }
+
+        fn on_update(&mut self, _dt: f32) {
+            self.updates.fetch_add(1, Ordering::SeqCst);
+            self.order.lock().unwrap().push("update");
+        }
+
+        fn on_enable(&mut self) {
+            self.enables.fetch_add(1, Ordering::SeqCst);
+            self.order.lock().unwrap().push("enable");
+        }
+
+        fn on_disable(&mut self) {
+            if self.panic_on_disable.load(Ordering::SeqCst) {
+                panic!("boom-disable");
+            }
+            self.disables.fetch_add(1, Ordering::SeqCst);
+            self.order.lock().unwrap().push("disable");
         }
     }
 
@@ -510,5 +643,89 @@ mod tests {
         }));
         assert_eq!(reg.mod_list().len(), 1);
         assert!(!reg.has_pinned_visible());
+    }
+
+    /// `set_enabled` records intent only: no hook runs synchronously,
+    /// but the tile already shows the desired state.
+    #[test]
+    fn set_enabled_is_deferred() {
+        let reg = ModRegistry::new();
+        let (m, enables, disables, updates, _order, _panic) = CountingMod::new();
+        reg.register(Box::new(m));
+        assert!(reg.set_enabled("Counter", true));
+        assert_eq!(enables.load(Ordering::SeqCst), 0);
+        assert_eq!(disables.load(Ordering::SeqCst), 0);
+        assert_eq!(updates.load(Ordering::SeqCst), 0);
+        assert!(reg.tile_info()[0].enabled);
+        reg.update_all(0.016);
+        assert_eq!(enables.load(Ordering::SeqCst), 1);
+    }
+
+    /// One tick runs the pending transition before the first update.
+    #[test]
+    fn transition_runs_before_update() {
+        let reg = ModRegistry::new();
+        let (m, enables, _disables, updates, order, _panic) = CountingMod::new();
+        reg.register(Box::new(m));
+        reg.set_enabled("Counter", true);
+        reg.update_all(0.016);
+        assert_eq!(enables.load(Ordering::SeqCst), 1);
+        assert_eq!(updates.load(Ordering::SeqCst), 1);
+        assert_eq!(*order.lock().unwrap(), vec!["enable", "update"]);
+    }
+
+    /// Disable executes `on_disable` before applied state flips: no
+    /// further `on_update` runs afterwards.
+    #[test]
+    fn disable_runs_before_applied_clears() {
+        let reg = ModRegistry::new();
+        let (m, _enables, disables, updates, order, _panic) = CountingMod::new();
+        reg.register(Box::new(m));
+        reg.set_enabled("Counter", true);
+        reg.update_all(0.016);
+        assert_eq!(updates.load(Ordering::SeqCst), 1);
+        reg.set_enabled("Counter", false);
+        reg.update_all(0.016);
+        assert_eq!(disables.load(Ordering::SeqCst), 1);
+        assert_eq!(updates.load(Ordering::SeqCst), 1);
+        reg.update_all(0.016);
+        assert_eq!(updates.load(Ordering::SeqCst), 1);
+        assert_eq!(*order.lock().unwrap(), vec!["enable", "update", "disable"]);
+    }
+
+    /// A panic in `on_disable` during the transition quarantines the mod.
+    #[test]
+    fn panic_in_disable_quarantines() {
+        let reg = ModRegistry::new();
+        let (m, _enables, disables, _updates, _order, panic_flag) = CountingMod::new();
+        reg.register(Box::new(m));
+        reg.set_enabled("Counter", true);
+        reg.update_all(0.016);
+        panic_flag.store(true, Ordering::SeqCst);
+        reg.set_enabled("Counter", false);
+        reg.update_all(0.016);
+        assert_eq!(reg.enabled_count(), 0);
+        assert_eq!(reg.mod_count(), 1);
+        assert_eq!(disables.load(Ordering::SeqCst), 0);
+    }
+
+    /// Re-enabling a quarantined mod lifts the quarantine; hooks run again.
+    #[test]
+    fn reenable_clears_quarantine() {
+        let reg = ModRegistry::new();
+        let (m, enables, _disables, updates, _order, panic_flag) = CountingMod::new();
+        reg.register(Box::new(m));
+        reg.set_enabled("Counter", true);
+        reg.update_all(0.016);
+        panic_flag.store(true, Ordering::SeqCst);
+        reg.set_enabled("Counter", false);
+        reg.update_all(0.016);
+        assert_eq!(reg.enabled_count(), 0);
+        panic_flag.store(false, Ordering::SeqCst);
+        assert!(reg.set_enabled("Counter", true));
+        reg.update_all(0.016);
+        assert_eq!(enables.load(Ordering::SeqCst), 2);
+        assert_eq!(updates.load(Ordering::SeqCst), 2);
+        assert_eq!(reg.enabled_count(), 1);
     }
 }
