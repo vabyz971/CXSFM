@@ -56,7 +56,12 @@ struct SwapchainState {
     views: Vec<vk::ImageView>,
     framebuffers: Vec<vk::Framebuffer>,
     pool: vk::CommandPool,
-    cmd: vk::CommandBuffer,
+    /// One command buffer PER swapchain image. A recording embeds its
+    /// target framebuffer/image, so replaying buffer N on image M
+    /// draws the UI onto the wrong present (flicker: the UI only
+    /// survived presents that reused the recorded image). Replay
+    /// always submits `cmd[image_index]`.
+    cmd: Vec<vk::CommandBuffer>,
     fence: vk::Fence,
     signal: vk::Semaphore,
     extent: vk::Extent2D,
@@ -76,10 +81,12 @@ struct SwapchainState {
     /// of re-running; the last recorded command buffer is REPLAYED
     /// every present regardless — see below).
     next_repaint: Option<std::time::Instant>,
-    /// A command buffer with UI already recorded (replayable without
-    /// re-running egui). False until the first non-empty draw and
-    /// after any invalidation (UI vanished).
-    recorded: bool,
+    /// Per-image recording state (parallel to `cmd`): a command buffer
+    /// with UI already recorded (replayable without re-running egui).
+    /// False until the first non-empty draw and after any
+    /// invalidation (UI vanished or changed — other images re-record
+    /// on their next present, converging within one swapchain cycle).
+    recorded: Vec<bool>,
 }
 
 /// Global overlay state: swapchain handle -> renderer state, plus the
@@ -401,15 +408,16 @@ fn create_state(
             p_next: std::ptr::null(),
             command_pool: pool,
             level: vk::CommandBufferLevel::PRIMARY,
-            command_buffer_count: 1,
+            command_buffer_count: info.images.len() as u32,
             ..Default::default()
         };
         let cmd = device
             .allocate_command_buffers(&alloc_info)
-            .map_err(|_| ())?
-            .into_iter()
-            .next()
-            .ok_or(())?;
+            .map_err(|_| ())?;
+        if cmd.len() != info.images.len() {
+            return Err(());
+        }
+        let recorded = vec![false; info.images.len()];
         let fence_info = vk::FenceCreateInfo {
             s_type: vk::StructureType::FENCE_CREATE_INFO,
             p_next: std::ptr::null(),
@@ -455,7 +463,7 @@ fn create_state(
             last_set: std::collections::HashMap::new(),
             frame: 0,
             next_repaint: None,
-            recorded: false,
+            recorded,
         })
     }
 }
@@ -624,7 +632,20 @@ pub fn draw_frame(
             Some(next) => std::time::Instant::now() >= next,
             None => true,
         };
-        let dirty = !events.is_empty() || repaint_due || !st.recorded || enabled_changed;
+        // Per-image dirty: an image replays only its OWN recording.
+        let idx = image_index as usize;
+        let img_recorded = st.recorded.get(idx).copied().unwrap_or(false);
+        let content_changed = !events.is_empty() || repaint_due || enabled_changed;
+        let dirty = content_changed || !img_recorded;
+        // A real content change invalidates EVERY image (their
+        // recordings hold the old UI); each re-records on its next
+        // present, converging within one swapchain cycle. A merely
+        // unrecorded image re-records alone.
+        if dirty && content_changed {
+            for r in st.recorded.iter_mut() {
+                *r = false;
+            }
+        }
         // Run egui only when dirty; replayed frames reuse everything.
         let ui = if dirty {
             let ui = run_ui(&st.ctx, st.extent, events);
@@ -696,7 +717,9 @@ pub fn draw_frame(
         let fresh: Option<UiOutput> = ui;
         match &fresh {
             Some(u) if u.primitives.is_empty() && u.set.is_empty() => {
-                st.recorded = false;
+                for r in st.recorded.iter_mut() {
+                    *r = false;
+                }
                 return Err(());
             }
             _ => {}
@@ -741,15 +764,16 @@ pub fn draw_frame(
         // Replay keeps every present showing the UI (skipping the
         // submit would flicker: the game redraws its image each
         // frame) at near-zero CPU cost (no egui run, no tessellation).
-        let fb = *st.framebuffers.get(image_index as usize).ok_or(())?;
-        let img_raw = *st.images.get(image_index as usize).ok_or(())?;
+        let fb = *st.framebuffers.get(idx).ok_or(())?;
+        let img_raw = *st.images.get(idx).ok_or(())?;
         let img = vk::Image::from_raw(img_raw as u64);
+        let cmd = *st.cmd.get(idx).ok_or(())?;
         if let Some(u) = fresh.as_ref() {
         // 4. Record: barrier into COLOR_ATTACHMENT, render pass with
         // loadOp=LOAD (game image preserved), UI draws, barrier back
         // to PRESENT_SRC for the real present.
         st.device
-            .reset_command_buffer(st.cmd, vk::CommandBufferResetFlags::empty())
+            .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
             .map_err(|_| ())?;
         // Record path ONLY (replay re-submits the cached buffer
         // untouched). No ONE_TIME_SUBMIT: that flag promises a single
@@ -764,7 +788,7 @@ pub fn draw_frame(
             ..Default::default()
         };
         st.device
-            .begin_command_buffer(st.cmd, &begin_info)
+             .begin_command_buffer(cmd, &begin_info)
             .map_err(|_| ())?;
         let subresource = vk::ImageSubresourceRange {
             aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -788,7 +812,7 @@ pub fn draw_frame(
             ..Default::default()
         };
         st.device.cmd_pipeline_barrier(
-            st.cmd,
+            cmd,
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             vk::DependencyFlags::empty(),
@@ -810,14 +834,14 @@ pub fn draw_frame(
             ..Default::default()
         };
         st.device.cmd_begin_render_pass(
-            st.cmd,
+            cmd,
             &rp_begin,
             vk::SubpassContents::INLINE,
         );
         st.renderer
-            .cmd_draw(st.cmd, st.extent, u.pixels_per_point, &u.primitives)
+            .cmd_draw(cmd, st.extent, u.pixels_per_point, &u.primitives)
             .map_err(|_| ())?;
-        st.device.cmd_end_render_pass(st.cmd);
+        st.device.cmd_end_render_pass(cmd);
         let to_present = vk::ImageMemoryBarrier {
             s_type: vk::StructureType::IMAGE_MEMORY_BARRIER,
             p_next: std::ptr::null(),
@@ -832,7 +856,7 @@ pub fn draw_frame(
             ..Default::default()
         };
         st.device.cmd_pipeline_barrier(
-            st.cmd,
+            cmd,
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             vk::PipelineStageFlags::BOTTOM_OF_PIPE,
             vk::DependencyFlags::empty(),
@@ -840,7 +864,7 @@ pub fn draw_frame(
             &[],
             &[to_present],
         );
-        st.device.end_command_buffer(st.cmd).map_err(|_| ())?;
+        st.device.end_command_buffer(cmd).map_err(|_| ())?;
         } // end `if let Some(u)` — replay path skips recording entirely.
         // 5. Submit (freshly recorded or replayed) waiting on the
         // present's own semaphores (covers the game's prior work,
@@ -859,7 +883,7 @@ pub fn draw_frame(
             p_wait_semaphores: wait_sems.as_ptr(),
             p_wait_dst_stage_mask: wait_stages.as_ptr(),
             command_buffer_count: 1,
-            p_command_buffers: &st.cmd,
+            p_command_buffers: &cmd,
             signal_semaphore_count: 1,
             p_signal_semaphores: &st.signal,
             ..Default::default()
@@ -868,7 +892,7 @@ pub fn draw_frame(
             .queue_submit(q, &[submit], st.fence)
             .map_err(|_| ())?;
         if let Some(u) = fresh {
-            st.recorded = true;
+            st.recorded[idx] = true;
             st.pending_frees = u.free.into_iter().map(|id| (id, frame)).collect();
         }
         Ok(st.signal.as_raw() as usize)

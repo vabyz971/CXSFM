@@ -76,6 +76,12 @@ pub type StringLengthFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
 pub type StringCharsFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> *mut u16;
 /// `void* il2cpp_string_new(const char* str)` (UTF-8 in, managed string out)
 pub type StringNewFn = unsafe extern "C" fn(*const libc::c_char) -> *mut std::ffi::c_void;
+/// `void* il2cpp_resolve_icall(const char* name)` (raw icall pointer out)
+///
+/// Used for `extern` Unity getters with no managed `MethodInfo`, e.g.
+/// `UnityEngine.Application::get_systemLanguage` (returns the
+/// `SystemLanguage` int directly — no invoke/unbox needed).
+pub type ResolveIcallFn = unsafe extern "C" fn(*const libc::c_char) -> *mut std::ffi::c_void;
 
 /// Failure modes of IL2CPP resolution and probing.
 #[derive(Debug)]
@@ -150,6 +156,8 @@ pub struct Il2cppApi {
     pub string_chars: Option<StringCharsFn>,
     /// `il2cpp_string_new` — best effort.
     pub string_new: Option<StringNewFn>,
+    /// `il2cpp_resolve_icall` — best effort.
+    pub resolve_icall: Option<ResolveIcallFn>,
 }
 
 impl Il2cppApi {
@@ -433,6 +441,7 @@ pub fn resolve() -> Result<Il2cppApi, Il2cppError> {
     let string_length: Option<StringLengthFn> = sym_opt!("il2cpp_string_length", StringLengthFn);
     let string_chars: Option<StringCharsFn> = sym_opt!("il2cpp_string_chars", StringCharsFn);
     let string_new: Option<StringNewFn> = sym_opt!("il2cpp_string_new", StringNewFn);
+    let resolve_icall: Option<ResolveIcallFn> = sym_opt!("il2cpp_resolve_icall", ResolveIcallFn);
 
     Ok(Il2cppApi {
         domain_get,
@@ -453,6 +462,7 @@ pub fn resolve() -> Result<Il2cppApi, Il2cppError> {
         string_length,
         string_chars,
         string_new,
+        resolve_icall,
     })
 }
 

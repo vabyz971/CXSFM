@@ -60,6 +60,8 @@ pub mod il2cpp;
 pub mod hotkey;
 pub mod render;
 pub mod unity;
+pub mod i18n;
+pub mod menu;
 /// Implicit Vulkan layer (Linux): loader-driven present routing.
 /// Only exists where Vulkan does; see `layer.rs`.
 #[cfg(target_os = "linux")]
@@ -175,6 +177,11 @@ fn deferred_init() {
                             // Publish for mods; silently keeps the old
                             // value if somehow already set (never happens).
                             let _ = IL2CPP.set(api);
+                            // Game language for the menu (icall; logs raw
+                            // value so the SystemLanguage mapping stays
+                            // verifiable). Thread is attached already.
+                            let lang = unity::system_language_raw(IL2CPP.get().unwrap());
+                            i18n::note_detected(lang);
                         }
                         Err(e) => log_line(&format!(
                             "il2cpp: scripting domain not up yet: {} (mods still registered)",

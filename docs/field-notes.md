@@ -317,6 +317,57 @@ Diagnostic line (zero keypresses needed):
 
 ## Code review pass (2026-10-07, user-reported fan noise + missing text)
 
+## Kino-style menu + i18n auto-detect (2026-10-07)
+
+## Flicker, second root cause: single buffer replayed on all images (2026-10-07)
+
+- The replay submitted ONE command buffer for every present — but a
+  recording embeds its target framebuffer/image. Presents cycling to
+  another image drew the UI onto the wrong image: UI visible only on
+  presents reusing the recorded index (~1/N frames = flicker).
+- Fix: one command buffer + one recorded flag PER swapchain image;
+  replay submits `cmd[image_index]`; content changes invalidate all
+  images (each re-records on its next present, converging in one
+  cycle). Single fence still serializes every submit.
+- Menu polish same day: square corners everywhere (active stroke uses
+  the same rect as the fill — identical corners), tiles 125x110
+  (-2%), tile labels 18pt + footer 16pt + pages 18/15pt (labels wrap
+  two lines), custom topbar drag (title_bar(false) kills the built-in
+  one: drag strip + WIN_POS/WIN_RECT + Window::current_pos).
+- Regression pass (flicker gone, French auto-detect confirmed on the
+  screenshot): Grid justified columns across the whole window width
+  (egui Grid takes all available width — hence the gaps) AND the long
+  footer line stretched the window. Replaced with `horizontal_wrapped`
+  flow (tiles butt together, reflow on resize — the responsive pattern
+  from egui's own layouts); window is now resizable with a 3-column
+  default size. Label widgets default to hover sense BUT
+  `selectable_labels` (on by default) upgrades them to click-and-drag:
+  that ate tile clicks and started selections — menu style now sets
+  `selectable_labels = false` plus explicit hover-sense labels.
+  Header strip is the full visible 44px bar (whole topbar drags).
+  Tile label zone resized for two 18pt lines.
+
+- YES, the game language is readable: no PlayerPrefs key exists, but
+  Unity logs `System Language: xx` at startup — it comes from
+  `Application.systemLanguage`. Read live via
+  `il2cpp_resolve_icall("UnityEngine.Application::get_systemLanguage")`
+  (new 14th bridge symbol; raw icall, no invoke/unbox). Values follow
+  the engine enum (En=10, Fr=14, De=15, It=20, Pt=27, Ru=29, Es=33).
+- Chain: game → `LANG`/`LC_ALL` → English; Settings tile pins a
+  language (override). Raw value is logged (`i18n: game language
+  raw=…`) so the mapping stays verifiable.
+- Caveat: this machine is `LANG=fr_FR` yet the game logged
+  `System Language: en` (Steam runtime locale?) — expect English
+  auto-detect here, pin Français in Settings.
+- Menu: single window (header version/title/HELP, 3-col tile grid,
+  red lock footer with wrapping text), vector Painter icons per mod
+  (no font/asset dependency), active tile = green accent border.
+- Per-mod windows removed (tile IS the control); status detail stays
+  in the log. `Mod` gains `menu_label_key`/`menu_icon` (defaults keep
+  third-party mods working); manager snapshots tiles lock-free.
+- 7 languages, English fallback per key (partial translations never
+  blank the UI).
+
 ## Full overlay victory (2026-10-07, screenshot: docs/overlay-proof.png)
 
 - Text + flicker fixed together: `default_fonts` (glyphs exist) and

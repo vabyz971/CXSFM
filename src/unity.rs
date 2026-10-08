@@ -510,3 +510,28 @@ pub unsafe fn beh_set_enabled(
     // Void callee: `invoke_void`, never `invoke` (see its docs).
     unsafe { il2cpp::invoke_void(api, cache.m_beh_set_enabled, component, &params) }
 }
+
+/// Raw `Application.systemLanguage` value (`SystemLanguage` int), or `None`.
+///
+/// Resolves the icall `UnityEngine.Application::get_systemLanguage` and
+/// calls it directly — the getter is `extern`, so there is no managed
+/// `MethodInfo` to invoke and no boxing/unboxing involved. Values follow
+/// the Unity `SystemLanguage` order (English=10, French=14, German=15,
+/// Spanish=33, Russian=29, …); the caller maps them (see `i18n`).
+/// `None` when the export or the icall is missing.
+///
+/// # Safety
+/// Same contract as `il2cpp::find_class`; call from an attached thread.
+pub unsafe fn system_language_raw(api: &Il2cppApi) -> Option<i32> {
+    let resolve = api.resolve_icall?;
+    let name = std::ffi::CString::new("UnityEngine.Application::get_systemLanguage").ok()?;
+    // SAFETY: validated export; icall getters take no arguments.
+    let ptr = unsafe { resolve(name.as_ptr()) };
+    if ptr.is_null() {
+        return None;
+    }
+    type GetSystemLanguageFn = unsafe extern "C" fn() -> i32;
+    let get: GetSystemLanguageFn = unsafe { std::mem::transmute(ptr) };
+    // SAFETY: signature matches the engine icall (returns the enum int).
+    Some(unsafe { get() })
+}

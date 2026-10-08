@@ -18,7 +18,6 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
-use egui;
 use crate::mod_api::Mod;
 use crate::unity::UnityCache;
 
@@ -196,6 +195,14 @@ impl Mod for HudScoutMod {
         "HUD Scout"
     }
 
+    fn menu_label_key(&self) -> &'static str {
+        "mod_scout"
+    }
+
+    fn menu_icon(&self) -> crate::menu::TileIcon {
+        crate::menu::TileIcon::Scout
+    }
+
     fn on_update(&mut self, _delta_time: f32) {
         if !self.is_enabled() || self.done.load(Ordering::SeqCst) {
             return;
@@ -207,23 +214,8 @@ impl Mod for HudScoutMod {
         self.scout_once();
     }
 
-    fn on_draw_ui(&mut self, ctx: &egui::Context) {
-        if !self.is_enabled() {
-            return;
-        }
-        egui::Window::new("HUD Scout")
-            .default_pos(egui::pos2(0.0, 220.0))
-            .resizable(false)
-            .show(ctx, |ui| {
-                ui.heading("HUD Scout");
-                ui.label("Read-only UI inventory (see log). Zero writes.");
-                if self.done.load(Ordering::SeqCst) {
-                    ui.label("Status: complete, mod idle.");
-                } else {
-                    ui.label("Status: waiting for Unity scripting…");
-                }
-            });
-    }
+    // No `on_draw_ui`: the menu tile is the whole UI (single window).
+    // Status detail lives in the log; the tile accent shows on/off.
 
     fn on_enable(&mut self) {
         self.enabled.store(true, Ordering::SeqCst);
@@ -522,6 +514,14 @@ impl Mod for HudHideMod {
         "HUD Hide"
     }
 
+    fn menu_label_key(&self) -> &'static str {
+        "mod_hide"
+    }
+
+    fn menu_icon(&self) -> crate::menu::TileIcon {
+        crate::menu::TileIcon::EyeOff
+    }
+
     fn on_update(&mut self, _delta_time: f32) {
         if !self.is_enabled() {
             return;
@@ -546,24 +546,7 @@ impl Mod for HudHideMod {
         self.maintain();
     }
 
-    fn on_draw_ui(&mut self, ctx: &egui::Context) {
-        if !self.is_enabled() {
-            return;
-        }
-        let state = if self.target.lock().unwrap().is_some() {
-            "Status: label hidden."
-        } else {
-            "Status: target not in this scene."
-        };
-        egui::Window::new("HUD Hide")
-            .default_pos(egui::pos2(0.0, 260.0))
-            .resizable(false)
-            .show(ctx, |ui| {
-                ui.heading("HUD Hide");
-                ui.label(format!("Target: {HIDE_TARGET_NAME}"));
-                ui.label(state);
-            });
-    }
+    // No `on_draw_ui`: see HudScoutMod (menu tile only).
 
     fn on_enable(&mut self) {
         self.enabled.store(true, Ordering::SeqCst);
@@ -845,6 +828,14 @@ impl Mod for HudVersionMod {
         "HUD Version Tag"
     }
 
+    fn menu_label_key(&self) -> &'static str {
+        "mod_version"
+    }
+
+    fn menu_icon(&self) -> crate::menu::TileIcon {
+        crate::menu::TileIcon::Tag
+    }
+
     fn on_update(&mut self, _delta_time: f32) {
         if !self.is_enabled() {
             return;
@@ -866,24 +857,7 @@ impl Mod for HudVersionMod {
         self.maintain();
     }
 
-    fn on_draw_ui(&mut self, ctx: &egui::Context) {
-        if !self.is_enabled() {
-            return;
-        }
-        let state = if self.target.lock().unwrap().is_some() {
-            "Status: tag live."
-        } else {
-            "Status: target not in this scene."
-        };
-        egui::Window::new("HUD Version Tag")
-            .default_pos(egui::pos2(0.0, 300.0))
-            .resizable(false)
-            .show(ctx, |ui| {
-                ui.heading("HUD Version Tag");
-                ui.label(format!("Target: {VERSION_TARGET_NAME}"));
-                ui.label(state);
-            });
-    }
+    // No `on_draw_ui`: see HudScoutMod (menu tile only).
 
     fn on_enable(&mut self) {
         self.enabled.store(true, Ordering::SeqCst);

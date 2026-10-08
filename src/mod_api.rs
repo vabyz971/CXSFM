@@ -9,6 +9,8 @@ use std::sync::{LazyLock, Mutex};
 use std::time::SystemTime;
 use egui;
 
+use crate::menu::TileIcon;
+
 /// Core trait that all mods must implement
 ///
 /// Implementors of this trait receive callbacks for game update ticks and UI rendering.
@@ -95,6 +97,21 @@ pub trait Mod: Send + Sync {
     fn on_disable(&mut self) {
         // Default implementation does nothing
     }
+
+    /// i18n key for the mod's menu tile label (see `crate::i18n`).
+    ///
+    /// Defaults to the technical `name()`; mods should return a
+    /// `mod_*` key so the tile follows the menu language.
+    #[inline]
+    fn menu_label_key(&self) -> &'static str {
+        self.name()
+    }
+
+    /// Vector icon drawn on the mod's menu tile.
+    #[inline]
+    fn menu_icon(&self) -> TileIcon {
+        TileIcon::Info
+    }
 }
 
 /// One registered plugin plus its on/off state.
@@ -108,7 +125,19 @@ struct ModEntry {
     enabled: bool,
 }
 
-/// Manages the collection of registered mods and their lifecycle
+/// One menu tile's worth of mod state (owned snapshot, no lock held).
+pub struct ModTile {
+    /// Technical name (for `enable_mod` / `disable_mod`).
+    pub name: String,
+    /// Current on/off state.
+    pub enabled: bool,
+    /// i18n key for the tile label.
+    pub label_key: &'static str,
+    /// Vector icon for the tile.
+    pub icon: TileIcon,
+}
+
+/// Manages the collection of registered mods and their lifecycle.
 ///
 /// The ModManager is responsible for:
 /// - Registering new mods
@@ -179,13 +208,47 @@ impl ModManager {
     ///
     /// Returns owned data (no lock held) so status UIs and external
     /// tooling can read it without borrow issues.
-    pub fn mod_list(&self) -> Vec<(String, bool)> {
-        self.mods
+    pub fn mod_list(&self) -> Vec<(String, bool)> {        self.mods
             .lock()
             .unwrap()
             .iter()
             .map(|entry| (entry.inner.name().to_string(), entry.enabled))
             .collect()
+    }
+
+    /// Owned per-mod tile snapshot for the menu grid.
+    ///
+    /// Binds the lock, copies everything the menu needs (name, state,
+    /// label key, icon), then releases — the menu draws lock-free.
+    pub fn tile_info(&self) -> Vec<ModTile> {
+        self.mods
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|entry| ModTile {
+                name: entry.inner.name().to_string(),
+                enabled: entry.enabled,
+                label_key: entry.inner.menu_label_key(),
+                icon: entry.inner.menu_icon(),
+            })
+            .collect()
+    }
+
+    /// Set a mod's on/off state by name (menu tile toggle path).
+    ///
+    /// Runs `on_enable` / `on_disable` only on a real transition.
+    /// Returns true when a mod with that name exists.
+    pub fn set_mod_enabled(&self, name: &str, enabled: bool) -> bool {
+        if enabled {
+            self.enable_mod(name)
+        } else {
+            self.disable_mod(name)
+        }
+    }
+
+    /// Seconds since the manager was created (About page).
+    pub fn uptime_secs(&self) -> u64 {
+        self.loaded_at.elapsed().map(|d| d.as_secs()).unwrap_or(0)
     }
 
     /// Call the update method on all *enabled* mods
@@ -253,80 +316,21 @@ impl ModManager {
         }
     }
 
-    /// Framework status window: proves the framework loaded correctly.
+    /// Framework status window: folded into the menu's About page.
     ///
-    /// Shows version, platform, init state, uptime and mod counts, plus
-    /// the path of the log file. Render this from the game's render hook;
-    /// until the graphics hook exists it is exercised headless at startup
-    /// (see `headless_ui_check` in `lib.rs`).
-    pub fn draw_status_ui(&self, ctx: &egui::Context) {
-        // Framework-level visibility toggle (O by default, see `hotkey`).
-        if !crate::hotkey::ui_visible() {
-            return;
-        }
-        let uptime = self
-            .loaded_at
-            .elapsed()
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let total = self.mod_count();
-        let enabled = self.enabled_count();
-
-        egui::Window::new("CXSFM — Framework Status")
-            .collapsible(true)
-            .resizable(false)
-            .show(ctx, |ui| {
-                ui.label(format!("Version: {}", env!("CARGO_PKG_VERSION")));
-                ui.label(format!("Platform: {}", std::env::consts::OS));
-                ui.label(format!(
-                    "Initialized: {}",
-                    if crate::is_initialized() { "yes" } else { "no" }
-                ));
-                ui.label(format!("Uptime: {} s", uptime));
-                ui.label(format!("Mods: {} enabled / {} total", enabled, total));
-                ui.label(format!("Log file: {}", crate::log_path().display()));
-            });
+    /// Kept for API compatibility; the single menu window (`draw_menu_ui`
+    /// via `draw_manager_ui`) now carries version, uptime and log path.
+    pub fn draw_status_ui(&self, _ctx: &egui::Context) {
+        // Intentionally empty: see `crate::menu::page_about`.
     }
 
-    /// Mod manager window: checkbox list to enable/disable mods live.
+    /// Mod menu window: Kino-style tile grid (see `crate::menu`).
     ///
-    /// Toggling a checkbox immediately calls the mod's `on_enable` /
+    /// Toggling a tile immediately calls the mod's `on_enable` /
     /// `on_disable` hook and flips its state, so `update_all` /
     /// `draw_ui_all` pick it up on the next tick.
     pub fn draw_manager_ui(&self, ctx: &egui::Context) {
-        // Framework-level visibility toggle (O by default, see `hotkey`).
-        if !crate::hotkey::ui_visible() {
-            return;
-        }
-        let mut mods = self.mods.lock().unwrap();
-
-        egui::Window::new("CXSFM — Mods")
-            .collapsible(true)
-            .resizable(true)
-            .show(ctx, |ui| {
-                ui.heading("Loaded modules");
-                ui.separator();
-
-                if mods.is_empty() {
-                    ui.label("No mods registered.");
-                }
-
-                for entry in mods.iter_mut() {
-                    // `name()` returns &'static str: no borrow conflict
-                    // with the mutable entries iterator.
-                    let mut on = entry.enabled;
-                    if ui.checkbox(&mut on, entry.inner.name()).changed()
-                        && on != entry.enabled
-                    {
-                        if on {
-                            entry.inner.on_enable();
-                        } else {
-                            entry.inner.on_disable();
-                        }
-                        entry.enabled = on;
-                    }
-                }
-            });
+        crate::menu::draw_menu_ui(ctx);
     }
 
     /// Check if the manager has been initialized
