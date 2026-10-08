@@ -161,3 +161,35 @@ The `Mod` trait requires `Send + Sync` to allow concurrent access from multiple 
 | Shared Library       | .dll    | .so   | .dylib|
 
 ✅ = Full support | ⚠️ = Limited / requires entitlements | ❌ = Not supported
+
+## Refactor: isolated mods, split i18n/UI (2026-10)
+
+A mod is one folder under `src/mods/`, compiled into the framework
+`.so` (no external files). See `docs/plugin-guide.md`.
+
+```
+mods/
+  api.rs        Mod trait + ModTile + TileIcon (only surface a mod touches)
+  loader.rs     isolated registry: catch_unwind per hook, quarantine +
+                auto-disable on panic, lock never held across mod code,
+                unregister disables first, poison recovered
+  common.rs     shared cadences (1 Hz verify / 0.2 Hz search) + preview()
+  hud_scout/    example: read-only HUD text inventory (mod.rs + i18n.rs)
+  hud_hide/     example: hide one element, restore on disable
+  hud_text/     example: replace (or blank) one text, restore on disable
+  fpv_camera.rs parked (render-hook future)
+mod_api.rs      façade: ModManager delegates to the loader (paths stable)
+i18n/           mod.rs (detection + dispatch) + one file per language;
+                mod tile keys (mod_scout/…) delegate to each mod's own
+                i18n module — framework files never change for a mod
+ui/             theme.rs (palette, 399px, 12px gaps, 10px rounding)
+                tiles.rs (draw_icon + tile_at)
+                chrome.rs (drag-anywhere, header, footer, nav buttons)
+                pages.rs (main / settings / about, About lists mod
+                descriptions via loader.describe_all)
+menu.rs         Page state + window orchestration only
+```
+
+Rules: capture originals before writing, read-back after, restore on
+disable; Unity objects as re-resolved `usize` handles; UI width
+locked, labels wrapped and hover-only.

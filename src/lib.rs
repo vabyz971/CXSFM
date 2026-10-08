@@ -62,6 +62,7 @@ pub mod render;
 pub mod unity;
 pub mod i18n;
 pub mod menu;
+pub mod ui;
 /// Implicit Vulkan layer (Linux): loader-driven present routing.
 /// Only exists where Vulkan does; see `layer.rs`.
 #[cfg(target_os = "linux")]
@@ -207,9 +208,9 @@ fn deferred_init() {
         // NOTE: FPV is NOT registered (user-deactivated while HUD work
         // goes on). The parked module stays compiled in `mods::fpv_camera`
         // for the render-hook future.
-        mods::hud::register_hud_scout();
-        mods::hud::register_hud_hide();
-        mods::hud::register_hud_version();
+        mods::hud_scout::register();
+        mods::hud_hide::register();
+        mods::hud_text::register();
         log_line("mods registered, starting tick thread");
         spawn_tick_thread();
         headless_ui_check();
