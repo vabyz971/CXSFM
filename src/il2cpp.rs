@@ -82,6 +82,27 @@ pub type StringNewFn = unsafe extern "C" fn(*const libc::c_char) -> *mut std::ff
 /// `UnityEngine.Application::get_systemLanguage` (returns the
 /// `SystemLanguage` int directly — no invoke/unbox needed).
 pub type ResolveIcallFn = unsafe extern "C" fn(*const libc::c_char) -> *mut std::ffi::c_void;
+/// `void* il2cpp_class_get_field_from_name(void* klass, const char* name)`
+/// (instance/static field lookup — null when absent)
+pub type ClassGetFieldFromNameFn = unsafe extern "C" fn(
+    *mut std::ffi::c_void,
+    *const libc::c_char,
+) -> *mut std::ffi::c_void;
+/// `void il2cpp_field_get_value(void* obj, void* field, void* value)`
+/// (copies the field payload into the caller's buffer)
+pub type FieldGetValueFn = unsafe extern "C" fn(
+    *mut std::ffi::c_void,
+    *mut std::ffi::c_void,
+    *mut std::ffi::c_void,
+);
+/// `void il2cpp_field_set_value(void* obj, void* field, void* value)`
+/// (copies the caller's buffer into the field — no error reporting,
+// verification happens via read-back like every other write)
+pub type FieldSetValueFn = unsafe extern "C" fn(
+    *mut std::ffi::c_void,
+    *mut std::ffi::c_void,
+    *mut std::ffi::c_void,
+);
 
 /// Failure modes of IL2CPP resolution and probing.
 #[derive(Debug)]
@@ -158,6 +179,12 @@ pub struct Il2cppApi {
     pub string_new: Option<StringNewFn>,
     /// `il2cpp_resolve_icall` — best effort.
     pub resolve_icall: Option<ResolveIcallFn>,
+    /// `il2cpp_class_get_field_from_name` — best effort.
+    pub class_get_field_from_name: Option<ClassGetFieldFromNameFn>,
+    /// `il2cpp_field_get_value` — best effort.
+    pub field_get_value: Option<FieldGetValueFn>,
+    /// `il2cpp_field_set_value` — best effort.
+    pub field_set_value: Option<FieldSetValueFn>,
 }
 
 impl Il2cppApi {
@@ -442,6 +469,12 @@ pub fn resolve() -> Result<Il2cppApi, Il2cppError> {
     let string_chars: Option<StringCharsFn> = sym_opt!("il2cpp_string_chars", StringCharsFn);
     let string_new: Option<StringNewFn> = sym_opt!("il2cpp_string_new", StringNewFn);
     let resolve_icall: Option<ResolveIcallFn> = sym_opt!("il2cpp_resolve_icall", ResolveIcallFn);
+    let class_get_field_from_name: Option<ClassGetFieldFromNameFn> =
+        sym_opt!("il2cpp_class_get_field_from_name", ClassGetFieldFromNameFn);
+    let field_get_value: Option<FieldGetValueFn> =
+        sym_opt!("il2cpp_field_get_value", FieldGetValueFn);
+    let field_set_value: Option<FieldSetValueFn> =
+        sym_opt!("il2cpp_field_set_value", FieldSetValueFn);
 
     Ok(Il2cppApi {
         domain_get,
@@ -463,6 +496,9 @@ pub fn resolve() -> Result<Il2cppApi, Il2cppError> {
         string_chars,
         string_new,
         resolve_icall,
+        class_get_field_from_name,
+        field_get_value,
+        field_set_value,
     })
 }
 
@@ -719,4 +755,121 @@ pub unsafe fn read_string(
     }
     let slice = unsafe { std::slice::from_raw_parts(chars, n as usize) };
     Some(String::from_utf16_lossy(slice))
+}
+
+/// Find an instance field by name on a class (`None` when absent).
+///
+/// `FieldInfo*` is class-stable: resolve once, reuse for every object
+/// of that class. Needed where the API exposes raw fields instead of
+/// properties (e.g. Cinemachine's `m_FollowOffset`, damping floats).
+///
+/// # Safety
+/// Same contract as [`find_class`].
+pub unsafe fn find_field(
+    api: &Il2cppApi,
+    klass: *mut std::ffi::c_void,
+    name: &str,
+) -> Option<*mut std::ffi::c_void> {
+    let get_field = api.class_get_field_from_name?;
+    if klass.is_null() {
+        return None;
+    }
+    let cname = CString::new(name).ok()?;
+    // SAFETY: validated API + live class + NUL-terminated name.
+    let f = unsafe { get_field(klass, cname.as_ptr()) };
+    if f.is_null() { None } else { Some(f) }
+}
+
+/// Read a `Vector3` field payload (`[x, y, z]`, 12 bytes, no layout
+/// knowledge needed — `field_get_value` copies by field size).
+///
+/// # Safety
+/// Same contract as [`find_class`]; `field` must come from [`find_field`].
+pub unsafe fn field_get_vec3(
+    api: &Il2cppApi,
+    obj: *mut std::ffi::c_void,
+    field: *mut std::ffi::c_void,
+) -> Option<[f32; 3]> {
+    let get_value = api.field_get_value?;
+    if obj.is_null() || field.is_null() {
+        return None;
+    }
+    // SAFETY: 12-byte caller buffer, exactly a Vector3 payload.
+    unsafe {
+        let mut out = [0f32; 3];
+        get_value(obj, field, out.as_mut_ptr() as *mut std::ffi::c_void);
+        Some(out)
+    }
+}
+
+/// Write a `Vector3` field payload. No error reporting by design —
+/// verify with a read-back like every other write.
+///
+/// # Safety
+/// Same contract as [`field_get_vec3`].
+pub unsafe fn field_set_vec3(
+    api: &Il2cppApi,
+    obj: *mut std::ffi::c_void,
+    field: *mut std::ffi::c_void,
+    v: [f32; 3],
+) -> bool {
+    let set_value = match api.field_set_value {
+        Some(f) => f,
+        None => return false,
+    };
+    if obj.is_null() || field.is_null() {
+        return false;
+    }
+    // SAFETY: 12-byte value buffer, field-sized copy by the runtime.
+    unsafe {
+        let mut val = v;
+        set_value(obj, field, val.as_mut_ptr() as *mut std::ffi::c_void);
+    }
+    true
+}
+
+/// Read a `Single` (float) field payload.
+///
+/// # Safety
+/// Same contract as [`field_get_vec3`].
+pub unsafe fn field_get_f32(
+    api: &Il2cppApi,
+    obj: *mut std::ffi::c_void,
+    field: *mut std::ffi::c_void,
+) -> Option<f32> {
+    let get_value = api.field_get_value?;
+    if obj.is_null() || field.is_null() {
+        return None;
+    }
+    // SAFETY: 4-byte caller buffer, exactly a Single payload.
+    unsafe {
+        let mut out = 0f32;
+        get_value(obj, field, &mut out as *mut f32 as *mut std::ffi::c_void);
+        Some(out)
+    }
+}
+
+/// Write a `Single` (float) field payload (verify via read-back).
+///
+/// # Safety
+/// Same contract as [`field_get_vec3`].
+pub unsafe fn field_set_f32(
+    api: &Il2cppApi,
+    obj: *mut std::ffi::c_void,
+    field: *mut std::ffi::c_void,
+    v: f32,
+) -> bool {
+    let set_value = match api.field_set_value {
+        Some(f) => f,
+        None => return false,
+    };
+    if obj.is_null() || field.is_null() {
+        return false;
+    }
+    // SAFETY: 4-byte value buffer, field-sized copy by the runtime.
+    unsafe {
+        let mut val = v;
+        set_value(obj, field, &mut val as *mut f32 as *mut std::ffi::c_void);
+    }
+    true
 }

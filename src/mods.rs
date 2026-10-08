@@ -8,6 +8,7 @@
 //! - [`loader`]: the isolated registry (per-mod panic quarantine, lock
 //!   discipline, disable-before-remove).
 pub mod api;
+pub mod camera;
 pub mod common;
 pub mod loader;
 pub mod tool;

@@ -17,6 +17,31 @@
 
 use crate::il2cpp::{self, Il2cppApi};
 
+pub mod camera;
+pub mod object;
+pub mod scene;
+pub mod text;
+pub mod video;
+
+// Re-exported so `crate::unity::X` paths keep working after the split.
+pub use camera::{
+    cm_active_vcam_name, cm_brain_list, cm_composer_list, cm_orbital_list,
+    cm_set_vcam_priority, cm_transposer_list, cm_vcam_follow_name, cm_vcam_list, cm_vcam_priority,
+    get_fov, main_camera, set_fov,
+};
+pub use object::{
+    beh_get_enabled, beh_set_enabled, component_active, component_gameobject, get_instance_id,
+    go_active, go_set_active, go_transform, object_name, tr_child, tr_child_count, tr_position,
+};
+pub use scene::{loaded_scenes, scene_root_objects};
+pub use text::{find_texts, find_tmp_texts, get_text, set_text, tmp_get_text, tmp_set_text};
+pub use video::{
+    antialiasing, quality_level, quality_names, render_ambient, render_fog, render_fog_density,
+    screen_fullscreen, screen_resolution, screen_set_resolution, set_antialiasing,
+    set_quality_level, set_render_ambient, set_render_fog, set_render_fog_density,
+    set_screen_fullscreen, set_shadows, set_vsync_count, shadows, vsync_count,
+};
+
 /// Cached Unity classes + methods. Classes are process-stable and safe
 /// to keep; object handles are NOT (re-resolve per use).
 #[derive(Debug, Clone, Copy)]
@@ -126,15 +151,45 @@ pub struct UnityCache {
     /// `RenderSettings.get_fogDensity/set_fogDensity` (static float).
     pub m_rs_set_fog_density: *mut std::ffi::c_void,
     /// `RenderSettings.get_ambientIntensity/set_ambientIntensity`.
-///
-/// # Safety
-/// Same contract as [`find_class`].
     pub m_rs_get_ambient: *mut std::ffi::c_void,
     /// `RenderSettings.get_ambientIntensity/set_ambientIntensity`.
-///
-/// # Safety
-/// Same contract as [`find_class`].
     pub m_rs_set_ambient: *mut std::ffi::c_void,
+    // -- Cinemachine v2 (optional — camera tool). The game drives its
+    // cameras through `CinemachineVirtualCamera` + Brain (see log:
+    // `RearRaceCamera`, `UpdateVirtualCameras`). Offsets and damping
+    // are raw FIELDS (`m_FollowOffset`, `m_XDamping`…), so the cache
+    // holds `FieldInfo*` resolved once per class; reads/writes go
+    // through `il2cpp::field_get/set_*` with read-back.
+    /// `CinemachineBrain` class.
+    pub cm_brain_klass: *mut std::ffi::c_void,
+    /// `CinemachineBrain.get_ActiveVirtualCamera()`.
+    pub m_brain_get_active_vcam: *mut std::ffi::c_void,
+    /// `CinemachineVirtualCamera` class.
+    pub cm_vcam_klass: *mut std::ffi::c_void,
+    /// `CinemachineVirtualCamera.get_Follow/get_LookAt`.
+    pub m_vcam_get_follow: *mut std::ffi::c_void,
+    /// `CinemachineVirtualCamera.get_Follow/get_LookAt`.
+    pub m_vcam_get_lookat: *mut std::ffi::c_void,
+    /// `CinemachineVirtualCamera.get_Priority/set_Priority`.
+    pub m_vcam_get_priority: *mut std::ffi::c_void,
+    /// `CinemachineVirtualCamera.get_Priority/set_Priority`.
+    pub m_vcam_set_priority: *mut std::ffi::c_void,
+    /// `CinemachineTransposer` class + `m_FollowOffset` field.
+    pub cm_trans_klass: *mut std::ffi::c_void,
+    /// `CinemachineTransposer` class + `m_FollowOffset` field.
+    pub m_trans_offset: *mut std::ffi::c_void,
+    /// `m_XDamping/m_YDamping/m_ZDamping` fields (transposer).
+    pub m_trans_damp: [*mut std::ffi::c_void; 3],
+    /// `CinemachineOrbitalTransposer` class + `m_FollowOffset` field.
+    pub cm_orbital_klass: *mut std::ffi::c_void,
+    /// `CinemachineOrbitalTransposer` class + `m_FollowOffset` field.
+    pub m_orbital_offset: *mut std::ffi::c_void,
+    /// `m_XDamping/m_YDamping/m_ZDamping` fields (orbital).
+    pub m_orbital_damp: [*mut std::ffi::c_void; 3],
+    /// `CinemachineComposer` class + `m_TrackedObjectOffset` field.
+    pub cm_composer_klass: *mut std::ffi::c_void,
+    /// `CinemachineComposer` class + `m_TrackedObjectOffset` field.
+    pub m_composer_tracked: *mut std::ffi::c_void,
 }
 
 /// `KeyCode.O` as Unity defines it (letters follow ASCII: `A = 97 … Z = 122`).
@@ -374,6 +429,81 @@ pub unsafe fn init(
             )
         };
 
+        // Cinemachine v2: assembly-agnostic walk (package assembly name
+        // varies — same approach as TMP). Everything optional; a
+        // missing piece degrades the camera tool, never the cache.
+        // SAFETY: attached thread, null-checked chain (outer unsafe).
+        let cm_brain_klass = il2cpp::find_class(api, domain, None, "Cinemachine", "CinemachineBrain")
+            .unwrap_or(std::ptr::null_mut());
+        let m_brain_get_active_vcam = if cm_brain_klass.is_null() {
+            None
+        } else {
+            il2cpp::get_method(api, cm_brain_klass, "get_ActiveVirtualCamera", 0)
+        };
+        let cm_vcam_klass = il2cpp::find_class(api, domain, None, "Cinemachine", "CinemachineVirtualCamera")
+            .unwrap_or(std::ptr::null_mut());
+        let (m_vcam_get_follow, m_vcam_get_lookat) = if cm_vcam_klass.is_null() {
+            (None, None)
+        } else {
+            (
+                il2cpp::get_method(api, cm_vcam_klass, "get_Follow", 0),
+                il2cpp::get_method(api, cm_vcam_klass, "get_LookAt", 0),
+            )
+        };
+        let (m_vcam_get_priority, m_vcam_set_priority) = if cm_vcam_klass.is_null() {
+            (None, None)
+        } else {
+            (
+                il2cpp::get_method(api, cm_vcam_klass, "get_Priority", 0),
+                il2cpp::get_method(api, cm_vcam_klass, "set_Priority", 1),
+            )
+        };
+        // Offsets/damping are FIELDS: resolve FieldInfo once per class.
+        let cm_trans_klass = il2cpp::find_class(api, domain, None, "Cinemachine", "CinemachineTransposer")
+            .unwrap_or(std::ptr::null_mut());
+        let m_trans_offset = if cm_trans_klass.is_null() {
+            None
+        } else {
+            // SAFETY: live class + static name.
+            il2cpp::find_field(api, cm_trans_klass, "m_FollowOffset")
+        };
+        let m_trans_damp = if cm_trans_klass.is_null() {
+            [None, None, None]
+        } else {
+            // SAFETY: live class + static names.
+            [
+                il2cpp::find_field(api, cm_trans_klass, "m_XDamping"),
+                il2cpp::find_field(api, cm_trans_klass, "m_YDamping"),
+                il2cpp::find_field(api, cm_trans_klass, "m_ZDamping"),
+            ]
+        };
+        let cm_orbital_klass = il2cpp::find_class(api, domain, None, "Cinemachine", "CinemachineOrbitalTransposer")
+            .unwrap_or(std::ptr::null_mut());
+        let m_orbital_offset = if cm_orbital_klass.is_null() {
+            None
+        } else {
+            // SAFETY: live class + static name.
+            il2cpp::find_field(api, cm_orbital_klass, "m_FollowOffset")
+        };
+        let m_orbital_damp = if cm_orbital_klass.is_null() {
+            [None, None, None]
+        } else {
+            // SAFETY: live class + static names.
+            [
+                il2cpp::find_field(api, cm_orbital_klass, "m_XDamping"),
+                il2cpp::find_field(api, cm_orbital_klass, "m_YDamping"),
+                il2cpp::find_field(api, cm_orbital_klass, "m_ZDamping"),
+            ]
+        };
+        let cm_composer_klass = il2cpp::find_class(api, domain, None, "Cinemachine", "CinemachineComposer")
+            .unwrap_or(std::ptr::null_mut());
+        let m_composer_tracked = if cm_composer_klass.is_null() {
+            None
+        } else {
+            // SAFETY: live class + static name.
+            il2cpp::find_field(api, cm_composer_klass, "m_TrackedObjectOffset")
+        };
+
         Some(UnityCache {
             cam_klass,
             m_cam_main,
@@ -427,6 +557,21 @@ pub unsafe fn init(
             m_rs_set_fog_density: m_rs_set_fog_density.unwrap_or(std::ptr::null_mut()),
             m_rs_get_ambient: m_rs_get_ambient.unwrap_or(std::ptr::null_mut()),
             m_rs_set_ambient: m_rs_set_ambient.unwrap_or(std::ptr::null_mut()),
+            cm_brain_klass,
+            m_brain_get_active_vcam: m_brain_get_active_vcam.unwrap_or(std::ptr::null_mut()),
+            cm_vcam_klass,
+            m_vcam_get_follow: m_vcam_get_follow.unwrap_or(std::ptr::null_mut()),
+            m_vcam_get_lookat: m_vcam_get_lookat.unwrap_or(std::ptr::null_mut()),
+            m_vcam_get_priority: m_vcam_get_priority.unwrap_or(std::ptr::null_mut()),
+            m_vcam_set_priority: m_vcam_set_priority.unwrap_or(std::ptr::null_mut()),
+            cm_trans_klass,
+            m_trans_offset: m_trans_offset.unwrap_or(std::ptr::null_mut()),
+            m_trans_damp: m_trans_damp.map(|f| f.unwrap_or(std::ptr::null_mut())),
+            cm_orbital_klass,
+            m_orbital_offset: m_orbital_offset.unwrap_or(std::ptr::null_mut()),
+            m_orbital_damp: m_orbital_damp.map(|f| f.unwrap_or(std::ptr::null_mut())),
+            cm_composer_klass,
+            m_composer_tracked: m_composer_tracked.unwrap_or(std::ptr::null_mut()),
         })
     }
 }
@@ -467,62 +612,6 @@ pub unsafe fn key_held(
     }
 }
 
-/// Current main camera (`Camera.main`), or `None` (no camera yet — menu,
-/// loading screen — or API missing).
-///
-/// # Safety
-/// Same contract as `il2cpp::find_class`.
-pub unsafe fn main_camera(api: &Il2cppApi, cache: &UnityCache) -> Option<*mut std::ffi::c_void> {
-    // SAFETY: cached static getter, 0 args, null receiver.
-    let cam = unsafe { il2cpp::invoke(api, cache.m_cam_main, std::ptr::null_mut(), &[]) };
-    match cam {
-        Some(c) if !c.is_null() => Some(c),
-        _ => None,
-    }
-}
-
-/// Read a camera's field of view in degrees.
-///
-/// # Safety
-/// Same contract as `il2cpp::find_class`.
-pub unsafe fn get_fov(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    cam: *mut std::ffi::c_void,
-) -> Option<f32> {
-    if cache.m_get_fov.is_null() || api.object_unbox.is_none() {
-        return None;
-    }
-    // SAFETY: getter with no args; boxed float unboxed below.
-    let boxed = unsafe { il2cpp::invoke(api, cache.m_get_fov, cam, &[]) }?;
-    let unbox = api.object_unbox.unwrap();
-    // SAFETY: `unbox` on a boxed Single yields its 4 payload bytes.
-    let p = unsafe { unbox(boxed) } as *const f32;
-    if p.is_null() {
-        return None;
-    }
-    Some(unsafe { std::ptr::read_unaligned(p) })
-}
-
-/// Set a camera's field of view in degrees. Returns success.
-///
-/// # Safety
-/// Same contract as `il2cpp::find_class`.
-pub unsafe fn set_fov(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    cam: *mut std::ffi::c_void,
-    fov: f32,
-) -> bool {
-    if cache.m_set_fov.is_null() {
-        return false;
-    }
-    let params = [&fov as *const f32 as *mut std::ffi::c_void];
-    // SAFETY: single float argument passed by address, as the ABI wants.
-    // Void callee: `invoke_void`, never `invoke` (see its docs).
-    unsafe { il2cpp::invoke_void(api, cache.m_set_fov, cam, &params) }
-}
-
 /// All live instances of one class via `Object.FindObjectsOfType`.
 ///
 /// Shared core behind [`find_texts`] and [`find_tmp_texts`]: the only
@@ -531,7 +620,7 @@ pub unsafe fn set_fov(
 /// # Safety
 /// Same contract as `il2cpp::find_class`, plus the array-consumed-
 /// immediately rule from `il2cpp::find_objects_of_type`.
-unsafe fn find_objects_of_class(
+pub(crate) unsafe fn find_objects_of_class(
     api: &Il2cppApi,
     cache: &UnityCache,
     klass: *mut std::ffi::c_void,
@@ -564,227 +653,6 @@ unsafe fn find_objects_of_class(
         }
         out
     }
-}
-
-/// All live `UnityEngine.UI.Text` instances (possibly empty — modern
-/// games use TextMeshPro instead; see [`find_tmp_texts`).
-///
-/// # Safety
-/// Same contract as `il2cpp::find_class`, plus the array-consumed-
-/// immediately rule from `il2cpp::find_objects_of_type`.
-pub unsafe fn find_texts(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    domain: *mut std::ffi::c_void,
-) -> Vec<*mut std::ffi::c_void> {
-    let _ = domain;
-    // SAFETY: cached class handle, consumed immediately.
-    unsafe { find_objects_of_class(api, cache, cache.text_klass) }
-}
-
-/// All live `TMPro.TextMeshProUGUI` instances (possibly empty).
-///
-/// # Safety
-/// Same contract as [`find_texts`].
-pub unsafe fn find_tmp_texts(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-) -> Vec<*mut std::ffi::c_void> {
-    // SAFETY: cached class handle, consumed immediately.
-    unsafe { find_objects_of_class(api, cache, cache.tmp_klass) }
-}
-
-/// Read a Text's current content.
-///
-/// # Safety
-/// Same contract as `il2cpp::find_class`.
-pub unsafe fn get_text(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    text_obj: *mut std::ffi::c_void,
-) -> Option<String> {
-    if cache.m_get_text.is_null() {
-        return None;
-    }
-    // SAFETY: getter with no args; string copied out immediately.
-    let s = unsafe { il2cpp::invoke(api, cache.m_get_text, text_obj, &[]) }?;
-    unsafe { il2cpp::read_string(api, s) }
-}
-
-/// Overwrite a Text's content. Returns success.
-///
-/// # Safety
-/// Same contract as `il2cpp::find_class`.
-pub unsafe fn set_text(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    text_obj: *mut std::ffi::c_void,
-    content: &str,
-) -> bool {
-    if cache.m_set_text.is_null() {
-        return false;
-    }
-    // SAFETY: one managed-string argument, allocated just above.
-    unsafe {
-        let s = match il2cpp::new_string(api, content) {
-            Some(v) => v,
-            None => return false,
-        };
-        let params = [s];
-        // Void callee: `invoke_void`, never `invoke` (see its docs).
-        il2cpp::invoke_void(api, cache.m_set_text, text_obj, &params)
-    }
-}
-
-/// Read a TextMeshProUGUI's current content.
-///
-/// Same `text` property shape as uGUI `Text`, different cached method.
-///
-/// # Safety
-/// Same contract as `il2cpp::find_class`.
-pub unsafe fn tmp_get_text(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    text_obj: *mut std::ffi::c_void,
-) -> Option<String> {
-    if cache.m_tmp_get_text.is_null() {
-        return None;
-    }
-    // SAFETY: getter with no args; string copied out immediately.
-    let s = unsafe { il2cpp::invoke(api, cache.m_tmp_get_text, text_obj, &[]) }?;
-    unsafe { il2cpp::read_string(api, s) }
-}
-
-/// Overwrite a TextMeshProUGUI's content. Returns success.
-///
-/// # Safety
-/// Same contract as `il2cpp::find_class`.
-pub unsafe fn tmp_set_text(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    text_obj: *mut std::ffi::c_void,
-    content: &str,
-) -> bool {
-    if cache.m_tmp_set_text.is_null() {
-        return false;
-    }
-    // SAFETY: one managed-string argument, allocated just above.
-    unsafe {
-        let s = match il2cpp::new_string(api, content) {
-            Some(v) => v,
-            None => return false,
-        };
-        let params = [s];
-        // Void callee: `invoke_void`, never `invoke` (see its docs).
-        il2cpp::invoke_void(api, cache.m_tmp_set_text, text_obj, &params)
-    }
-}
-
-/// A component's `GameObject` (every `Transform` is one — the way back
-/// from a child transform to its object while walking).
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn component_gameobject(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    component: *mut std::ffi::c_void,
-) -> Option<*mut std::ffi::c_void> {
-    if cache.m_comp_get_gameobject.is_null() || component.is_null() {
-        return None;
-    }
-    // SAFETY: cached getter; null (destroyed) → None.
-    match unsafe { il2cpp::invoke(api, cache.m_comp_get_gameobject, component, &[]) } {
-        Some(g) if !g.is_null() => Some(g),
-        _ => None,
-    }
-}
-
-/// Whether a component's GameObject is active in the hierarchy.
-///
-/// An enumerated component may sit on a disabled branch: writes to it
-/// change memory nobody renders. Returns `None` when undeterminable.
-///
-/// # Safety
-/// Same contract as `il2cpp::find_class`.
-pub unsafe fn component_active(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    component: *mut std::ffi::c_void,
-) -> Option<bool> {
-    if cache.m_comp_get_gameobject.is_null() || cache.m_go_get_active.is_null() {
-        return None;
-    }
-    // SAFETY: cached getters, no args; boxed Boolean unboxed below.
-    unsafe {
-        let go = il2cpp::invoke(api, cache.m_comp_get_gameobject, component, &[])?;
-        if go.is_null() {
-            return None;
-        }
-        let boxed = il2cpp::invoke(api, cache.m_go_get_active, go, &[])?;
-        match api.object_unbox {
-            Some(unbox) => {
-                let p = unbox(boxed) as *const u8;
-                if p.is_null() {
-                    None
-                } else {
-                    Some(std::ptr::read_unaligned(p) != 0)
-                }
-            }
-            None => None,
-        }
-    }
-}
-
-/// Read a Behaviour's `enabled` flag.
-///
-/// # Safety
-/// Same contract as `il2cpp::find_class`.
-pub unsafe fn beh_get_enabled(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    component: *mut std::ffi::c_void,
-) -> Option<bool> {
-    if cache.m_beh_get_enabled.is_null() {
-        return None;
-    }
-    // SAFETY: cached getter, no args; boxed Boolean unboxed below.
-    unsafe {
-        let boxed = il2cpp::invoke(api, cache.m_beh_get_enabled, component, &[])?;
-        match api.object_unbox {
-            Some(unbox) => {
-                let p = unbox(boxed) as *const u8;
-                if p.is_null() {
-                    None
-                } else {
-                    Some(std::ptr::read_unaligned(p) != 0)
-                }
-            }
-            None => None,
-        }
-    }
-}
-
-/// Set a Behaviour's `enabled` flag. `false` hides a renderer component
-/// (the renderer checks the flag every frame — no mesh rebuild, no
-/// strings involved). Returns success.
-///
-/// # Safety
-/// Same contract as `il2cpp::find_class`.
-pub unsafe fn beh_set_enabled(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    component: *mut std::ffi::c_void,
-    enabled: bool,
-) -> bool {
-    if cache.m_beh_set_enabled.is_null() {
-        return false;
-    }
-    let mut flag: u8 = if enabled { 1 } else { 0 };
-    let params = [&mut flag as *mut u8 as *mut std::ffi::c_void];
-    // SAFETY: single bool argument passed by address, as the ABI wants.
-    // Void callee: `invoke_void`, never `invoke` (see its docs).
-    unsafe { il2cpp::invoke_void(api, cache.m_beh_set_enabled, component, &params) }
 }
 
 /// Raw `Application.systemLanguage` value (`SystemLanguage` int), or `None`.
@@ -820,7 +688,7 @@ pub unsafe fn system_language_raw(api: &Il2cppApi) -> Option<i32> {
 // ---------------------------------------------------------------------------
 
 /// Call a 0-arg getter returning a boxed `Int32`.
-unsafe fn get_i32(
+pub(crate) unsafe fn get_i32(
     api: &Il2cppApi,
     method: *mut std::ffi::c_void,
     obj: *mut std::ffi::c_void,
@@ -841,7 +709,7 @@ unsafe fn get_i32(
 }
 
 /// Call a 0-arg getter returning a boxed `Single` (float).
-unsafe fn get_f32(
+pub(crate) unsafe fn get_f32(
     api: &Il2cppApi,
     method: *mut std::ffi::c_void,
     obj: *mut std::ffi::c_void,
@@ -862,7 +730,7 @@ unsafe fn get_f32(
 }
 
 /// Call a 0-arg getter returning a boxed `Boolean`.
-unsafe fn get_bool(
+pub(crate) unsafe fn get_bool(
     api: &Il2cppApi,
     method: *mut std::ffi::c_void,
     obj: *mut std::ffi::c_void,
@@ -883,7 +751,7 @@ unsafe fn get_bool(
 }
 
 /// Call a 1-arg `void` setter taking an `Int32` (passed by address).
-unsafe fn set_i32(
+pub(crate) unsafe fn set_i32(
     api: &Il2cppApi,
     method: *mut std::ffi::c_void,
     obj: *mut std::ffi::c_void,
@@ -898,7 +766,7 @@ unsafe fn set_i32(
 }
 
 /// Call a 1-arg `void` setter taking a `Single` (passed by address).
-unsafe fn set_f32(
+pub(crate) unsafe fn set_f32(
     api: &Il2cppApi,
     method: *mut std::ffi::c_void,
     obj: *mut std::ffi::c_void,
@@ -915,7 +783,7 @@ unsafe fn set_f32(
 /// Read a just-returned managed object array into owned handles.
 ///
 /// Same consume-immediately + cap discipline as `find_objects_of_type`.
-unsafe fn read_object_array(
+pub(crate) unsafe fn read_object_array(
     api: &Il2cppApi,
     arr: *mut std::ffi::c_void,
     cap: usize,
@@ -947,499 +815,3 @@ unsafe fn read_object_array(
 // ---------------------------------------------------------------------------
 // Object identity + hierarchy walk (scene inspector foundation).
 // ---------------------------------------------------------------------------
-
-/// `Object.get_name()` copied out (empty string when unreadable —
-///
-/// names feed the inspector tree, where `None` would drop the node).
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn object_name(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    obj: *mut std::ffi::c_void,
-) -> String {
-    if cache.m_get_name.is_null() || obj.is_null() {
-        return String::from("<unnamed>");
-    }
-    // SAFETY: cached getter; string copied out immediately.
-    unsafe {
-        match il2cpp::invoke(api, cache.m_get_name, obj, &[]) {
-            Some(s) => il2cpp::read_string(api, s).unwrap_or_else(|| String::from("<unreadable>")),
-            None => String::from("<unnamed>"),
-        }
-    }
-}
-
-/// `Object.GetInstanceID()` — stable per-object id for the inspector.
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn get_instance_id(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    obj: *mut std::ffi::c_void,
-) -> Option<i32> {
-    // SAFETY: cached getter on a live object.
-    unsafe { get_i32(api, cache.m_get_instance_id, obj) }
-}
-
-/// `GameObject.get_activeInHierarchy()`.
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn go_active(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    go: *mut std::ffi::c_void,
-) -> Option<bool> {
-    // SAFETY: cached getter on a live object.
-    unsafe { get_bool(api, cache.m_go_get_active, go) }
-}
-
-/// `GameObject.get_transform()`.
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn go_transform(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    go: *mut std::ffi::c_void,
-) -> Option<*mut std::ffi::c_void> {
-    if cache.m_go_get_transform.is_null() || go.is_null() {
-        return None;
-    }
-    // SAFETY: cached getter on a live object.
-    match unsafe { il2cpp::invoke(api, cache.m_go_get_transform, go, &[]) } {
-        Some(t) if !t.is_null() => Some(t),
-        _ => None,
-    }
-}
-
-/// `GameObject.SetActive(bool)`.
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn go_set_active(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    go: *mut std::ffi::c_void,
-    active: bool,
-) -> bool {
-    if cache.m_go_set_active.is_null() || go.is_null() {
-        return false;
-    }
-    let mut flag: u8 = if active { 1 } else { 0 };
-    let params = [&mut flag as *mut u8 as *mut std::ffi::c_void];
-    // SAFETY: single bool by address; void callee.
-    unsafe { il2cpp::invoke_void(api, cache.m_go_set_active, go, &params) }
-}
-
-/// `Transform.get_childCount()` (0 when unknown — the walk just stops).
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn tr_child_count(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    tr: *mut std::ffi::c_void,
-) -> usize {
-    // SAFETY: cached getter on a live transform.
-    unsafe { get_i32(api, cache.m_tr_get_child_count, tr).unwrap_or(0).max(0) as usize }
-}
-
-/// `Transform.GetChild(i)`.
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn tr_child(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    tr: *mut std::ffi::c_void,
-    index: i32,
-) -> Option<*mut std::ffi::c_void> {
-    if cache.m_tr_get_child.is_null() || tr.is_null() {
-        return None;
-    }
-    let params = [&index as *const i32 as *mut std::ffi::c_void];
-    // SAFETY: cached method, int by address; null (bad index) → None.
-    match unsafe { il2cpp::invoke(api, cache.m_tr_get_child, tr, &params) } {
-        Some(t) if !t.is_null() => Some(t),
-        _ => None,
-    }
-}
-
-/// `Transform.get_position()` as `[x, y, z]`.
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn tr_position(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    tr: *mut std::ffi::c_void,
-) -> Option<[f32; 3]> {
-    if cache.m_tr_get_position.is_null() || tr.is_null() || api.object_unbox.is_none() {
-        return None;
-    }
-    // SAFETY: cached getter; boxed Vector3 is 3 packed floats.
-    unsafe {
-        let boxed = il2cpp::invoke(api, cache.m_tr_get_position, tr, &[])?;
-        let p = api.object_unbox.unwrap()(boxed) as *const f32;
-        if p.is_null() {
-            return None;
-        }
-        Some([
-            std::ptr::read_unaligned(p),
-            std::ptr::read_unaligned(p.add(1)),
-            std::ptr::read_unaligned(p.add(2)),
-        ])
-    }
-}
-
-/// Root `GameObject`s of the active scene (includes inactive roots —
-/// the reason this beats `FindObjectsOfType` for inspection).
-///
-/// # Safety
-/// Same contract as [`find_class`], plus the array-consumed-immediately
-/// rule. `Scene` is a value type: the instance call runs on the
-/// unboxed payload, never on the box.
-pub unsafe fn scene_root_objects(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-) -> Vec<*mut std::ffi::c_void> {
-    if cache.m_scene_get_active.is_null()
-        || cache.m_scene_get_roots.is_null()
-        || api.object_unbox.is_none()
-    {
-        return Vec::new();
-    }
-    // SAFETY: static getter → boxed Scene → unbox → instance call on
-    // the value payload → GameObject[] consumed immediately.
-    unsafe {
-        let boxed = match il2cpp::invoke(api, cache.m_scene_get_active, std::ptr::null_mut(), &[]) {
-            Some(b) => b,
-            None => return Vec::new(),
-        };
-        roots_of_boxed_scene(api, cache, boxed)
-    }
-}
-
-/// Roots of one boxed `Scene` value.
-///
-/// # Safety
-/// `boxed` must be a live boxed Scene; the array is consumed
-/// immediately.
-unsafe fn roots_of_boxed_scene(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    boxed: *mut std::ffi::c_void,
-) -> Vec<*mut std::ffi::c_void> {
-    // SAFETY: unbox → instance call on the value payload.
-    unsafe {
-        let scene_value = match api.object_unbox {
-            Some(unbox) => unbox(boxed),
-            None => return Vec::new(),
-        };
-        if scene_value.is_null() {
-            return Vec::new();
-        }
-        let arr = match il2cpp::invoke(api, cache.m_scene_get_roots, scene_value, &[]) {
-            Some(a) => a,
-            None => return Vec::new(),
-        };
-        read_object_array(api, arr, 1024)
-    }
-}
-
-/// Name of one boxed `Scene` value (`Scene.name`).
-///
-/// # Safety
-/// `boxed` must be a live boxed Scene; the string is copied out.
-unsafe fn name_of_boxed_scene(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    boxed: *mut std::ffi::c_void,
-) -> Option<String> {
-    if cache.m_scene_get_name.is_null() {
-        return None;
-    }
-    // SAFETY: unbox → instance getter on the value payload.
-    unsafe {
-        let scene_value = api.object_unbox?(boxed);
-        if scene_value.is_null() {
-            return None;
-        }
-        let s = il2cpp::invoke(api, cache.m_scene_get_name, scene_value, &[])?;
-        il2cpp::read_string(api, s)
-    }
-}
-
-/// All loaded scenes as `(name, roots)`.
-///
-/// Games stack additive scenes (menu + track + cars + HUD live side by
-/// side); walking only the active one hides most of the game. Capped
-/// at 32 scenes.
-///
-/// # Safety
-/// Same contract as [`find_class`], plus the array-consumed-immediately
-/// rule per scene.
-pub unsafe fn loaded_scenes(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-) -> Vec<(String, Vec<*mut std::ffi::c_void>)> {
-    if cache.m_scene_get_count.is_null()
-        || cache.m_scene_get_at.is_null()
-        || api.object_unbox.is_none()
-    {
-        return Vec::new();
-    }
-    // SAFETY: static count → boxed Scene per index → name + roots.
-    unsafe {
-        let count = get_i32(api, cache.m_scene_get_count, std::ptr::null_mut())
-            .unwrap_or(0)
-            .clamp(0, 32) as i32;
-        let mut out = Vec::new();
-        for i in 0..count {
-            let params = [&i as *const i32 as *mut std::ffi::c_void];
-            let boxed = match il2cpp::invoke(api, cache.m_scene_get_at, std::ptr::null_mut(), &params)
-            {
-                Some(b) => b,
-                None => continue,
-            };
-            let name =
-                name_of_boxed_scene(api, cache, boxed).unwrap_or_else(|| format!("scene {i}"));
-            let roots = roots_of_boxed_scene(api, cache, boxed);
-            out.push((name, roots));
-        }
-        out
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Video / quality knobs: QualitySettings, Screen, RenderSettings.
-// Static getters/setters only — same proven shapes as FOV/text.
-// ---------------------------------------------------------------------------
-
-/// `QualitySettings.GetQualityLevel()`.
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn quality_level(api: &Il2cppApi, cache: &UnityCache) -> Option<i32> {
-    // SAFETY: cached static getter.
-    unsafe { get_i32(api, cache.m_qs_get_level, std::ptr::null_mut()) }
-}
-
-/// `QualitySettings.SetQualityLevel(int)`.
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn set_quality_level(api: &Il2cppApi, cache: &UnityCache, level: i32) -> bool {
-    // SAFETY: cached static setter, int by address.
-    unsafe { set_i32(api, cache.m_qs_set_level, std::ptr::null_mut(), level) }
-}
-
-/// `QualitySettings.names` (level names, capped at 16).
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn quality_names(api: &Il2cppApi, cache: &UnityCache) -> Vec<String> {
-    if cache.m_qs_get_names.is_null() {
-        return Vec::new();
-    }
-    // SAFETY: cached static getter; string[] consumed immediately.
-    unsafe {
-        let arr = match il2cpp::invoke(api, cache.m_qs_get_names, std::ptr::null_mut(), &[]) {
-            Some(a) => a,
-            None => return Vec::new(),
-        };
-        read_object_array(api, arr, 16)
-            .into_iter()
-            .filter_map(|s| il2cpp::read_string(api, s))
-            .collect()
-    }
-}
-
-/// `QualitySettings.get_vSyncCount/set_vSyncCount`.
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn vsync_count(api: &Il2cppApi, cache: &UnityCache) -> Option<i32> {
-    // SAFETY: cached static getter.
-    unsafe { get_i32(api, cache.m_qs_get_vsync, std::ptr::null_mut()) }
-}
-
-/// `QualitySettings.get_vSyncCount/set_vSyncCount`.
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn set_vsync_count(api: &Il2cppApi, cache: &UnityCache, v: i32) -> bool {
-    // SAFETY: cached static setter, int by address.
-    unsafe { set_i32(api, cache.m_qs_set_vsync, std::ptr::null_mut(), v) }
-}
-
-/// `QualitySettings.get_antiAliasing/set_antiAliasing` (0/2/4/8).
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn antialiasing(api: &Il2cppApi, cache: &UnityCache) -> Option<i32> {
-    // SAFETY: cached static getter.
-    unsafe { get_i32(api, cache.m_qs_get_aa, std::ptr::null_mut()) }
-}
-
-/// `QualitySettings.get_antiAliasing/set_antiAliasing` (0/2/4/8).
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn set_antialiasing(api: &Il2cppApi, cache: &UnityCache, v: i32) -> bool {
-    // SAFETY: cached static setter, int by address.
-    unsafe { set_i32(api, cache.m_qs_set_aa, std::ptr::null_mut(), v) }
-}
-
-/// `QualitySettings.get_shadows/set_shadows` (ShadowQuality as int).
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn shadows(api: &Il2cppApi, cache: &UnityCache) -> Option<i32> {
-    // SAFETY: cached static getter.
-    unsafe { get_i32(api, cache.m_qs_get_shadows, std::ptr::null_mut()) }
-}
-
-/// `QualitySettings.get_shadows/set_shadows` (ShadowQuality as int).
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn set_shadows(api: &Il2cppApi, cache: &UnityCache, v: i32) -> bool {
-    // SAFETY: cached static setter, int by address.
-    unsafe { set_i32(api, cache.m_qs_set_shadows, std::ptr::null_mut(), v) }
-}
-
-/// `Screen.currentResolution` as `(width, height, refresh_hz)`.
-///
-/// `Resolution` is 3 packed ints (width, height, refreshRate).
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn screen_resolution(api: &Il2cppApi, cache: &UnityCache) -> Option<(i32, i32, i32)> {
-    if cache.m_screen_get_resolution.is_null() || api.object_unbox.is_none() {
-        return None;
-    }
-    // SAFETY: cached static getter; boxed Resolution unboxed below.
-    unsafe {
-        let boxed = il2cpp::invoke(api, cache.m_screen_get_resolution, std::ptr::null_mut(), &[])?;
-        let p = api.object_unbox.unwrap()(boxed) as *const i32;
-        if p.is_null() {
-            return None;
-        }
-        Some((
-            std::ptr::read_unaligned(p),
-            std::ptr::read_unaligned(p.add(1)),
-            std::ptr::read_unaligned(p.add(2)),
-        ))
-    }
-}
-
-/// `Screen.SetResolution(w, h, fullscreen)`.
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn screen_set_resolution(
-    api: &Il2cppApi,
-    cache: &UnityCache,
-    w: i32,
-    h: i32,
-    fullscreen: bool,
-) -> bool {
-    if cache.m_screen_set_resolution.is_null() {
-        return false;
-    }
-    let mut fs: u8 = if fullscreen { 1 } else { 0 };
-    let params = [
-        &w as *const i32 as *mut std::ffi::c_void,
-        &h as *const i32 as *mut std::ffi::c_void,
-        &mut fs as *mut u8 as *mut std::ffi::c_void,
-    ];
-    // SAFETY: (int, int, bool) by address; void callee.
-    unsafe { il2cpp::invoke_void(api, cache.m_screen_set_resolution, std::ptr::null_mut(), &params) }
-}
-
-/// `Screen.get_fullScreen/set_fullScreen`.
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn screen_fullscreen(api: &Il2cppApi, cache: &UnityCache) -> Option<bool> {
-    // SAFETY: cached static getter.
-    unsafe { get_bool(api, cache.m_screen_get_fullscreen, std::ptr::null_mut()) }
-}
-
-/// `Screen.get_fullScreen/set_fullScreen`.
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn set_screen_fullscreen(api: &Il2cppApi, cache: &UnityCache, v: bool) -> bool {
-    if cache.m_screen_set_fullscreen.is_null() {
-        return false;
-    }
-    let mut flag: u8 = if v { 1 } else { 0 };
-    let params = [&mut flag as *mut u8 as *mut std::ffi::c_void];
-    // SAFETY: single bool by address; void callee.
-    unsafe { il2cpp::invoke_void(api, cache.m_screen_set_fullscreen, std::ptr::null_mut(), &params) }
-}
-
-/// `RenderSettings.get_fog/set_fog`.
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn render_fog(api: &Il2cppApi, cache: &UnityCache) -> Option<bool> {
-    // SAFETY: cached static getter.
-    unsafe { get_bool(api, cache.m_rs_get_fog, std::ptr::null_mut()) }
-}
-
-/// `RenderSettings.get_fog/set_fog`.
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn set_render_fog(api: &Il2cppApi, cache: &UnityCache, v: bool) -> bool {
-    if cache.m_rs_set_fog.is_null() {
-        return false;
-    }
-    let mut flag: u8 = if v { 1 } else { 0 };
-    let params = [&mut flag as *mut u8 as *mut std::ffi::c_void];
-    // SAFETY: single bool by address; void callee.
-    unsafe { il2cpp::invoke_void(api, cache.m_rs_set_fog, std::ptr::null_mut(), &params) }
-}
-
-/// `RenderSettings.get_fogDensity/set_fogDensity`.
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn render_fog_density(api: &Il2cppApi, cache: &UnityCache) -> Option<f32> {
-    // SAFETY: cached static getter.
-    unsafe { get_f32(api, cache.m_rs_get_fog_density, std::ptr::null_mut()) }
-}
-
-/// `RenderSettings.get_fogDensity/set_fogDensity`.
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn set_render_fog_density(api: &Il2cppApi, cache: &UnityCache, v: f32) -> bool {
-    // SAFETY: cached static setter, float by address.
-    unsafe { set_f32(api, cache.m_rs_set_fog_density, std::ptr::null_mut(), v) }
-}
-
-/// `RenderSettings.get_ambientIntensity/set_ambientIntensity`.
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn render_ambient(api: &Il2cppApi, cache: &UnityCache) -> Option<f32> {
-    // SAFETY: cached static getter.
-    unsafe { get_f32(api, cache.m_rs_get_ambient, std::ptr::null_mut()) }
-}
-
-/// `RenderSettings.get_ambientIntensity/set_ambientIntensity`.
-///
-/// # Safety
-/// Same contract as [`find_class`].
-pub unsafe fn set_render_ambient(api: &Il2cppApi, cache: &UnityCache, v: f32) -> bool {
-    // SAFETY: cached static setter, float by address.
-    unsafe { set_f32(api, cache.m_rs_set_ambient, std::ptr::null_mut(), v) }
-}

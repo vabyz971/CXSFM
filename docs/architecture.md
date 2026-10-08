@@ -179,6 +179,8 @@ mods/
   hud_text/     example: replace (or blank) one text, restore on disable
   inspector/    tool: scene tree via SceneManager roots + Transform walk
                 (names, ids, active, position; throttled snapshot)
+  camera/       PARKED (writes): live Cinemachine discovery, sliders
+                simulate recipes into the log without touching the game
   video/        PARKED: reads fine, some setters crash the game —
                 re-enable once the faulting setter is isolated
   fpv_camera.rs parked (render-hook future)

@@ -213,6 +213,7 @@ fn deferred_init() {
         mods::hud_text::register();
         mods::inspector::register();
         mods::gamelog::register();
+        mods::camera::register();
         // NOTE: video is PARKED — some setters crash the game on write
         // (reads were fine). The module stays compiled in
         // `mods::video` until the faulting setter is isolated.

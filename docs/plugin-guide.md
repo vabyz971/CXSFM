@@ -9,6 +9,7 @@ Un mod = **un dossier** sous `src/mods/`, compilé dans le framework
 | `hud_hide/` | **masquer** un élément (`Behaviour.enabled = false` + restore) |
 | `hud_text/` | **remplacer** un texte (drift-repair + restore) ; contenu vide = **masquer** le texte |
 | `inspector/` | outil : arbre de scène (roots + hiérarchie + position, snapshot throttlé) |
+| `camera/` | PARKÉ (écritures) : découverte Cinemachine live, sliders en simulation loggée |
 | `gamelog/` | outil : `Player.log` du jeu en direct (filtre + erreurs, lecture seule) |
 | `video/` | PARKÉ : setters vidéo = crash jeu (lecture OK, écriture à isoler) |
 

@@ -31,7 +31,7 @@ pub mod it;
 pub mod pt;
 pub mod ru;
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
 /// Languages with a full menu translation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -140,6 +140,16 @@ impl Lang {
 /// No language stored yet.
 const UNSET: u8 = 0xFF;
 
+/// Bumped on every effective-language change (pin or detection).
+/// The mod registry caches per-mod presentation against this revision
+/// so labels follow the language without calling into mods per frame.
+static LANG_REV: AtomicU64 = AtomicU64::new(0);
+
+/// Current language revision (see `LANG_REV`).
+pub fn lang_rev() -> u64 {
+    LANG_REV.load(Ordering::SeqCst)
+}
+
 /// Raw `systemLanguage` mapped once the IL2CPP bridge is up.
 static DETECTED: AtomicU8 = AtomicU8::new(UNSET);
 /// Manual pin from the Settings tile (`UNSET` = Auto).
@@ -150,6 +160,7 @@ static OVERRIDE: AtomicU8 = AtomicU8::new(UNSET);
 pub fn note_detected(raw: Option<i32>) {
     let v = raw.and_then(Lang::from_system_language).map(Lang::encode);
     DETECTED.store(v.unwrap_or(UNSET), Ordering::SeqCst);
+    LANG_REV.fetch_add(1, Ordering::SeqCst);
     crate::log_line(&format!(
         "i18n: game language raw={:?} -> {:?}",
         raw,
@@ -165,6 +176,7 @@ pub fn detected() -> Option<Lang> {
 /// Pin a language from the Settings tile (`None` = back to Auto).
 pub fn set_override(lang: Option<Lang>) {
     OVERRIDE.store(lang.map(Lang::encode).unwrap_or(UNSET), Ordering::SeqCst);
+    LANG_REV.fetch_add(1, Ordering::SeqCst);
 }
 
 /// Current manual pin, if any.
@@ -224,6 +236,7 @@ fn mod_tile(key: &str) -> Option<&'static str> {
         "mod_hide" => Some(crate::mods::hud_hide::i18n::tile_label(code)),
         "mod_version" => Some(crate::mods::hud_text::i18n::tile_label(code)),
         "mod_inspector" => Some(crate::mods::inspector::i18n::tile_label(code)),
+        "mod_camera" => Some(crate::mods::camera::i18n::tile_label(code)),
         "mod_video" => Some(crate::mods::video::i18n::tile_label(code)),
         "mod_gamelog" => Some(crate::mods::gamelog::i18n::tile_label(code)),
         _ => None,

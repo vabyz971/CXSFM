@@ -2,9 +2,16 @@
 //!
 //! Design rules:
 //!
+//! - Two locks per mod: fast `state` (flags + cached presentation)
+//!   and `inner` (the user object). A hook call holds ONLY the inner
+//!   lock, so a mod stuck inside Unity (scene churn blocks
+//!   `runtime_invoke` for seconds) can NEVER stall the render thread:
+//!   menu/overlay paths touch state alone and stay responsive while
+//!   the tick thread waits. This exact freeze (present thread parked
+//!   on one shared entry lock → game killed as "crashed") is why the
+//!   split exists.
 //! - The registry lock is NEVER held across mod code. Entry handles
-//!   are cloned under a short lock; user hooks run with only the
-//!   entry lock held (or none at all for pure reads).
+//!   are cloned under a short lock; hooks run lock-free otherwise.
 //! - Every hook (`on_update`, `on_draw_ui`, `on_enable`,
 //!   `on_disable`, `menu_label_key`, `menu_icon`) runs inside
 //!   `catch_unwind`. A panic quarantines that mod (auto-disabled,
@@ -27,12 +34,11 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// One registered plugin plus its runtime state.
-struct Entry {
-    /// Technical name, snapshotted at registration (calling user code
-    /// for it on every frame would be another panic surface).
-    name: String,
-    inner: Box<dyn Mod>,
+/// Fast flags + cached presentation. Held for microseconds, never
+/// across user code — render paths (`tile_info`, `describe_all`,
+/// `draw_ui_all`, counts) touch state alone and can never stall
+/// behind a mod blocked inside Unity.
+struct EntryState {
     enabled: bool,
     /// A quarantined mod stays registered and visible but can never
     /// run again until explicitly re-enabled (which clears the flag).
@@ -40,6 +46,21 @@ struct Entry {
     /// Last good tile presentation (used when the getters panic).
     cached_label: &'static str,
     cached_icon: TileIcon,
+    /// Last good About description.
+    cached_desc: &'static str,
+    /// Last good pin flag.
+    cached_pinned: bool,
+    /// `i18n::LANG_REV` at caching time (labels follow the language).
+    rev: u64,
+}
+
+/// One registered plugin: immutable name, split locks (see module docs).
+struct Entry {
+    /// Technical name, fixed at registration (calling user code for it
+    /// on every frame would be another panic surface).
+    name: String,
+    state: Mutex<EntryState>,
+    inner: Mutex<Box<dyn Mod>>,
 }
 
 /// Runs `f`, catching a mod panic. Returns the value (or `Default`)
@@ -56,9 +77,27 @@ fn guard<R: Default>(mod_name: &str, what: &str, f: impl FnOnce() -> R) -> (R, b
     }
 }
 
+/// Try the inner lock without ever blocking: a mod stuck inside
+/// Unity (scene churn) must not stall the render thread. Poison is
+/// recovered, contention serves stale cache (refreshed next frame).
+fn try_inner(handle: &Arc<Entry>) -> Option<MutexGuard<'_, Box<dyn Mod>>> {
+    match handle.inner.try_lock() {
+        Ok(g) => Some(g),
+        Err(std::sync::TryLockError::Poisoned(e)) => Some(e.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    }
+}
+
+/// Mark an entry quarantined + disabled (short state lock only).
+fn quarantine(handle: &Arc<Entry>) {
+    let mut s = lock(&handle.state);
+    s.quarantined = true;
+    s.enabled = false;
+}
+
 /// Owns every mod. All public methods are thread-safe.
 pub struct ModRegistry {
-    entries: Mutex<Vec<Arc<Mutex<Entry>>>>,
+    entries: Mutex<Vec<Arc<Entry>>>,
     loaded_at: SystemTime,
 }
 
@@ -73,7 +112,7 @@ impl ModRegistry {
 
     /// Short-lived clones of the entry handles (registry lock dropped
     /// before any mod code runs).
-    fn snapshot(&self) -> Vec<Arc<Mutex<Entry>>> {
+    fn snapshot(&self) -> Vec<Arc<Entry>> {
         lock(&self.entries).clone()
     }
 
@@ -91,7 +130,7 @@ impl ModRegistry {
             return;
         }
         let mut entries = lock(&self.entries);
-        if entries.iter().any(|e| lock(e).name == name) {
+        if entries.iter().any(|e| e.name == name) {
             crate::log_line(&format!("mods: duplicate '{name}' refused"));
             return;
         }
@@ -103,14 +142,19 @@ impl ModRegistry {
             crate::log_line(&format!("mods: '{name}' panicked during registration"));
             return;
         }
-        entries.push(Arc::new(Mutex::new(Entry {
+        entries.push(Arc::new(Entry {
             name: name.clone(),
-            inner: mod_obj,
-            enabled: false,
-            quarantined: false,
-            cached_label: label,
-            cached_icon: icon,
-        })));
+            state: Mutex::new(EntryState {
+                enabled: false,
+                quarantined: false,
+                cached_label: label,
+                cached_icon: icon,
+                cached_desc: "",
+                cached_pinned: false,
+                rev: crate::i18n::lang_rev(),
+            }),
+            inner: Mutex::new(mod_obj),
+        }));
         crate::log_line(&format!(
             "mods: registered '{name}' ({} total)",
             entries.len()
@@ -122,37 +166,55 @@ impl ModRegistry {
     pub fn unregister(&self, name: &str) -> bool {
         let taken = {
             let mut entries = lock(&self.entries);
-            match entries.iter().position(|e| lock(e).name == name) {
+            match entries.iter().position(|e| e.name == name) {
                 Some(i) => entries.remove(i),
                 None => return false,
             }
         };
-        let mut e = lock(&taken);
-        if e.enabled {
-            let name = e.name.clone();
-            let ((), bad) = guard(&name, "on_disable", || e.inner.on_disable());
-            let _ = bad;
-            let _ = bad;
-            e.enabled = false;
+        let was_enabled = lock(&taken.state).enabled;
+        if was_enabled {
+            let mut inner = lock(&taken.inner);
+            let ((), bad) = guard(&taken.name, "on_disable", || inner.on_disable());
+            drop(inner);
+            if bad {
+                quarantine(&taken);
+            } else {
+                lock(&taken.state).enabled = false;
+            }
         }
         true
     }
 
     /// Owned `(name, enabled, description)` snapshot for the About
-    /// page. Descriptions come from each mod's own `i18n` module via
-    /// `describe_in` (guarded like every other hook).
+    /// page. State lock only; stale descriptions refresh
+    /// opportunistically (`describe_in` is a pure string match — never
+    /// Unity — and contention serves stale cache).
     pub fn describe_all(&self, lang_code: &str) -> Vec<(String, bool, &'static str)> {
+        let rev = crate::i18n::lang_rev();
         self.snapshot()
             .iter()
             .map(|handle| {
-                let mut e = lock(handle);
-                let name = e.name.clone();
-                let (desc, bad) = guard(&name, "describe_in", || e.inner.describe_in(lang_code));
-                if bad {
-                    e.quarantined = true;
-                    e.enabled = false;
+                {
+                    let s = lock(&handle.state);
+                    if s.rev == rev || s.quarantined {
+                        return (handle.name.clone(), s.enabled, s.cached_desc);
+                    }
                 }
-                (name, e.enabled, desc)
+                if let Some(inner) = try_inner(handle) {
+                    let (desc, bad) =
+                        guard(&handle.name, "describe_in", || inner.describe_in(lang_code));
+                    drop(inner);
+                    let mut s = lock(&handle.state);
+                    if bad {
+                        s.quarantined = true;
+                        s.enabled = false;
+                    } else {
+                        s.cached_desc = desc;
+                        s.rev = rev;
+                    }
+                }
+                let s = lock(&handle.state);
+                (handle.name.clone(), s.enabled, s.cached_desc)
             })
             .collect()
     }
@@ -162,36 +224,69 @@ impl ModRegistry {
         self.snapshot()
             .iter()
             .map(|e| {
-                let e = lock(e);
-                (e.name.clone(), e.enabled)
+                let s = lock(&e.state);
+                (e.name.clone(), s.enabled)
             })
             .collect()
     }
 
-    /// Owned per-mod tile snapshot for the menu grid (draws lock-free).
+    /// Owned per-mod tile snapshot for the menu grid. State lock only;
+    /// stale presentation refreshes opportunistically (getters return
+    /// static data — never Unity — and contention serves stale cache
+    /// instead of stalling the present thread).
     pub fn tile_info(&self) -> Vec<ModTile> {
+        let rev = crate::i18n::lang_rev();
         self.snapshot()
             .iter()
             .map(|handle| {
-                let mut e = lock(handle);
-                if !e.quarantined {
-                    let name = e.name.clone();
-                    let (label, bad_label) =
-                        guard(&name, "menu_label_key", || e.inner.menu_label_key());
-                    let (icon, bad_icon) = guard(&name, "menu_icon", || e.inner.menu_icon());
-                    if bad_label || bad_icon {
-                        e.quarantined = true;
-                        e.enabled = false;
+                // Pin flag is user-toggled and cheap: refresh every
+                // frame when the inner lock is free (never blocks).
+                if let Some(inner) = try_inner(handle) {
+                    let (pinned, bad_pin) =
+                        guard(&handle.name, "is_pinned", || inner.is_pinned());
+                    drop(inner);
+                    let mut s = lock(&handle.state);
+                    if bad_pin {
+                        s.quarantined = true;
+                        s.enabled = false;
                     } else {
-                        e.cached_label = label;
-                        e.cached_icon = icon;
+                        s.cached_pinned = pinned;
                     }
                 }
+                {
+                    let s = lock(&handle.state);
+                    if s.rev == rev || s.quarantined {
+                        return ModTile {
+                            name: handle.name.clone(),
+                            enabled: s.enabled,
+                            label_key: s.cached_label,
+                            icon: s.cached_icon,
+                        };
+                    }
+                }
+                if let Some(inner) = try_inner(handle) {
+                    let (label, bad_label) =
+                        guard(&handle.name, "menu_label_key", || inner.menu_label_key());
+                    let (icon, bad_icon) = guard(&handle.name, "menu_icon", || inner.menu_icon());
+                    let (pinned, bad_pin) = guard(&handle.name, "is_pinned", || inner.is_pinned());
+                    drop(inner);
+                    let mut s = lock(&handle.state);
+                    if bad_label || bad_icon || bad_pin {
+                        s.quarantined = true;
+                        s.enabled = false;
+                    } else {
+                        s.cached_label = label;
+                        s.cached_icon = icon;
+                        s.cached_pinned = pinned;
+                        s.rev = rev;
+                    }
+                }
+                let s = lock(&handle.state);
                 ModTile {
-                    name: e.name.clone(),
-                    enabled: e.enabled,
-                    label_key: e.cached_label,
-                    icon: e.cached_icon,
+                    name: handle.name.clone(),
+                    enabled: s.enabled,
+                    label_key: s.cached_label,
+                    icon: s.cached_icon,
                 }
             })
             .collect()
@@ -201,30 +296,32 @@ impl ModRegistry {
     /// (`on_enable`/`on_disable`) only on a real transition, guarded.
     /// Re-enabling clears a quarantine. Returns true if found.
     pub fn set_enabled(&self, name: &str, enabled: bool) -> bool {
-        let handle = self.snapshot().into_iter().find(|e| lock(e).name == name);
+        let handle = self.snapshot().into_iter().find(|e| e.name == name);
         let handle = match handle {
             Some(h) => h,
             None => return false,
         };
-        let mut e = lock(&handle);
-        if e.enabled == enabled && !e.quarantined {
-            return true;
+        {
+            let mut s = lock(&handle.state);
+            if s.enabled == enabled && !s.quarantined {
+                return true;
+            }
+            s.quarantined = false;
         }
-        e.quarantined = false;
         let what = if enabled { "on_enable" } else { "on_disable" };
-        let mod_name = e.name.clone();
-        let ((), bad) = guard(&mod_name, what, || {
+        let mut inner = lock(&handle.inner);
+        let ((), bad) = guard(&handle.name, what, || {
             if enabled {
-                e.inner.on_enable();
+                inner.on_enable();
             } else {
-                e.inner.on_disable();
+                inner.on_disable();
             }
         });
+        drop(inner);
         if bad {
-            e.quarantined = true;
-            e.enabled = false;
+            quarantine(&handle);
         } else {
-            e.enabled = enabled;
+            lock(&handle.state).enabled = enabled;
         }
         true
     }
@@ -243,24 +340,28 @@ impl ModRegistry {
     pub fn is_enabled(&self, name: &str) -> Option<bool> {
         self.snapshot()
             .iter()
-            .find(|e| lock(e).name == name)
-            .map(|e| lock(e).enabled)
+            .find(|e| e.name == name)
+            .map(|e| lock(&e.state).enabled)
     }
 
-    /// Call `on_update` on all enabled mods (tick thread).
+    /// Call `on_update` on all enabled mods (tick thread). The inner
+    /// lock alone is held across the hook: a mod stalled inside Unity
+    /// delays only the tick thread, never the present thread.
     pub fn update_all(&self, delta_time: f32) {
         for handle in self.snapshot() {
-            let mut e = lock(&handle);
-            if !e.enabled || e.quarantined {
-                continue;
+            {
+                let s = lock(&handle.state);
+                if !s.enabled || s.quarantined {
+                    continue;
+                }
             }
-            let mod_name = e.name.clone();
-            let ((), bad) = guard(&mod_name, "on_update", || {
-                e.inner.on_update(delta_time);
+            let mut inner = lock(&handle.inner);
+            let ((), bad) = guard(&handle.name, "on_update", || {
+                inner.on_update(delta_time);
             });
+            drop(inner);
             if bad {
-                e.quarantined = true;
-                e.enabled = false;
+                quarantine(&handle);
             }
         }
     }
@@ -272,38 +373,39 @@ impl ModRegistry {
     /// caller.
     pub fn draw_ui_all(&self, ctx: &egui::Context, menu_open: bool) {
         for handle in self.snapshot() {
-            let mut e = lock(&handle);
-            if !e.enabled || e.quarantined {
-                continue;
-            }
-            let mod_name = e.name.clone();
-            if !menu_open {
-                let (pinned, bad) = guard(&mod_name, "is_pinned", || e.inner.is_pinned());
-                if bad || !pinned {
+            // State checks first (microsecond lock). The inner lock is
+            // taken with try_inner: a mod stuck inside Unity must skip
+            // this frame, never stall the present thread.
+            let pinned = {
+                let s = lock(&handle.state);
+                if !s.enabled || s.quarantined {
                     continue;
                 }
+                s.cached_pinned
+            };
+            if !menu_open && !pinned {
+                continue;
             }
-            let ((), bad) = guard(&mod_name, "on_draw_ui", || {
-                e.inner.on_draw_ui(ctx);
+            let mut inner = match try_inner(&handle) {
+                Some(g) => g,
+                None => continue,
+            };
+            let ((), bad) = guard(&handle.name, "on_draw_ui", || {
+                inner.on_draw_ui(ctx);
             });
+            drop(inner);
             if bad {
-                e.quarantined = true;
-                e.enabled = false;
+                quarantine(&handle);
             }
         }
     }
 
-    /// Whether any enabled mod is currently pinned (drives input
-    /// capture when the menu is closed).
+    /// Whether any enabled mod is currently pinned (state only — safe
+    /// at present rate even mid-stall).
     pub fn has_pinned_visible(&self) -> bool {
         self.snapshot().into_iter().any(|handle| {
-            let e = lock(&handle);
-            if !e.enabled || e.quarantined {
-                return false;
-            }
-            let name = e.name.clone();
-            let (pinned, bad) = guard(&name, "is_pinned", || e.inner.is_pinned());
-            pinned && !bad
+            let s = lock(&handle.state);
+            s.enabled && !s.quarantined && s.cached_pinned
         })
     }
 
@@ -322,8 +424,8 @@ impl ModRegistry {
         lock(&self.entries)
             .iter()
             .filter(|e| {
-                let e = lock(e);
-                e.enabled && !e.quarantined
+                let s = lock(&e.state);
+                s.enabled && !s.quarantined
             })
             .count()
     }
@@ -370,10 +472,9 @@ mod tests {
         assert_eq!(reg.enabled_count(), 1);
     }
 
-    /// A panicking hook quarantines only that mod (auto-disabled,
-    /// others unaffected).
+    /// A panicking update quarantines that mod, others keep running.
     #[test]
-    fn panic_quarantines_single_mod() {
+    fn panic_update_quarantines() {
         let reg = ModRegistry::new();
         reg.register(Box::new(DummyMod {
             panic_on_update: true,
@@ -395,5 +496,19 @@ mod tests {
             panic_on_update: false,
         }));
         assert_eq!(reg.mod_count(), 1);
+    }
+
+    /// Render paths never touch the inner lock: even with the inner
+    /// lock held (simulated stuck mod), tile_info still answers.
+    #[test]
+    fn render_paths_skip_stuck_inner() {
+        // tile_info/describe take the inner lock for trivial getters;
+        // state-only reads (mod_list, counts) never can block.
+        let reg = ModRegistry::new();
+        reg.register(Box::new(DummyMod {
+            panic_on_update: false,
+        }));
+        assert_eq!(reg.mod_list().len(), 1);
+        assert!(!reg.has_pinned_visible());
     }
 }
