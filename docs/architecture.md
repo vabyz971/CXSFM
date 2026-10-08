@@ -177,6 +177,10 @@ mods/
   hud_scout/    example: read-only HUD text inventory (mod.rs + i18n.rs)
   hud_hide/     example: hide one element, restore on disable
   hud_text/     example: replace (or blank) one text, restore on disable
+  inspector/    tool: scene tree via SceneManager roots + Transform walk
+                (names, ids, active, position; throttled snapshot)
+  video/        PARKED: reads fine, some setters crash the game —
+                re-enable once the faulting setter is isolated
   fpv_camera.rs parked (render-hook future)
 mod_api.rs      façade: ModManager delegates to the loader (paths stable)
 i18n/           mod.rs (detection + dispatch) + one file per language;

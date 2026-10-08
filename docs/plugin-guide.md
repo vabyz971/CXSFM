@@ -8,6 +8,9 @@ Un mod = **un dossier** sous `src/mods/`, compilé dans le framework
 | `hud_scout/` | inspecter (read-only, zéro écriture) |
 | `hud_hide/` | **masquer** un élément (`Behaviour.enabled = false` + restore) |
 | `hud_text/` | **remplacer** un texte (drift-repair + restore) ; contenu vide = **masquer** le texte |
+| `inspector/` | outil : arbre de scène (roots + hiérarchie + position, snapshot throttlé) |
+| `gamelog/` | outil : `Player.log` du jeu en direct (filtre + erreurs, lecture seule) |
+| `video/` | PARKÉ : setters vidéo = crash jeu (lecture OK, écriture à isoler) |
 
 ## 1. Copier un dossier
 

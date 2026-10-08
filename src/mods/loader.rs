@@ -265,14 +265,24 @@ impl ModRegistry {
         }
     }
 
-    /// Call `on_draw_ui` on all enabled mods (render thread).
-    pub fn draw_ui_all(&self, ctx: &egui::Context) {
+    /// Call `on_draw_ui` on enabled mods (render thread).
+    ///
+    /// When the menu is closed only pinned mods draw (see
+    /// `Mod::is_pinned`); the menu window itself stays gated by the
+    /// caller.
+    pub fn draw_ui_all(&self, ctx: &egui::Context, menu_open: bool) {
         for handle in self.snapshot() {
             let mut e = lock(&handle);
             if !e.enabled || e.quarantined {
                 continue;
             }
             let mod_name = e.name.clone();
+            if !menu_open {
+                let (pinned, bad) = guard(&mod_name, "is_pinned", || e.inner.is_pinned());
+                if bad || !pinned {
+                    continue;
+                }
+            }
             let ((), bad) = guard(&mod_name, "on_draw_ui", || {
                 e.inner.on_draw_ui(ctx);
             });
@@ -281,6 +291,20 @@ impl ModRegistry {
                 e.enabled = false;
             }
         }
+    }
+
+    /// Whether any enabled mod is currently pinned (drives input
+    /// capture when the menu is closed).
+    pub fn has_pinned_visible(&self) -> bool {
+        self.snapshot().into_iter().any(|handle| {
+            let e = lock(&handle);
+            if !e.enabled || e.quarantined {
+                return false;
+            }
+            let name = e.name.clone();
+            let (pinned, bad) = guard(&name, "is_pinned", || e.inner.is_pinned());
+            pinned && !bad
+        })
     }
 
     /// Seconds since the registry was created (About page).

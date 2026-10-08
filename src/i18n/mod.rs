@@ -223,6 +223,9 @@ fn mod_tile(key: &str) -> Option<&'static str> {
         "mod_scout" => Some(crate::mods::hud_scout::i18n::tile_label(code)),
         "mod_hide" => Some(crate::mods::hud_hide::i18n::tile_label(code)),
         "mod_version" => Some(crate::mods::hud_text::i18n::tile_label(code)),
+        "mod_inspector" => Some(crate::mods::inspector::i18n::tile_label(code)),
+        "mod_video" => Some(crate::mods::video::i18n::tile_label(code)),
+        "mod_gamelog" => Some(crate::mods::gamelog::i18n::tile_label(code)),
         _ => None,
     }
 }

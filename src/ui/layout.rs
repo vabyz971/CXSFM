@@ -25,7 +25,7 @@ pub struct GridLayout {
 }
 
 /// Compute the grid for `avail_w` of free width and `mod_count`
-/// registered mods (+2 implicit Settings/About tiles for the height).
+/// registered mods.
 pub fn grid_layout(avail_w: f32, mod_count: usize) -> GridLayout {
     let compact = mod_count > MODS_BEFORE_COMPACT;
     let tile = if compact { TILE_COMPACT } else { TILE };
@@ -42,5 +42,29 @@ pub fn grid_layout(avail_w: f32, mod_count: usize) -> GridLayout {
         tile,
         label,
         block_w: cols as f32 * tile.x + (cols as f32 - 1.0).max(0.0) * GRID_GAP,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::grid_layout;
+    use super::super::theme::{GRID_GAP, TILE, TILE_COMPACT};
+
+    /// Few mods on a wide window: 4 normal columns, exact block width.
+    #[test]
+    fn wide_window_four_normal_columns() {
+        let l = grid_layout(600.0, 3);
+        assert_eq!(l.cols, 4);
+        assert_eq!(l.tile, TILE);
+        assert!((l.block_w - (4.0 * TILE.x + 3.0 * GRID_GAP)).abs() < 0.01);
+    }
+
+    /// Past 8 mods the tiles shrink; narrow windows wrap below 4 cols.
+    #[test]
+    fn many_mods_compact_and_wrap() {
+        let l = grid_layout(600.0, 9);
+        assert_eq!(l.tile, TILE_COMPACT);
+        let narrow = grid_layout(200.0, 9);
+        assert!(narrow.cols < 4 && narrow.cols >= 1);
     }
 }

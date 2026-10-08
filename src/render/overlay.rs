@@ -506,13 +506,10 @@ fn run_ui(
     let output = ctx.run(input, |ui_ctx| {
         crate::mod_api::draw_status_ui(ui_ctx);
         crate::mod_api::draw_manager_ui(ui_ctx);
-        // Mod windows honor the framework visibility flag too: closing
-        // the menu hides every window while enabled mods keep their
-        // effects running in the background (UI vs effects are
-        // independent — see the F8 wiring in lib.rs).
-        if crate::hotkey::ui_visible() {
-            crate::mod_api::draw_ui_all(ui_ctx);
-        }
+        // Tool windows draw whenever the menu is open; pinned ones
+        // stay visible after it closes (their effects keep running
+        // either way — UI vs effects are independent).
+        crate::mod_api::draw_ui_all(ui_ctx, crate::hotkey::ui_visible());
         // Software cursor on top while captured.
         if crate::hotkey::is_captured() {
             let (x, y) = crate::hotkey::cursor_pos();
@@ -617,7 +614,9 @@ pub fn draw_frame(
         // 0. Freshness: drain events (cheap) and detect UI-state
         // changes (mod toggles alter content without input events).
         // A re-run is needed when: input pending, repaint due, never
-        // recorded yet, or the enabled set changed. Otherwise the
+        // recorded yet, the enabled set changed, or a pinned window is
+        // visible with the menu closed (10 Hz heartbeat — static UI
+        // would otherwise sleep on `repaint_delay`). Otherwise the
         // last recorded command buffer is REPLAYED below — this is
         // what kills the flicker (skipped frames used to present
         // WITHOUT ui) while keeping idle cost near zero (no egui
@@ -632,10 +631,30 @@ pub fn draw_frame(
             Some(next) => std::time::Instant::now() >= next,
             None => true,
         };
+        // Pinned tool windows must stay LIVE with the menu closed:
+        // static UI sleeps on `repaint_delay` (up to an hour), so
+        // force a re-run at ~10 Hz while a pin is visible. Input
+        // still belongs to the game (view-only) — reopen the menu
+        // to interact.
+        static LAST_PIN_RUN: LazyLock<Mutex<Option<std::time::Instant>>> =
+            LazyLock::new(|| Mutex::new(None));
+        let menu_open = crate::hotkey::ui_visible();
+        let pinned_beat = !menu_open
+            && crate::mod_api::get_mod_manager().has_pinned_visible()
+            && {
+                let mut last = LAST_PIN_RUN.lock().unwrap();
+                let due = last
+                    .map(|t| t.elapsed() >= std::time::Duration::from_millis(100))
+                    .unwrap_or(true);
+                if due {
+                    *last = Some(std::time::Instant::now());
+                }
+                due
+            };
         // Per-image dirty: an image replays only its OWN recording.
         let idx = image_index as usize;
         let img_recorded = st.recorded.get(idx).copied().unwrap_or(false);
-        let content_changed = !events.is_empty() || repaint_due || enabled_changed;
+        let content_changed = !events.is_empty() || repaint_due || enabled_changed || pinned_beat;
         let dirty = content_changed || !img_recorded;
         // A real content change invalidates EVERY image (their
         // recordings hold the old UI); each re-records on its next

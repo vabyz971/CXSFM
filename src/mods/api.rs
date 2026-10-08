@@ -37,6 +37,12 @@ pub enum TileIcon {
     Tag,
     Globe,
     Info,
+    /// Scene-tree browser.
+    Tree,
+    /// Sliders (video/quality settings).
+    Sliders,
+    /// Log lines (game log viewer).
+    Log,
 }
 
 impl Default for TileIcon {
@@ -132,6 +138,17 @@ pub trait Mod: Send + Sync {
     #[inline]
     fn menu_icon(&self) -> TileIcon {
         TileIcon::Info
+    }
+
+    /// Whether this mod's window stays visible when the menu closes.
+    ///
+    /// Tool mods expose a pin toggle (see `super::tool::ToolChrome`);
+    /// the loader only draws pinned mods then. Pinned windows are
+    /// view-only (capture follows the menu), so they can never freeze
+    /// game input. Defaults to off (window lives and dies with the menu).
+    #[inline]
+    fn is_pinned(&self) -> bool {
+        false
     }
 }
 

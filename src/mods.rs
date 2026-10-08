@@ -9,8 +9,12 @@
 //!   discipline, disable-before-remove).
 pub mod api;
 pub mod common;
+pub mod loader;
+pub mod tool;
 pub mod fpv_camera;
+pub mod gamelog;
 pub mod hud_hide;
 pub mod hud_scout;
 pub mod hud_text;
-pub mod loader;
+pub mod inspector;
+pub mod video;

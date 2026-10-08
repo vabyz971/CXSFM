@@ -81,9 +81,15 @@ impl ModManager {
         self.registry.update_all(delta_time);
     }
 
-    /// Call the draw UI method on all *enabled* mods.
-    pub fn draw_ui_all(&self, ctx: &egui::Context) {
-        self.registry.draw_ui_all(ctx);
+    /// Call the draw UI method on *enabled* mods (pinned ones draw
+    /// even when `menu_open` is false).
+    pub fn draw_ui_all(&self, ctx: &egui::Context, menu_open: bool) {
+        self.registry.draw_ui_all(ctx, menu_open);
+    }
+
+    /// Whether any enabled mod is currently pinned.
+    pub fn has_pinned_visible(&self) -> bool {
+        self.registry.has_pinned_visible()
     }
 
     /// Enable a mod by name. Returns true if it exists (even if already on).
@@ -168,10 +174,11 @@ pub fn update_all_mods(delta_time: f32) {
     get_mod_manager().update_all(delta_time)
 }
 
-/// Convenience function to draw UI for all registered mods
+/// Convenience function to draw UI for enabled mods (pinned ones
+/// draw even when `menu_open` is false)
 #[inline]
-pub fn draw_ui_all(ctx: &egui::Context) {
-    get_mod_manager().draw_ui_all(ctx)
+pub fn draw_ui_all(ctx: &egui::Context, menu_open: bool) {
+    get_mod_manager().draw_ui_all(ctx, menu_open)
 }
 
 /// Convenience function to draw the framework status window

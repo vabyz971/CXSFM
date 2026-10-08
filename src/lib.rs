@@ -211,6 +211,12 @@ fn deferred_init() {
         mods::hud_scout::register();
         mods::hud_hide::register();
         mods::hud_text::register();
+        mods::inspector::register();
+        mods::gamelog::register();
+        // NOTE: video is PARKED — some setters crash the game on write
+        // (reads were fine). The module stays compiled in
+        // `mods::video` until the faulting setter is isolated.
+        // mods::video::register();
         log_line("mods registered, starting tick thread");
         spawn_tick_thread();
         headless_ui_check();
@@ -555,6 +561,16 @@ fn spawn_tick_thread() {
                             if target { "ON" } else { "OFF" }
                         ));
                     }
+                    // Pinned tool windows stay VISIBLE with the menu
+                    // closed, but input stays with the game: capture
+                    // follows the menu only. A pinned window that kept
+                    // capture froze all game input (indistinguishable
+                    // from a crash), so pinned == view-only until the
+                    // menu reopens. See `loader::draw_ui_all`.
+                    let want_capture = hotkey::ui_visible();
+                    if hotkey::is_captured() != want_capture {
+                        hotkey::set_captured(want_capture);
+                    }
                 }
                 // Mod updates touch IL2CPP: skip them entirely during
                 // teardown (see above). The tick itself (heartbeat,
@@ -577,7 +593,7 @@ fn headless_ui_check() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let ctx = egui::Context::default();
         ctx.begin_pass(egui::RawInput::default());
-        mod_api::draw_ui_all(&ctx);
+        mod_api::draw_ui_all(&ctx, true);
         mod_api::draw_manager_ui(&ctx);
         mod_api::draw_status_ui(&ctx);
         let _ = ctx.end_pass();

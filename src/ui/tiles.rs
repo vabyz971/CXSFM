@@ -114,6 +114,53 @@ pub fn draw_icon(painter: &egui::Painter, c: egui::Pos2, s: f32, icon: TileIcon)
             // Dot.
             painter.circle_filled(c + egui::Vec2::new(0.0, -s * 0.25), 2.5, col);
         }
+        TileIcon::Tree => {
+            // Trunk + three branches ending in dots (scene hierarchy).
+            let x0 = c.x - s * 0.4;
+            painter.line_segment(
+                [
+                    egui::pos2(x0, c.y - s * 0.5),
+                    egui::pos2(x0, c.y + s * 0.5),
+                ],
+                w,
+            );
+            for (i, dy) in [-0.32, 0.0, 0.32].iter().enumerate() {
+                let y = c.y + s * dy;
+                let x1 = x0 + s * (0.35 + 0.15 * (i as f32));
+                painter.line_segment([egui::pos2(x0, y), egui::pos2(x1, y)], thin);
+                painter.circle_filled(egui::pos2(x1 + s * 0.12, y), 2.5, col);
+            }
+        }
+        TileIcon::Sliders => {
+            // Three rails with knobs (settings).
+            for (i, dy) in [-0.35, 0.0, 0.35].iter().enumerate() {
+                let y = c.y + s * dy;
+                painter.line_segment(
+                    [
+                        egui::pos2(c.x - s * 0.5, y),
+                        egui::pos2(c.x + s * 0.5, y),
+                    ],
+                    thin,
+                );
+                let kx = c.x + s * [-0.2, 0.15, -0.05][i];
+                painter.circle_filled(egui::pos2(kx, y), s * 0.12, col);
+            }
+        }
+        TileIcon::Log => {
+            // Document lines with a folded corner.
+            let wdt = s * 0.7;
+            let hgt = s * 0.9;
+            let r = egui::Rect::from_center_size(c, egui::Vec2::new(wdt, hgt));
+            painter.rect_stroke(r, 2.0, w);
+            for (i, dy) in [-0.22, 0.02, 0.26].iter().enumerate() {
+                let y = c.y + s * dy;
+                let x1 = c.x + s * (0.22 - 0.06 * (i as f32));
+                painter.line_segment(
+                    [egui::pos2(c.x - s * 0.22, y), egui::pos2(x1, y)],
+                    thin,
+                );
+            }
+        }
     }
 }
 
