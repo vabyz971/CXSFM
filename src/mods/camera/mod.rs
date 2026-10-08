@@ -9,7 +9,10 @@
 //! > the present thread freezes the image (sound alive). So: sliders
 //! > edit a recipe, Apply/Go queue a single pass consumed by the tick
 //! > thread, reads are user-timed (Refresh). Never enumerate or write
-//! > in `on_draw_ui`.
+//! > in `on_draw_ui`. Enable/disable transitions also run on the tick
+//! > (loader), so `restore()` can touch Unity. `apply()`/`do_boost()`
+//! > never re-snapshot: they reuse their own enumeration to refresh
+//! > the UI rows.
 
 pub mod i18n;
 
@@ -154,6 +157,8 @@ impl CameraMod {
     }
 
     /// Snapshot discovery (tick thread): brains, vcams, bodies.
+    /// Collects into locals, then merges under brief locks — never a
+    /// MutexGuard alive across a Unity call.
     fn snapshot(&self) {
         if !self.ensure_unity() {
             return;
@@ -167,13 +172,21 @@ impl CameraMod {
             Some(c) => c,
             None => return,
         };
+        let t0 = std::time::Instant::now();
+        let mut enums = 0u32;
+        // Locals first: active name, vcam rows, follow, fov, body rows
+        // plus seed originals. Locks only below, for the merge.
+        let active: String;
+        let mut vcams = Vec::new();
+        let mut follow = String::from("—");
+        let fov: Option<f32>;
+        let mut infos = Vec::new();
+        let mut seeds: Vec<(String, BodyOrig)> = Vec::new();
         // SAFETY: attached tick thread; enumerations consumed now.
         unsafe {
-            let active = crate::unity::cm_active_vcam_name(api, &cache)
+            active = crate::unity::cm_active_vcam_name(api, &cache)
                 .unwrap_or_else(|| String::from("—"));
-            *self.active_vcam.lock().unwrap() = active.clone();
-            let mut vcams = Vec::new();
-            let mut follow = String::from("—");
+            enums += 1;
             for v in crate::unity::cm_vcam_list(api, &cache).iter().take(32) {
                 let name = crate::unity::object_name(api, &cache, *v);
                 let f = crate::unity::cm_vcam_follow_name(api, &cache, *v)
@@ -191,16 +204,12 @@ impl CameraMod {
                     follow: f,
                 });
             }
-            *self.vcams.lock().unwrap() = vcams;
-            *self.follow_name.lock().unwrap() = follow;
+            enums += 1;
             // Main-camera FOV readout (display only — the Brain owns it).
-            let fov = crate::unity::main_camera(api, &cache)
+            fov = crate::unity::main_camera(api, &cache)
                 .and_then(|cam| crate::unity::get_fov(api, &cache, cam));
-            *self.main_fov.lock().unwrap() = fov;
             // Bodies: transposers + orbitals, enabled ones drive framing.
-            // Rows feed the UI; `known` seeds restore originals once.
-            let mut infos = Vec::new();
-            let mut known = self.bodies.lock().unwrap();
+            // Rows feed the UI; seeds merge into restore originals below.
             for (list, kind, off, damp) in [
                 (
                     crate::unity::cm_transposer_list(api, &cache),
@@ -215,11 +224,12 @@ impl CameraMod {
                     cache.m_orbital_damp,
                 ),
             ] {
+                enums += 1;
                 for obj in list.into_iter().take(16) {
                     let name = crate::unity::object_name(api, &cache, obj);
                     let on = crate::unity::beh_get_enabled(api, &cache, obj).unwrap_or(false);
                     if let Some((offset, d)) = Self::read_body(api, obj, off, damp) {
-                        known.entry(name.clone()).or_insert(BodyOrig { offset, damp: d });
+                        seeds.push((name.clone(), BodyOrig { offset, damp: d }));
                         infos.push(BodyInfo {
                             name,
                             kind,
@@ -229,12 +239,29 @@ impl CameraMod {
                     }
                 }
             }
-            *self.bodies_info.lock().unwrap() = infos;
         }
+        // Brief merge: no Unity calls under these guards.
+        *self.active_vcam.lock().unwrap() = active;
+        *self.vcams.lock().unwrap() = vcams;
+        *self.follow_name.lock().unwrap() = follow;
+        *self.main_fov.lock().unwrap() = fov;
+        {
+            let mut known = self.bodies.lock().unwrap();
+            for (name, orig) in seeds {
+                known.entry(name).or_insert(orig);
+            }
+        }
+        *self.bodies_info.lock().unwrap() = infos;
+        crate::log_line(&format!(
+            "camera: snapshot took {} ms, {} enumerations",
+            t0.elapsed().as_millis(),
+            enums
+        ));
     }
 
     /// Apply wanted framing to every enabled body (tick, on change).
-    /// Parked: recompute + log the would-be values, write nothing.
+    /// Single pass, no re-snapshot: UI rows refresh from the read-backs
+    /// below (one enumeration per body kind).
     fn apply(&self) {
         if !self.ensure_unity() {
             return;
@@ -252,49 +279,77 @@ impl CameraMod {
         let h = *self.height.lock().unwrap();
         let smooth = *self.smooth.lock().unwrap();
         let known = self.bodies.lock().unwrap().clone();
+        let t0 = std::time::Instant::now();
+        let mut enums = 0u32;
+        let mut infos = Vec::new();
         // SAFETY: attached tick thread; field writes + read-backs.
         unsafe {
-            for (list, off, damp) in [
+            for (list, kind, off, damp) in [
                 (
                     crate::unity::cm_transposer_list(api, &cache),
+                    "Transposer",
                     cache.m_trans_offset,
                     cache.m_trans_damp,
                 ),
                 (
                     crate::unity::cm_orbital_list(api, &cache),
+                    "Orbital",
                     cache.m_orbital_offset,
                     cache.m_orbital_damp,
                 ),
             ] {
+                enums += 1;
                 for obj in list.into_iter().take(16) {
-                    if !crate::unity::beh_get_enabled(api, &cache, obj).unwrap_or(false) {
-                        continue;
-                    }
                     let name = crate::unity::object_name(api, &cache, obj);
-                    let base = match known.get(&name) {
-                        Some(b) => *b,
-                        None => continue,
-                    };
-                    // Distance scales the captured vector, height shifts Y.
-                    let want = [
-                        base.offset[0] * dist,
-                        base.offset[1] + h,
-                        base.offset[2] * dist,
-                    ];
-                    let ok_off = crate::il2cpp::field_set_vec3(api, obj, off, want);
-                    let back_off = crate::il2cpp::field_get_vec3(api, obj, off);
-                    let mut ok_damp = true;
-                    for f in damp {
-                        ok_damp &= crate::il2cpp::field_set_f32(api, obj, f, smooth);
+                    let on = crate::unity::beh_get_enabled(api, &cache, obj).unwrap_or(false);
+                    // Display row always shows the live offset when
+                    // readable; only enabled + known bodies get written.
+                    let live = Self::read_body(api, obj, off, damp).map(|(o, _)| o);
+                    let base = known.get(&name).copied();
+                    match (on, base, live) {
+                        (true, Some(base), _) => {
+                            // Distance scales the captured vector, height shifts Y.
+                            let want = [
+                                base.offset[0] * dist,
+                                base.offset[1] + h,
+                                base.offset[2] * dist,
+                            ];
+                            let ok_off = crate::il2cpp::field_set_vec3(api, obj, off, want);
+                            let back_off = crate::il2cpp::field_get_vec3(api, obj, off);
+                            let mut ok_damp = true;
+                            for f in damp {
+                                ok_damp &= crate::il2cpp::field_set_f32(api, obj, f, smooth);
+                            }
+                            crate::log_line(&format!(
+                                "camera: '{name}' offset -> [{:.1}, {:.1}, {:.1}] (ok={ok_off} readback={back_off:?}) damp -> {smooth:.1} (ok={ok_damp})",
+                                want[0], want[1], want[2]
+                            ));
+                            infos.push(BodyInfo {
+                                name,
+                                kind,
+                                enabled: true,
+                                offset: back_off.unwrap_or(want),
+                            });
+                        }
+                        (_, _, Some(offset)) => {
+                            infos.push(BodyInfo {
+                                name,
+                                kind,
+                                enabled: on,
+                                offset,
+                            });
+                        }
+                        _ => {}
                     }
-                    crate::log_line(&format!(
-                        "camera: '{name}' offset -> [{:.1}, {:.1}, {:.1}] (ok={ok_off} readback={back_off:?}) damp -> {smooth:.1} (ok={ok_damp})",
-                        want[0], want[1], want[2]
-                    ));
                 }
             }
         }
-        self.snapshot();
+        *self.bodies_info.lock().unwrap() = infos;
+        crate::log_line(&format!(
+            "camera: apply took {} ms, {} enumerations",
+            t0.elapsed().as_millis(),
+            enums
+        ));
     }
 
     /// Queue a priority boost (UI/present thread): stores the name only,
@@ -305,7 +360,8 @@ impl CameraMod {
     }
 
     /// Boost one vcam's priority (tick thread, one-shot); originals
-    /// restored on disable.
+    /// restored on disable. Refreshes the matching UI row from the
+    /// read-back instead of re-snapshotting.
     fn do_boost(&self, name: &str) {
         if !self.ensure_unity() {
             return;
@@ -319,6 +375,7 @@ impl CameraMod {
             Some(c) => c,
             None => return,
         };
+        let t0 = std::time::Instant::now();
         // SAFETY: attached tick thread; single enumeration + write,
         // then stop (one-shot — never a loop, never on present).
         unsafe {
@@ -333,10 +390,17 @@ impl CameraMod {
                     crate::log_line(&format!(
                         "camera: '{name}' priority {was} -> {PRESET_PRIORITY} (readback={back:?})"
                     ));
+                    let mut vcams = self.vcams.lock().unwrap();
+                    if let Some(row) = vcams.iter_mut().find(|r| r.name == name) {
+                        row.priority = back.unwrap_or(PRESET_PRIORITY);
+                    }
                 }
             }
         }
-        self.snapshot();
+        crate::log_line(&format!(
+            "camera: boost took {} ms, 1 enumeration",
+            t0.elapsed().as_millis()
+        ));
     }
 
     /// Restore offsets, damping and priorities (disable path).
@@ -355,6 +419,8 @@ impl CameraMod {
         };
         let bodies = std::mem::take(&mut *self.bodies.lock().unwrap());
         let prios = std::mem::take(&mut *self.priorities.lock().unwrap());
+        let t0 = std::time::Instant::now();
+        let mut enums = 0u32;
         // SAFETY: same contract as `apply`.
         unsafe {
             for (list, off, damp) in [
@@ -369,6 +435,7 @@ impl CameraMod {
                     cache.m_orbital_damp,
                 ),
             ] {
+                enums += 1;
                 for obj in list.into_iter().take(16) {
                     let name = crate::unity::object_name(api, &cache, obj);
                     if let Some(orig) = bodies.get(&name) {
@@ -379,6 +446,7 @@ impl CameraMod {
                     }
                 }
             }
+            enums += 1;
             for v in crate::unity::cm_vcam_list(api, &cache).iter().take(32) {
                 let name = crate::unity::object_name(api, &cache, *v);
                 if let Some(was) = prios.get(&name) {
@@ -389,7 +457,11 @@ impl CameraMod {
         // Reset sliders to neutral for the next arming.
         *self.distance.lock().unwrap() = 1.0;
         *self.height.lock().unwrap() = 0.0;
-        crate::log_line("camera: originals restored");
+        crate::log_line(&format!(
+            "camera: originals restored (took {} ms, {} enumerations)",
+            t0.elapsed().as_millis(),
+            enums
+        ));
     }
 }
 
