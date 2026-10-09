@@ -31,7 +31,8 @@ pub use camera::{
 };
 pub use object::{
     beh_get_enabled, beh_set_enabled, component_active, component_gameobject, get_instance_id,
-    go_active, go_set_active, go_transform, object_name, tr_child, tr_child_count, tr_position,
+    go_active, go_find, go_set_active, go_transform, object_alive, object_name, tr_child,
+    tr_child_count, tr_find, tr_get_scale, tr_position, tr_set_scale,
 };
 pub use scene::{loaded_scenes, scene_root_objects};
 pub use text::{find_texts, find_tmp_texts, get_text, set_text, tmp_get_text, tmp_set_text};
@@ -58,6 +59,10 @@ pub struct UnityCache {
     pub text_klass: *mut std::ffi::c_void,
     /// `Object.FindObjectsOfType(Type)` (static, 1 arg).
     pub m_find_objects: *mut std::ffi::c_void,
+    /// `Object.m_CachedPtr` field (optional — dead-object check: a null
+    /// native pointer means the wrapper outlived its object, and any
+    /// read/write on it crashes. Checked before every write).
+    pub m_cached_ptr: *mut std::ffi::c_void,
     /// `Object.get_name()` (0 args).
     pub m_get_name: *mut std::ffi::c_void,
     /// `Text.get_text()` (0 args).
@@ -90,12 +95,20 @@ pub struct UnityCache {
     pub m_go_get_transform: *mut std::ffi::c_void,
     /// `GameObject.SetActive(bool)` (optional).
     pub m_go_set_active: *mut std::ffi::c_void,
+    /// `GameObject.Find(name)` (static, 1 string arg, optional).
+    pub m_go_find: *mut std::ffi::c_void,
     /// `Transform` class (optional — hierarchy walk + position).
     pub tr_klass: *mut std::ffi::c_void,
     /// `Transform.get_childCount()` (optional).
     pub m_tr_get_child_count: *mut std::ffi::c_void,
     /// `Transform.GetChild(int)` (optional).
     pub m_tr_get_child: *mut std::ffi::c_void,
+    /// `Transform.Find(name)` (1 string arg, optional).
+    pub m_tr_find: *mut std::ffi::c_void,
+    /// `Transform.get_localScale()` (optional — boxed Vector3).
+    pub m_tr_get_local_scale: *mut std::ffi::c_void,
+    /// `Transform.set_localScale(Vector3)` (optional — scale-zero hiding).
+    pub m_tr_set_local_scale: *mut std::ffi::c_void,
     /// `Transform.get_position()` (optional — boxed Vector3).
     pub m_tr_get_position: *mut std::ffi::c_void,
     /// `SceneManager.GetActiveScene()` (static, optional — root walk).
@@ -290,6 +303,13 @@ pub unsafe fn init(
         let m_get_instance_id =
             il2cpp::get_method(api, obj_klass, "GetInstanceID", 0);
 
+        // Dead-object check: Object.m_CachedPtr, the native pointer
+        // behind every wrapper. Null = the native object is gone and
+        // any read/write on the wrapper crashes (proven on camera
+        // writes during view churn). Resolved once like a method.
+        // SAFETY: live class + static field name (outer unsafe).
+        let m_cached_ptr = il2cpp::find_field(api, obj_klass, "m_CachedPtr");
+
         // Hierarchy walk: GameObject roots via SceneManager (includes
         // inactive branches — FindObjectsOfType would skip them), then
         // Transform children down. Everything optional: a missing piece
@@ -337,6 +357,18 @@ pub unsafe fn init(
                     il2cpp::get_method(api, tr_klass, "get_position", 0),
                 )
             };
+        // HUD scale-zero hiding: child lookup + localScale get/set.
+        // Same struct-by-address shapes as the setters above.
+        let (m_tr_find, m_tr_get_local_scale, m_tr_set_local_scale) =
+            if tr_klass.is_null() {
+                (None, None, None)
+            } else {
+                (
+                    il2cpp::get_method(api, tr_klass, "Find", 1),
+                    il2cpp::get_method(api, tr_klass, "get_localScale", 0),
+                    il2cpp::get_method(api, tr_klass, "set_localScale", 1),
+                )
+            };
         let (m_go_get_transform, m_go_set_active) = if go_klass.is_null() {
             (None, None)
         } else {
@@ -344,6 +376,11 @@ pub unsafe fn init(
                 il2cpp::get_method(api, go_klass, "get_transform", 0),
                 il2cpp::get_method(api, go_klass, "SetActive", 1),
             )
+        };
+        let m_go_find = if go_klass.is_null() {
+            None
+        } else {
+            il2cpp::get_method(api, go_klass, "Find", 1)
         };
 
         // Video/quality knobs: pure static getters/setters, the same
@@ -523,12 +560,17 @@ pub unsafe fn init(
             m_beh_get_enabled: m_beh_get_enabled.unwrap_or(std::ptr::null_mut()),
             m_get_key,
             m_get_instance_id: m_get_instance_id.unwrap_or(std::ptr::null_mut()),
+            m_cached_ptr: m_cached_ptr.unwrap_or(std::ptr::null_mut()),
             go_klass,
             m_go_get_transform: m_go_get_transform.unwrap_or(std::ptr::null_mut()),
             m_go_set_active: m_go_set_active.unwrap_or(std::ptr::null_mut()),
+            m_go_find: m_go_find.unwrap_or(std::ptr::null_mut()),
             tr_klass,
             m_tr_get_child_count: m_tr_get_child_count.unwrap_or(std::ptr::null_mut()),
             m_tr_get_child: m_tr_get_child.unwrap_or(std::ptr::null_mut()),
+            m_tr_find: m_tr_find.unwrap_or(std::ptr::null_mut()),
+            m_tr_get_local_scale: m_tr_get_local_scale.unwrap_or(std::ptr::null_mut()),
+            m_tr_set_local_scale: m_tr_set_local_scale.unwrap_or(std::ptr::null_mut()),
             m_tr_get_position: m_tr_get_position.unwrap_or(std::ptr::null_mut()),
             m_scene_get_active: m_scene_get_active.unwrap_or(std::ptr::null_mut()),
             m_scene_get_count: m_scene_get_count.unwrap_or(std::ptr::null_mut()),

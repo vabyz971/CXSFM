@@ -149,6 +149,40 @@ pub unsafe fn get_instance_id(
     unsafe { super::get_i32(api, cache.m_get_instance_id, obj) }
 }
 
+/// Whether the native object behind a wrapper is still alive.
+///
+/// Reads `Object.m_CachedPtr`: null means the native object is gone
+/// (scene/view churn destroyed it) and ANY further read or write on
+/// the wrapper crashes — proven on camera writes seconds after a view
+/// change. Call before every write; on `false`, force a re-search and
+/// bind the replacement instead of touching the dead pointer.
+/// `None` (field missing) is treated as alive: without the probe there
+/// is nothing to check, same as before.
+///
+/// # Safety
+/// Same contract as `super::init`; `field_get_value` only copies one
+/// pointer-sized payload into a caller buffer.
+pub unsafe fn object_alive(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    obj: *mut std::ffi::c_void,
+) -> Option<bool> {
+    let get_value = api.field_get_value?;
+    if cache.m_cached_ptr.is_null() || obj.is_null() {
+        return None;
+    }
+    // SAFETY: IntPtr-sized caller buffer, field-sized copy by the runtime.
+    unsafe {
+        let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+        get_value(
+            obj,
+            cache.m_cached_ptr,
+            &mut ptr as *mut *mut std::ffi::c_void as *mut std::ffi::c_void,
+        );
+        Some(!ptr.is_null())
+    }
+}
+
 /// `GameObject.get_activeInHierarchy()`.
 ///
 /// # Safety
@@ -258,5 +292,100 @@ pub unsafe fn tr_position(
             std::ptr::read_unaligned(p.add(1)),
             std::ptr::read_unaligned(p.add(2)),
         ])
+    }
+}
+
+/// `GameObject.Find(name)` (static): root lookup by exact scene path
+/// name. Returns `None` when missing — never throws.
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn go_find(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    name: &str,
+) -> Option<*mut std::ffi::c_void> {
+    if cache.m_go_find.is_null() {
+        return None;
+    }
+    let s = unsafe { il2cpp::new_string(api, name) }?;
+    let params = [s];
+    // SAFETY: cached static, one managed-string argument.
+    match unsafe { il2cpp::invoke(api, cache.m_go_find, std::ptr::null_mut(), &params) } {
+        Some(g) if !g.is_null() => Some(g),
+        _ => None,
+    }
+}
+
+/// `Transform.Find(child)` path lookup under a transform.
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn tr_find(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    tr: *mut std::ffi::c_void,
+    child: &str,
+) -> Option<*mut std::ffi::c_void> {
+    if cache.m_tr_find.is_null() || tr.is_null() {
+        return None;
+    }
+    let s = unsafe { il2cpp::new_string(api, child) }?;
+    let params = [s];
+    // SAFETY: cached method, one managed-string argument; null
+    // (missing child) → None.
+    match unsafe { il2cpp::invoke(api, cache.m_tr_find, tr, &params) } {
+        Some(t) if !t.is_null() => Some(t),
+        _ => None,
+    }
+}
+
+/// `Transform.get_localScale()` as `[x, y, z]`.
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn tr_get_scale(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    tr: *mut std::ffi::c_void,
+) -> Option<[f32; 3]> {
+    if cache.m_tr_get_local_scale.is_null() || tr.is_null() || api.object_unbox.is_none() {
+        return None;
+    }
+    // SAFETY: cached getter; boxed Vector3 is 3 packed floats.
+    unsafe {
+        let boxed = il2cpp::invoke(api, cache.m_tr_get_local_scale, tr, &[])?;
+        let p = api.object_unbox.unwrap()(boxed) as *const f32;
+        if p.is_null() {
+            return None;
+        }
+        Some([
+            std::ptr::read_unaligned(p),
+            std::ptr::read_unaligned(p.add(1)),
+            std::ptr::read_unaligned(p.add(2)),
+        ])
+    }
+}
+
+/// `Transform.set_localScale(Vector3)`, passed struct-by-address
+/// (safe on pinned handles).
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn tr_set_scale(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    tr: *mut std::ffi::c_void,
+    scale: [f32; 3],
+) -> bool {
+    if cache.m_tr_set_local_scale.is_null() || tr.is_null() {
+        return false;
+    }
+    // SAFETY: single Vector3 argument passed by address, as the ABI wants.
+    // Void callee: `invoke_void`, never `invoke` (see its docs).
+    unsafe {
+        let mut v = scale;
+        let params = [&mut v as *mut [f32; 3] as *mut std::ffi::c_void];
+        il2cpp::invoke_void(api, cache.m_tr_set_local_scale, tr, &params)
     }
 }
