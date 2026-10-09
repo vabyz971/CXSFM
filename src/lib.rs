@@ -58,6 +58,7 @@ pub mod mod_api;
 pub mod mods;
 pub mod il2cpp;
 pub mod hotkey;
+pub mod mainthread;
 pub mod render;
 pub mod unity;
 pub mod i18n;
@@ -208,16 +209,8 @@ fn deferred_init() {
         // NOTE: FPV is NOT registered (user-deactivated while HUD work
         // goes on). The parked module stays compiled in `mods::fpv_camera`
         // for the render-hook future.
-        mods::hud_scout::register();
-        mods::hud_hide::register();
-        mods::hud_text::register();
         mods::inspector::register();
         mods::gamelog::register();
-        mods::camera::register();
-        // NOTE: video is PARKED — some setters crash the game on write
-        // (reads were fine). The module stays compiled in
-        // `mods::video` until the faulting setter is isolated.
-        // mods::video::register();
         mods::speedo::register();
         log_line("mods registered, starting tick thread");
         spawn_tick_thread();
@@ -579,6 +572,10 @@ fn spawn_tick_thread() {
                 // SDL/X11 polls) keeps running.
                 if !down {
                     mod_api::update_all_mods(dt);
+                    // Main-thread hook upkeep (install retries, probes,
+                    // slot election). Internal pacing only; no Unity
+                    // calls from here except throttled resolution.
+                    crate::mainthread::poll();
                 }
             }
         });

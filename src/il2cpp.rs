@@ -60,6 +60,22 @@ pub type ClassGetMethodFromNameFn = unsafe extern "C" fn(
 /// `const char* il2cpp_method_get_name(void* method)` (diagnostics only)
 pub type MethodGetNameFn =
     unsafe extern "C" fn(*mut std::ffi::c_void) -> *const libc::c_char;
+/// `const Il2CppMethod* il2cpp_class_get_methods(void* klass, void** iter)`
+/// (iteration: call with `*iter == NULL`, repeat until NULL comes back)
+pub type ClassGetMethodsFn = unsafe extern "C" fn(
+    *mut std::ffi::c_void,
+    *mut *mut std::ffi::c_void,
+) -> *mut std::ffi::c_void;
+/// `uint32_t il2cpp_method_get_param_count(void* method)`
+pub type MethodGetParamCountFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> u32;
+/// `size_t il2cpp_image_get_class_count(const void* image)`
+pub type ImageGetClassCountFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> usize;
+/// `const Il2CppClass* il2cpp_image_get_class(const void* image, size_t index)`
+pub type ImageGetClassFn =
+    unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> *mut std::ffi::c_void;
+/// `const char* il2cpp_class_get_name(void* klass)`
+pub type ClassGetNameFn =
+    unsafe extern "C" fn(*mut std::ffi::c_void) -> *const libc::c_char;
 /// `void* il2cpp_class_get_type(void* klass)`
 pub type ClassGetTypeFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> *mut std::ffi::c_void;
 /// `void* il2cpp_type_get_object(void* type)`
@@ -161,6 +177,16 @@ pub struct Il2cppApi {
     pub class_get_method_from_name: Option<ClassGetMethodFromNameFn>,
     /// `il2cpp_method_get_name` — best effort (diagnostics).
     pub method_get_name: Option<MethodGetNameFn>,
+    /// `il2cpp_class_get_methods` — best effort (updater discovery).
+    pub class_get_methods: Option<ClassGetMethodsFn>,
+    /// `il2cpp_method_get_param_count` — best effort (updater discovery).
+    pub method_get_param_count: Option<MethodGetParamCountFn>,
+    /// `il2cpp_image_get_class_count` — best effort (updater discovery).
+    pub image_get_class_count: Option<ImageGetClassCountFn>,
+    /// `il2cpp_image_get_class` — best effort (updater discovery).
+    pub image_get_class: Option<ImageGetClassFn>,
+    /// `il2cpp_class_get_name` — best effort (updater discovery).
+    pub class_get_name: Option<ClassGetNameFn>,
     /// `il2cpp_class_get_type` — best effort.
     pub class_get_type: Option<ClassGetTypeFn>,
     /// `il2cpp_type_get_object` — best effort.
@@ -459,6 +485,15 @@ pub fn resolve() -> Result<Il2cppApi, Il2cppError> {
     let class_get_method_from_name: Option<ClassGetMethodFromNameFn> =
         sym_opt!("il2cpp_class_get_method_from_name", ClassGetMethodFromNameFn);
     let method_get_name: Option<MethodGetNameFn> = sym_opt!("il2cpp_method_get_name", MethodGetNameFn);
+    let class_get_methods: Option<ClassGetMethodsFn> =
+        sym_opt!("il2cpp_class_get_methods", ClassGetMethodsFn);
+    let method_get_param_count: Option<MethodGetParamCountFn> =
+        sym_opt!("il2cpp_method_get_param_count", MethodGetParamCountFn);
+    let image_get_class_count: Option<ImageGetClassCountFn> =
+        sym_opt!("il2cpp_image_get_class_count", ImageGetClassCountFn);
+    let image_get_class: Option<ImageGetClassFn> =
+        sym_opt!("il2cpp_image_get_class", ImageGetClassFn);
+    let class_get_name: Option<ClassGetNameFn> = sym_opt!("il2cpp_class_get_name", ClassGetNameFn);
     let class_get_type: Option<ClassGetTypeFn> = sym_opt!("il2cpp_class_get_type", ClassGetTypeFn);
     let type_get_object: Option<TypeGetObjectFn> = sym_opt!("il2cpp_type_get_object", TypeGetObjectFn);
     let array_length: Option<ArrayLengthFn> = sym_opt!("il2cpp_array_length", ArrayLengthFn);
@@ -487,6 +522,11 @@ pub fn resolve() -> Result<Il2cppApi, Il2cppError> {
         image_get_name,
         class_get_method_from_name,
         method_get_name,
+        class_get_methods,
+        method_get_param_count,
+        image_get_class_count,
+        image_get_class,
+        class_get_name,
         class_get_type,
         type_get_object,
         array_length,
@@ -589,6 +629,159 @@ pub unsafe fn get_method(
         None
     } else {
         Some(m)
+    }
+}
+
+/// Class short name (`Il2CppClass` has no namespace here — callers
+/// match case-insensitively on this).
+///
+/// # Safety
+/// Same contract as [`find_class`].
+pub unsafe fn class_name(
+    api: &Il2cppApi,
+    klass: *mut std::ffi::c_void,
+) -> Option<String> {
+    let class_get_name = api.class_get_name?;
+    if klass.is_null() {
+        return None;
+    }
+    // SAFETY: live class; the returned name is process-lifetime.
+    let p = unsafe { class_get_name(klass) };
+    if p.is_null() {
+        return None;
+    }
+    Some(unsafe { CStr::from_ptr(p as *const libc::c_char) }.to_string_lossy().into_owned())
+}
+
+/// Every method of a class (iterator protocol: repeat until NULL).
+/// Capped — a corrupt iterator must terminate.
+///
+/// # Safety
+/// Same contract as [`find_class`].
+pub unsafe fn class_methods(
+    api: &Il2cppApi,
+    klass: *mut std::ffi::c_void,
+) -> Vec<*mut std::ffi::c_void> {
+    let class_get_methods = match api.class_get_methods {
+        Some(f) => f,
+        None => return Vec::new(),
+    };
+    if klass.is_null() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut iter: *mut std::ffi::c_void = std::ptr::null_mut();
+    // SAFETY: live class; the iterator is runtime-owned, consumed now.
+    unsafe {
+        for _ in 0..4096 {
+            let m = class_get_methods(klass, &mut iter as *mut *mut std::ffi::c_void);
+            if m.is_null() {
+                break;
+            }
+            out.push(m);
+        }
+    }
+    out
+}
+
+/// Method bare name (diagnostics, updater discovery).
+///
+/// # Safety
+/// Same contract as [`find_class`].
+pub unsafe fn method_name(
+    api: &Il2cppApi,
+    method: *mut std::ffi::c_void,
+) -> Option<String> {
+    let method_get_name = api.method_get_name?;
+    if method.is_null() {
+        return None;
+    }
+    // SAFETY: live MethodInfo; the name is process-lifetime.
+    let p = unsafe { method_get_name(method) };
+    if p.is_null() {
+        return None;
+    }
+    Some(unsafe { CStr::from_ptr(p as *const libc::c_char) }.to_string_lossy().into_owned())
+}
+
+/// Method parameter count (updater discovery: 0-arg Update/LateUpdate).
+///
+/// # Safety
+/// Same contract as [`find_class`].
+pub unsafe fn method_param_count(
+    api: &Il2cppApi,
+    method: *mut std::ffi::c_void,
+) -> Option<u32> {
+    let method_get_param_count = api.method_get_param_count?;
+    if method.is_null() {
+        return None;
+    }
+    // SAFETY: live MethodInfo; pure metadata read.
+    Some(unsafe { method_get_param_count(method) })
+}
+
+/// Image of a loaded assembly by exact name (`Assembly-CSharp`).
+///
+/// # Safety
+/// Same contract as [`find_class`].
+pub unsafe fn find_image(
+    api: &Il2cppApi,
+    domain: *mut std::ffi::c_void,
+    assembly: &str,
+) -> Option<*mut std::ffi::c_void> {
+    let domain_assembly_open = api.domain_assembly_open?;
+    let assembly_get_image = api.assembly_get_image?;
+    let name_c = CString::new(assembly).ok()?;
+    // SAFETY: live domain + NUL-terminated name; image consumed now.
+    unsafe {
+        let asm = domain_assembly_open(domain, name_c.as_ptr());
+        if asm.is_null() {
+            return None;
+        }
+        let img = assembly_get_image(asm);
+        if img.is_null() {
+            None
+        } else {
+            Some(img)
+        }
+    }
+}
+
+/// Class count of an image.
+///
+/// # Safety
+/// Same contract as [`find_class`].
+pub unsafe fn image_class_count(
+    api: &Il2cppApi,
+    image: *mut std::ffi::c_void,
+) -> Option<usize> {
+    let image_get_class_count = api.image_get_class_count?;
+    if image.is_null() {
+        return None;
+    }
+    // SAFETY: live image; pure metadata read.
+    Some(unsafe { image_get_class_count(image) })
+}
+
+/// Class by index within an image.
+///
+/// # Safety
+/// Same contract as [`find_class`].
+pub unsafe fn image_class(
+    api: &Il2cppApi,
+    image: *mut std::ffi::c_void,
+    index: usize,
+) -> Option<*mut std::ffi::c_void> {
+    let image_get_class = api.image_get_class?;
+    if image.is_null() {
+        return None;
+    }
+    // SAFETY: live image; caller keeps `index` under the counted total.
+    let k = unsafe { image_get_class(image, index) };
+    if k.is_null() {
+        None
+    } else {
+        Some(k)
     }
 }
 

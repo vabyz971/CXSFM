@@ -85,6 +85,8 @@ unsafe fn name_of_boxed_scene(
 }
 
 /// All loaded scenes as `(name, roots)`. Capped at 32 scenes.
+/// Logs the scene signature (count + names) when it CHANGES (menu →
+/// track transitions show up once, never spam).
 ///
 /// # Safety
 /// Same contract as `super::init`, plus the array-consumed-immediately
@@ -100,7 +102,7 @@ pub unsafe fn loaded_scenes(
         return Vec::new();
     }
     // SAFETY: static count → boxed Scene per index → name + roots.
-    unsafe {
+    let out = unsafe {
         let count = super::get_i32(api, cache.m_scene_get_count, std::ptr::null_mut())
             .unwrap_or(0)
             .clamp(0, 32) as i32;
@@ -118,5 +120,84 @@ pub unsafe fn loaded_scenes(
             out.push((name, roots));
         }
         out
+    };
+    // Signature-change log (process-lifetime memory, Mutex-free).
+    static LAST_SIG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+    let mut hash: u64 = out.len() as u64;
+    for (name, roots) in &out {
+        for b in name.bytes() {
+            hash = hash.wrapping_mul(31).wrapping_add(b as u64);
+        }
+        hash = hash.wrapping_mul(31).wrapping_add(roots.len() as u64);
+    }
+    if LAST_SIG.swap(hash, std::sync::atomic::Ordering::SeqCst) != hash {
+        let desc: Vec<String> = out
+            .iter()
+            .map(|(n, r)| format!("'{n}' roots={}", r.len()))
+            .collect();
+        crate::log_line(&format!("inspector: scenes [{}]", desc.join(", ")));
+    }
+    out
+}
+
+/// Scene name owning a transform, through its GameObject — or `None`
+/// when any step fails or the scene is invalid/unloaded. The whole
+/// chain (get scene → unbox → IsValid → name) is consumed immediately:
+/// a `Scene` value must never escape.
+///
+/// `is_valid` falls back to *include* when the `IsValid` method is
+/// missing (logged once): an unfiltered extra node beats a missing
+/// DontDestroyOnLoad branch.
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn transform_scene_name(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    tr: *mut std::ffi::c_void,
+) -> Option<String> {
+    use super::{component_gameobject, object_alive};
+    if tr.is_null() {
+        return None;
+    }
+    // SAFETY: every handle alive-checked before its invoke.
+    unsafe {
+        match object_alive(api, cache, tr) {
+            Some(true) => {}
+            _ => return None,
+        }
+        let go = component_gameobject(api, cache, tr)?;
+        if go.is_null() {
+            return None;
+        }
+        match object_alive(api, cache, go) {
+            Some(true) => {}
+            _ => return None,
+        }
+        if cache.m_go_get_scene.is_null() || api.object_unbox.is_none() {
+            return None;
+        }
+        let boxed = il2cpp::invoke(api, cache.m_go_get_scene, go, &[])?;
+        let scene_value = api.object_unbox.unwrap()(boxed);
+        if scene_value.is_null() {
+            return None;
+        }
+        if !cache.m_scene_is_valid.is_null() {
+            let valid = il2cpp::invoke(api, cache.m_scene_is_valid, scene_value, &[]);
+            match valid {
+                Some(v) if !v.is_null() => {
+                    let p = api.object_unbox.unwrap()(v) as *const bool;
+                    if !p.is_null() && !std::ptr::read_unaligned(p) {
+                        return None;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if cache.m_scene_get_name.is_null() {
+            return None;
+        }
+        let s = il2cpp::invoke(api, cache.m_scene_get_name, scene_value, &[])?;
+        il2cpp::read_string(api, s)
     }
 }

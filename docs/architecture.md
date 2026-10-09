@@ -199,3 +199,40 @@ menu.rs         Page state + window orchestration only
 Rules: capture originals before writing, read-back after, restore on
 disable; Unity objects as re-resolved `usize` handles; UI width
 locked, labels wrapped and hover-only.
+## Tick main-thread (échange de MethodInfo.methodPointer, 2026-10)
+
+Les mods appelaient Unity depuis le thread `cxsfm-tick` (≠ main
+thread Unity) : courses résiduelles (freezes, SIGSEGV). `minhud`
+tourne chaque frame via des hooks sur des méthodes du jeu (donc sur
+le main thread). `src/mainthread.rs` (phase 1 : infra + sondes + API,
+aucun mod migré) fait pareil par échange du pointeur
+`MethodInfo.methodPointer` (offset 0) : écriture de donnée pure, sans
+patch de code (cf. `src/render/vk.rs` pour le style de sûreté).
+
+- Candidats (priorité) : DOTweenComponent::Update, RtmpManager::Update,
+  EventSystem::Update, CanvasScaler::Update,
+  CinemachineBrain::ManualUpdate (sonde delegate), CarBehaviour::Update.
+  Tous en phase After (original d'abord).
+- Découverte (log, 1 fois, ≤60 lignes) : classes d'Assembly-CSharp
+  contenant hud/speed/tacho/gauge/camera/drive/car/tween/rtmp/race
+  avec Update/LateUpdate 0-arg + RearRaceCamera::PostPipelineStageCallback
+  et CamerasManager::ForceUpdate si présentes.
+- Installation (tick, jamais present) : original vérifié exécutable
+  dans GameAssembly.so (`/proc/self/maps`), stocké avant échange
+  atomique 8 octets ; ≤6 hooks ; réessai ~3 s (max 20).
+- Hooks `hook<const I>` au format ABI invoker à 5 args (le pointeur
+  est l'invoker, pas la méthode brute) ; panique contenue par
+  `catch_unwind` (callbacks coupés, original toujours relayé).
+- Déduplication par `Time.get_frameCount` (repli : première instance
+  vue, re-lock après 1 s) ; un seul passage de callbacks par frame.
+- Sélection : premier slot ≥20 appels/s sur le main thread pendant
+  3 s (verrouillé) ; sinon `is_active() == false` et les mods
+  continuent comme avant (aucun changement de comportement).
+- API : `is_active()`, `post(label, f)` (file 256), `every_frame(label,
+  f)` (max 8), `stats()`. Budget 1 ms/frame, surplus reporté.
+- Arrêt : si `game_shutting_down()`, relais seul ; pointeurs jamais
+  restaurés (inertes).
+- Scènes : `get_sceneCount`/`GetSceneCount` + `GetSceneAt` (premier
+  trouvé, loggé une fois) ; `DontDestroyOnLoad` via
+  `Resources.FindObjectsOfTypeAll<Transform>` au refresh manuel seul ;
+  enfants chargés à l'ouverture du nœud (dépliage à la demande).

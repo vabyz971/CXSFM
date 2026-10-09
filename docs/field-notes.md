@@ -507,3 +507,56 @@ Diagnostic line (zero keypresses needed):
   écriture) au lieu de relancer `snapshot()` (~5 énumérations
   juste après avoir écrit). Durées loggées
   (`camera: apply/boost/snapshot/restore took X ms, N enumerations`).
+
+## Règle m_CachedPtr : vérifier qu'un objet est vivant avant d'écrire
+
+- Piste d'un user Cursor (crashs aux mêmes changements de valeurs) :
+  avant d'écrire (toute valeur, pas seulement caméra), vérifier que
+  l'objet Unity est encore vivant. Si `m_CachedPtr` du wrapper est
+  null, l'objet natif est parti et lire OU écrire le wrapper crashe.
+  Après le check + re-search forcée qui rebind le remplaçant, plus
+  aucun crash sur les changements de valeurs (camera ou autres).
+- Implantation : `UnityCache.m_cached_ptr` (`Object.m_CachedPtr`,
+  résolu une fois), `unity::object_alive()` (copie un IntPtr, aucun
+  déréférencement ; `None` = sonde indisponible = traité comme vivant,
+  comme avant). Appliqué avant chaque écriture de camera (`apply`,
+  `do_boost`, `restore`), hud_hide et hud_text (`maintain` +
+  `restore`) : handle mort → log + re-search immédiate qui rebind le
+  remplaçant (maintain) ou skip loggé (restore — l'objet parti n'a
+  rien à restaurer, une scène fraîche le recrée propre).
+- L'ancien raisonnement ("les lectures d'objets morts rendent des
+  données absurdes mais ne crashent pas") est faux : les lectures
+  crashent aussi. Les commentaires `maintain`/`restore` ont été
+  corrigés en ce sens.
+
+## Tick main-thread (échange de MethodInfo.methodPointer, PHASE 1)
+
+- Fond : nos écritures Unity partent du thread `cxsfm-tick` (≠ main
+  thread) — courses résiduelles (freezes, SIGSEGV). minhud tourne
+  chaque frame via des hooks (main thread). `src/mainthread.rs`
+  fournit l'équivalent : échange du mot `methodPointer` (offset 0 du
+  `MethodInfo`, écriture de donnée pure comme le cas
+  `jmp [rip+off]` de `vk.rs`), phase 1 = infra + sondes + API, aucun
+  mod migré.
+- Hypothèse à vérifier en jeu : si tous les slots restent à
+  `calls=0`, le moteur n'invoque pas par ce chemin (info, pas erreur
+  → approche B au prochain tour).
+- Lignes à guetter :
+  - `mainthread: updater candidate Ns.Classe::Update` (≤60, une fois)
+  - `mainthread: found RearRaceCamera::PostPipelineStageCallback …`
+  - `mainthread: <label> installed (orig=0x…, mi=0x…)` ou la raison
+    du refus (hors pages exécutables GameAssembly, méthode absente)
+  - `mainthread: <label> calls=<n>/s thread=<main|other> cb_ms=<x>`
+    (toutes les 5 s, par slot installé)
+  - `mainthread: <label> src=delegate? (…)` si installé + classe
+    vivante + 0 appel (cas ManualUpdate attendu)
+  - `mainthread: active slot latched: <label>` (≥20/s main × 3 s)
+- Si calls=0 partout : ne rien changer aux mods (ils continuent
+  comme avant) ; décider ensuite (hook de code + relocation
+  iced-x86, déjà dépendance).
+- ABI : le pointeur est l'INVOKER à 5 args (pas `(this, mi)`) —
+  vérifié contre la signature `InvokerMethod` d'il2cpp.
+- Scènes : `sceneCount` s'épelle `get_sceneCount` côté managé
+  (`unity: scene api count=… at=…` loggé une fois) ;
+  `DontDestroyOnLoad` regroupé au refresh manuel seul ;
+  enfants inspecteur à la demande (fin des walks 3000 nœuds tronqués).

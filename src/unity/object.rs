@@ -346,6 +346,68 @@ pub unsafe fn tr_get_rotation(
     }
 }
 
+/// `Transform.get_parent()` (`None` = scene root or unknown).
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn tr_parent(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    tr: *mut std::ffi::c_void,
+) -> Option<*mut std::ffi::c_void> {
+    if cache.m_tr_get_parent.is_null() || tr.is_null() {
+        return None;
+    }
+    // SAFETY: cached getter; null (root) → None.
+    match unsafe { il2cpp::invoke(api, cache.m_tr_get_parent, tr, &[]) } {
+        Some(t) if !t.is_null() => Some(t),
+        _ => None,
+    }
+}
+
+/// All live `Transform`s (capped). Unlike the scene-root walk this also
+/// reaches `DontDestroyOnLoad` objects (managers, often UI), which live
+/// in no enumerated scene. Inactive branches included or not depends on
+/// the build's `FindObjectsOfType` semantics — callers merge, never
+/// replace, the root walk.
+///
+/// # Safety
+/// Same contract as `super::init`, plus the array-consumed-immediately
+/// rule from `il2cpp::find_objects_of_type`.
+pub unsafe fn all_transforms(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    cap: usize,
+) -> Vec<*mut std::ffi::c_void> {
+    if cache.tr_klass.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: cached class handle, consumed immediately.
+    unsafe {
+        let type_obj = match il2cpp::type_object_for_class(api, cache.tr_klass) {
+            Some(t) => t,
+            None => return Vec::new(),
+        };
+        let (items, n) =
+            match il2cpp::find_objects_of_type(api, cache.m_find_objects, type_obj) {
+                Some(v) => v,
+                None => return Vec::new(),
+            };
+        if items.is_null() || n == 0 {
+            return Vec::new();
+        }
+        let n = (n as usize).min(cap);
+        let mut out = Vec::with_capacity(n.min(256));
+        for i in 0..n {
+            let o = *items.add(i);
+            if !o.is_null() {
+                out.push(o);
+            }
+        }
+        out
+    }
+}
+
 /// `GameObject.Find(name)` (static): root lookup by exact scene path
 /// name. Returns `None` when missing — never throws.
 ///

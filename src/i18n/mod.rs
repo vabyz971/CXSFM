@@ -207,11 +207,10 @@ pub fn current() -> Lang {
 
 /// Translate `key` into the effective language.
 ///
-/// Mod tile keys (`mod_scout`, `mod_hide`, `mod_version`) are owned by
-/// their mod folder and resolved first; everything else goes to the
-/// per-language files. Unknown keys echo back (never blank); any
-/// language falls back to English per key, so partial translations
-/// stay usable.
+/// Mod tile keys are owned by their mod folder and resolved first;
+/// everything else goes to the per-language files. Unknown keys echo
+/// back (never blank); any language falls back to English per key, so
+/// partial translations stay usable.
 pub fn t(key: &str) -> &'static str {
     if let Some(s) = mod_tile(key) {
         return s;
@@ -232,12 +231,7 @@ pub fn t(key: &str) -> &'static str {
 fn mod_tile(key: &str) -> Option<&'static str> {
     let code = current().code();
     match key {
-        "mod_scout" => Some(crate::mods::hud_scout::i18n::tile_label(code)),
-        "mod_hide" => Some(crate::mods::hud_hide::i18n::tile_label(code)),
-        "mod_version" => Some(crate::mods::hud_text::i18n::tile_label(code)),
         "mod_inspector" => Some(crate::mods::inspector::i18n::tile_label(code)),
-        "mod_camera" => Some(crate::mods::camera::i18n::tile_label(code)),
-        "mod_video" => Some(crate::mods::video::i18n::tile_label(code)),
         "mod_gamelog" => Some(crate::mods::gamelog::i18n::tile_label(code)),
         "mod_speedo" => Some(crate::mods::speedo::i18n::tile_label(code)),
         _ => None,

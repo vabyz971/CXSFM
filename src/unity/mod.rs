@@ -23,6 +23,29 @@ pub mod scene;
 pub mod text;
 pub mod video;
 
+/// First-hit method resolution over candidate spellings (managed-side
+/// renames across Unity versions, e.g. `get_sceneCount` vs
+/// `GetSceneCount`). Returns the pointer and the winning name
+/// (`"MISSING"` when none resolves) for one-time diagnostics.
+///
+/// # Safety
+/// Same contract as [`Il2cppApi::find_class`] callers: attached tick
+/// thread, live class, resolution only.
+unsafe fn get_method_any(
+    api: &Il2cppApi,
+    klass: *mut std::ffi::c_void,
+    names: &[&'static str],
+    argc: i32,
+) -> (Option<*mut std::ffi::c_void>, &'static str) {
+    for name in names {
+        // SAFETY: attached tick thread; `get_method` null-checks.
+        if let Some(m) = unsafe { il2cpp::get_method(api, klass, name, argc) } {
+            return (Some(m), name);
+        }
+    }
+    (None, "MISSING")
+}
+
 // Re-exported so `crate::unity::X` paths keep working after the split.
 pub use camera::{
     cm_active_vcam_name, cm_brain_list, cm_composer_list, cm_orbital_list,
@@ -34,8 +57,10 @@ pub use object::{
     go_active, go_find, go_get_component, go_set_active, go_transform, graphic_get_color,
     graphic_set_color, object_alive, object_name, tr_child, tr_child_count, tr_find,
     tr_get_rotation, tr_get_scale, tr_position, tr_set_position, tr_set_scale,
+    all_transforms,
+    tr_parent,
 };
-pub use scene::{loaded_scenes, scene_root_objects};
+pub use scene::{loaded_scenes, scene_root_objects, transform_scene_name};
 pub use text::{
     find_images, find_texts, find_tmp_texts, get_text, set_text, tmp_get_font_size, tmp_get_text,
     tmp_set_font_size, tmp_set_text,
@@ -123,6 +148,9 @@ pub struct UnityCache {
     pub m_tr_get_child_count: *mut std::ffi::c_void,
     /// `Transform.GetChild(int)` (optional).
     pub m_tr_get_child: *mut std::ffi::c_void,
+    /// `Transform.get_parent()` (optional — root climbing for the
+    /// unparented sweep; null = scene root).
+    pub m_tr_get_parent: *mut std::ffi::c_void,
     /// `Transform.Find(name)` (1 string arg, optional).
     pub m_tr_find: *mut std::ffi::c_void,
     /// `Transform.get_localScale()` (optional — boxed Vector3).
@@ -145,6 +173,17 @@ pub struct UnityCache {
     pub m_scene_get_name: *mut std::ffi::c_void,
     /// `Scene.GetRootGameObjects()` (optional — includes inactive roots).
     pub m_scene_get_roots: *mut std::ffi::c_void,
+    /// `Scene` struct class (optional — validity checks on values).
+    pub scene_struct_klass: *mut std::ffi::c_void,
+    /// `Scene.IsValid()` (0 args, optional — DontDestroyOnLoad filter).
+    pub m_scene_is_valid: *mut std::ffi::c_void,
+    /// `GameObject.get_scene()` (0 args, optional — scene of an object).
+    pub m_go_get_scene: *mut std::ffi::c_void,
+    /// `UnityEngine.Resources` class (optional — FindObjectsOfTypeAll).
+    pub resources_klass: *mut std::ffi::c_void,
+    /// `Resources.FindObjectsOfTypeAll(Type)` (static, 1 arg, optional —
+    /// includes inactive objects and assets; manual refreshes only).
+    pub m_find_all_objects: *mut std::ffi::c_void,
     /// `QualitySettings` class (optional — video tool).
     pub qs_klass: *mut std::ffi::c_void,
     /// `QualitySettings.GetQualityLevel()` (static, optional).
@@ -335,6 +374,11 @@ pub unsafe fn init(
         } else {
             il2cpp::get_method(api, go_klass, "get_activeInHierarchy", 0)
         };
+        let m_go_get_scene = if go_klass.is_null() {
+            None
+        } else {
+            il2cpp::get_method(api, go_klass, "get_scene", 0)
+        };
         // Behaviour on/off: the surgical hide switch (component-level,
         // no strings, no mesh rebuild — the renderer checks the flag).
         let beh_klass = il2cpp::find_class(api, domain, Some("UnityEngine.CoreModule"), "UnityEngine", "Behaviour")
@@ -370,16 +414,27 @@ pub unsafe fn init(
         } else {
             il2cpp::get_method(api, scene_klass, "GetActiveScene", 0)
         };
-        let m_scene_get_count = if scene_klass.is_null() {
-            None
+        let (m_scene_get_count, count_name) = if scene_klass.is_null() {
+            (None, "MISSING")
         } else {
-            il2cpp::get_method(api, scene_klass, "GetSceneCount", 0)
+            // Property is `sceneCount`: the getter is `get_sceneCount`
+            // (il2cpp metadata keeps the lowercase-s spelling); try
+            // the PascalCase guess too, first hit wins.
+            get_method_any(api, scene_klass, &["get_sceneCount", "GetSceneCount"], 0)
         };
-        let m_scene_get_at = if scene_klass.is_null() {
-            None
+        let (m_scene_get_at, at_name) = if scene_klass.is_null() {
+            (None, "MISSING")
         } else {
-            il2cpp::get_method(api, scene_klass, "GetSceneAt", 1)
+            get_method_any(api, scene_klass, &["GetSceneAt"], 1)
         };
+        // One line per process: which spelling the build answered.
+        static SCENE_API_LOGGED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if !SCENE_API_LOGGED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            crate::log_line(&format!(
+                "unity: scene api count={count_name} at={at_name}"
+            ));
+        }
         // GetRootGameObjects lives on the Scene STRUCT (value type):
         // resolve against the struct class, invoke on unboxed data.
         let scene_struct = il2cpp::find_class(api, domain, Some("UnityEngine.CoreModule"), "UnityEngine.SceneManagement", "Scene")
@@ -393,6 +448,21 @@ pub unsafe fn init(
             None
         } else {
             il2cpp::get_method(api, scene_struct, "get_name", 0)
+        };
+        let m_scene_is_valid = if scene_struct.is_null() {
+            None
+        } else {
+            il2cpp::get_method(api, scene_struct, "IsValid", 0)
+        };
+        // `Resources.FindObjectsOfTypeAll` reaches what SceneManager
+        // cannot (DontDestroyOnLoad, inactive branches). One walk per
+        // MANUAL refresh — never periodic (each walk stutters).
+        let resources_klass = il2cpp::find_class(api, domain, Some("UnityEngine.CoreModule"), "UnityEngine", "Resources")
+            .unwrap_or(std::ptr::null_mut());
+        let m_find_all_objects = if resources_klass.is_null() {
+            None
+        } else {
+            il2cpp::get_method(api, resources_klass, "FindObjectsOfTypeAll", 1)
         };
         let tr_klass = il2cpp::find_class(api, domain, Some("UnityEngine.CoreModule"), "UnityEngine", "Transform")
             .unwrap_or(std::ptr::null_mut());
@@ -417,6 +487,11 @@ pub unsafe fn init(
                     il2cpp::get_method(api, tr_klass, "get_rotation", 0),
                 )
             };
+        let m_tr_get_parent = if tr_klass.is_null() {
+            None
+        } else {
+            il2cpp::get_method(api, tr_klass, "get_parent", 0)
+        };
         // HUD scale-zero hiding: child lookup + localScale get/set.
         // Same struct-by-address shapes as the setters above.
         let (m_tr_find, m_tr_get_local_scale, m_tr_set_local_scale) =
@@ -627,6 +702,7 @@ pub unsafe fn init(
             image_klass,
             m_comp_get_gameobject: m_comp_get_gameobject.unwrap_or(std::ptr::null_mut()),
             m_go_get_active: m_go_get_active.unwrap_or(std::ptr::null_mut()),
+            m_go_get_scene: m_go_get_scene.unwrap_or(std::ptr::null_mut()),
             m_beh_set_enabled: m_beh_set_enabled.unwrap_or(std::ptr::null_mut()),
             m_beh_get_enabled: m_beh_get_enabled.unwrap_or(std::ptr::null_mut()),
             m_get_key,
@@ -640,6 +716,7 @@ pub unsafe fn init(
             tr_klass,
             m_tr_get_child_count: m_tr_get_child_count.unwrap_or(std::ptr::null_mut()),
             m_tr_get_child: m_tr_get_child.unwrap_or(std::ptr::null_mut()),
+            m_tr_get_parent: m_tr_get_parent.unwrap_or(std::ptr::null_mut()),
             m_tr_find: m_tr_find.unwrap_or(std::ptr::null_mut()),
             m_tr_get_local_scale: m_tr_get_local_scale.unwrap_or(std::ptr::null_mut()),
             m_tr_set_local_scale: m_tr_set_local_scale.unwrap_or(std::ptr::null_mut()),
@@ -651,6 +728,10 @@ pub unsafe fn init(
             m_scene_get_at: m_scene_get_at.unwrap_or(std::ptr::null_mut()),
             m_scene_get_name: m_scene_get_name.unwrap_or(std::ptr::null_mut()),
             m_scene_get_roots: m_scene_get_roots.unwrap_or(std::ptr::null_mut()),
+            scene_struct_klass: scene_struct,
+            m_scene_is_valid: m_scene_is_valid.unwrap_or(std::ptr::null_mut()),
+            resources_klass,
+            m_find_all_objects: m_find_all_objects.unwrap_or(std::ptr::null_mut()),
             qs_klass,
             m_qs_get_level: m_qs_get_level.unwrap_or(std::ptr::null_mut()),
             m_qs_set_level: m_qs_set_level.unwrap_or(std::ptr::null_mut()),
@@ -752,6 +833,48 @@ pub(crate) unsafe fn find_objects_of_class(
         };
         let (items, n) =
             match il2cpp::find_objects_of_type(api, cache.m_find_objects, type_obj) {
+                Some(v) => v,
+                None => return Vec::new(),
+            };
+        if items.is_null() || n == 0 {
+            return Vec::new();
+        }
+        // Cap the walk: a broken count must not read the world.
+        let n = (n as usize).min(4096);
+        let mut out = Vec::with_capacity(n.min(64));
+        for i in 0..n {
+            let o = *items.add(i);
+            if !o.is_null() {
+                out.push(o);
+            }
+        }
+        out
+    }
+}
+
+/// Same walk through `Resources.FindObjectsOfTypeAll`: includes
+/// inactive objects (and assets) that `FindObjectsOfType` skips —
+/// the only way to see DontDestroyOnLoad content. One walk per
+/// MANUAL refresh, never periodic (each walk stutters the game).
+///
+/// # Safety
+/// Same contract as [`find_objects_of_class`].
+pub(crate) unsafe fn find_all_objects_of_class(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    klass: *mut std::ffi::c_void,
+) -> Vec<*mut std::ffi::c_void> {
+    if klass.is_null() || cache.m_find_all_objects.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: full chain null-checked step by step.
+    unsafe {
+        let type_obj = match il2cpp::type_object_for_class(api, klass) {
+            Some(t) => t,
+            None => return Vec::new(),
+        };
+        let (items, n) =
+            match il2cpp::find_objects_of_type(api, cache.m_find_all_objects, type_obj) {
                 Some(v) => v,
                 None => return Vec::new(),
             };
