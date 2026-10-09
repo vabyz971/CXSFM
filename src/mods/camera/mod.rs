@@ -602,7 +602,9 @@ impl Mod for CameraMod {
 
     fn on_enable(&mut self) {
         self.enabled.store(true, Ordering::SeqCst);
-        // Snapshot on the next tick seeds bodies + readout.
+        // Fresh snapshot on the next tick: the scene may have changed
+        // while off, and restore originals must seed from live values.
+        self.refresh_wanted.store(true, Ordering::SeqCst);
         crate::log_line("camera: armed");
     }
 
