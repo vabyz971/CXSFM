@@ -1,65 +1,51 @@
-//! Custom speedometer: scale-zero hides the game's gauges, TMP reads
-//! feed ours.
+//! Speedometer objects, Unity-Inspector style.
 //!
-//! Hiding technique ("scale zéro", minimal-hud pattern): setting
-//! `Transform.localScale` to (0,0,0) hides a whole subtree while the
-//! object stays ACTIVE, so game scripts keep updating texts —
-//! indispensable, since our readout parses those same texts. Never
-//! `SetActive(false)` (it would stop the scripts we read from).
-//!
-//! Groups (checkboxes in the window, Gauge + Speed on by default):
-//! - Compteur : Speedometer/Background, Speedometer/Tachometer,
-//!   Speedometer/Arrow (child paths under the "Speedometer" root).
-//! - Vitesse  : GameObject "Text (TMP) Speed".
-//! - Rapport  : GameObject "Text (TMP) Gear".
-//! - Nitro    : Speedometer/Nitro, fallback "Nitro", plus "TextN2O".
+//! No polling, no hooks, no per-tick Unity traffic (that crashed the
+//! game after ~1 min — isolation test: 5 min clean with the mod off).
+//! Instead the window lists the GameObjects composing the game's
+//! speedometer the way Unity's Inspector shows components:
+//! `GameObject` (name + active), `Transform` (position / rotation /
+//! scale), `Image` (color) or `TextMeshProUGUI` (text preview, color,
+//! font size). Editing a field queues a one-shot write, applied once
+//! on the tick thread; the game then owns the values again.
 //!
 //! Rules (proven in game, do not improvise):
-//! - Resolution only (a) on arming, (b) when a pointer died, (c) on
-//!   the Refresh button, (d) every N>=5 s while a checked target is
-//!   missing. NEVER a Find* per tick, NEVER FindObjectsOfType here.
-//! - Original scale read BEFORE writing; a zero original is never
-//!   recorded (fallback (1,1,1)).
-//! - Maintain (~1 Hz) re-hides only on transition (game restored the
-//!   scale); unchecking a group restores its originals on the tick.
-//! - Value reads (~15 Hz) on pinned TMP handles, alive-checked;
-//!   gear + speed published via atomics, render only.
-//! - No Mutex held across a Unity call: copy out, drop the guard,
-//!   then call. No match on a live guard that re-locks (bind-then-match).
+//! - Unity calls only (a) on arming, (b) on Refresh / Restore clicks,
+//!   (c) to drain an explicit write queue. NEVER per tick, NEVER an
+//!   enumeration: targets bind via `GameObject.Find` + `GetComponent`
+//!   (direct lookups, no scene walk — repeated enumeration from the
+//!   tick crashed another mod).
+//! - Every handle alive-checked (`m_CachedPtr`) before every invoke;
+//!   intermediates too (a scene churn between two calls segfaults).
+//! - Originals (scale, position, color, font size) recorded on first
+//!   discovery per address, written back on disable / Restore.
+//! - No Mutex held across a Unity call; the present thread only
+//!   swaps/clones small data and pushes write requests.
+//! - All mutexes go through `common::lock` (poison-recovering): a
+//!   quarantined panic must never wedge the overlay.
 
 pub mod i18n;
 
 use crate::mods::api::{Mod, TileIcon};
+use crate::mods::common::lock;
 use crate::mods::tool::ToolChrome;
 use crate::unity::UnityCache;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-/// Resolve cadence (ticks, >= 5 s at 60 Hz) while a checked hide
-/// target is still missing.
+/// Retry cadence (ticks, >= 5 s at 60 Hz) for a failed cache init
+/// (game loading). Forced on arming / Refresh / Restore / disable.
+/// Missing *targets* never auto-retry (no periodic binding by design —
+/// that traffic crashed the game); the status line shows n/m and the
+/// user presses Refresh.
 const RESOLVE_EVERY_TICKS: u64 = 300;
-/// Maintain cadence (~1 Hz): re-hide on transition, restore unchecked.
-const MAINTAIN_EVERY_TICKS: u64 = 60;
-/// Value read cadence (~15 Hz): pinned TMP handles, no enumeration.
-const READ_EVERY_TICKS: u64 = 4;
 
-/// Hide groups (checkbox ids).
+/// Target groups (checkboxes; Gauge + Speed on by default). The gear
+/// readout is only bound when its group is checked.
 const GROUP_GAUGE: u8 = 0;
 const GROUP_SPEED: u8 = 1;
 const GROUP_GEAR: u8 = 2;
 const GROUP_NITRO: u8 = 3;
-
-/// Zero scale (hidden) and its epsilon comparison.
-const ZERO_SCALE: [f32; 3] = [0.0, 0.0, 0.0];
-/// Fallback original when the live scale already reads zero.
-const FALLBACK_SCALE: [f32; 3] = [1.0, 1.0, 1.0];
-/// Scale epsilon: below this a scale counts as zero / equal.
-const SCALE_EPS: f32 = 1e-6;
-
-/// True when every component is near zero.
-fn is_zero_scale(s: [f32; 3]) -> bool {
-    s[0].abs() < SCALE_EPS && s[1].abs() < SCALE_EPS && s[2].abs() < SCALE_EPS
-}
 
 /// Group checkbox state lookup (pure, testable).
 fn group_enabled(id: u8, gauge: bool, speed: bool, gear: bool, nitro: bool) -> bool {
@@ -72,132 +58,175 @@ fn group_enabled(id: u8, gauge: bool, speed: bool, gear: bool, nitro: bool) -> b
     }
 }
 
-/// Parse the leading numeric run of a HUD text (`"123"`, `"123 km/h"`,
-/// `" 87.5 "`). Returns the value; unit is detected separately.
-fn parse_speed(text: &str) -> Option<f32> {
-    let mut num = String::new();
-    let mut seen_digit = false;
-    let mut seen_sep = false;
-    for c in text.trim().chars() {
-        if c.is_ascii_digit() {
-            num.push(c);
-            seen_digit = true;
-        } else if (c == '.' || c == ',') && seen_digit && !seen_sep {
-            num.push('.');
-            seen_sep = true;
-        } else if seen_digit {
-            break;
-        }
-    }
-    if !seen_digit {
-        return None;
-    }
-    num.parse::<f32>().ok()
+/// Write-request opcodes (plain `u8`, `Copy` across threads).
+const OP_SCALE: u8 = 0;
+const OP_POS: u8 = 1;
+const OP_COLOR: u8 = 2;
+const OP_FONT: u8 = 3;
+
+/// Component flavour of a wanted object.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CompKind {
+    Image,
+    Tmp,
 }
 
-/// Parse a gear readout: digits → value, `N` → 0 (neutral), `R` → -1
-/// (reverse). Case-insensitive, leading whitespace tolerated. Anything
-/// else (empty included) → `None`, keep the last valid value.
-fn parse_gear(text: &str) -> Option<i32> {
-    let mut chars = text.trim().chars();
-    let first = chars.next()?.to_ascii_uppercase();
-    if first == 'N' {
-        return Some(0);
-    }
-    if first == 'R' {
-        return Some(-1);
-    }
-    if !first.is_ascii_digit() {
-        return None;
-    }
-    let mut num = String::from(first);
-    for c in chars {
-        if c.is_ascii_digit() {
-            num.push(c);
-        } else {
-            break;
+impl CompKind {
+    fn label(self) -> &'static str {
+        match self {
+            CompKind::Image => "Image",
+            CompKind::Tmp => "TextMeshProUGUI",
         }
     }
-    num.parse::<i32>().ok()
 }
 
-/// One hideable target: group id, root object name, optional child path
-/// under the root's transform. All `Copy` (no allocation, no lock).
+/// One wanted speedometer object: bound by direct `GameObject.Find`
+/// (bare name, then `Speedometer/`-prefixed path) + `GetComponent` of
+/// its flavour — no enumeration. The "name contains speed" fallback
+/// is gone: it required a scene walk, nothing else can do it.
 #[derive(Clone, Copy)]
-struct HideTarget {
+struct Want {
     group: u8,
-    root: &'static str,
-    child: Option<&'static str>,
+    owner: &'static str,
+    comp: CompKind,
 }
 
-/// Hide table: (group label, root, optional child).
-const HIDE_TARGETS: &[HideTarget] = &[
-    HideTarget { group: GROUP_GAUGE, root: "Speedometer", child: Some("Background") },
-    HideTarget { group: GROUP_GAUGE, root: "Speedometer", child: Some("Tachometer") },
-    HideTarget { group: GROUP_GAUGE, root: "Speedometer", child: Some("Arrow") },
-    HideTarget { group: GROUP_SPEED, root: "Text (TMP) Speed", child: None },
-    HideTarget { group: GROUP_GEAR, root: "Text (TMP) Gear", child: None },
-    HideTarget { group: GROUP_NITRO, root: "Speedometer", child: Some("Nitro") },
-    HideTarget { group: GROUP_NITRO, root: "Nitro", child: None },
-    HideTarget { group: GROUP_NITRO, root: "TextN2O", child: None },
+/// The GameObjects composing the stock speedometer.
+const WANTS: &[Want] = &[
+    Want { group: GROUP_GAUGE, owner: "Background", comp: CompKind::Image },
+    Want { group: GROUP_GAUGE, owner: "Tachometer", comp: CompKind::Image },
+    Want { group: GROUP_GAUGE, owner: "Arrow", comp: CompKind::Image },
+    Want { group: GROUP_SPEED, owner: "Text (TMP) Speed", comp: CompKind::Tmp },
+    Want { group: GROUP_GEAR, owner: "Text (TMP) Gear", comp: CompKind::Tmp },
+    Want { group: GROUP_NITRO, owner: "Nitro", comp: CompKind::Image },
 ];
 
-/// Runtime slot per table entry: bound address + recorded original.
-struct HideSlot {
-    target: HideTarget,
-    addr: Option<usize>,
-    orig: Option<[f32; 3]>,
-    missing_logged: bool,
+/// `GameObject.Find` candidates for an owner: bare name first (root
+/// object), then the known `Speedometer/` parent path (HUD children).
+/// `Find` only sees active objects; a missing target simply stays out
+/// of this discovery (status n/m, manual Refresh — never auto-retry).
+fn find_candidates(owner: &str) -> [String; 2] {
+    [owner.to_string(), format!("Speedometer/{owner}")]
 }
 
-impl HideSlot {
-    fn fresh(target: HideTarget) -> Self {
-        Self { target, addr: None, orig: None, missing_logged: false }
-    }
-
-    fn path(&self) -> String {
-        match self.target.child {
-            Some(c) => format!("{}/{}", self.target.root, c),
-            None => self.target.root.to_string(),
-        }
-    }
+/// Quaternion (x, y, z, w) → XYZ Euler degrees, display only.
+/// Standard conversion; order noted because Unity shows ZXY — close
+/// enough for a read-only readout, never fed back into a write.
+fn quat_to_euler(q: [f32; 4]) -> [f32; 3] {
+    let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+    let sinr = 2.0 * (w * x + y * z);
+    let cosr = 1.0 - 2.0 * (x * x + y * y);
+    let sinp = (2.0 * (w * y - z * x)).clamp(-1.0, 1.0);
+    let siny = 2.0 * (w * z + x * y);
+    let cosy = 1.0 - 2.0 * (y * y + z * z);
+    let r2d = 180.0 / std::f32::consts::PI;
+    [
+        sinr.atan2(cosr) * r2d,
+        sinp.asin() * r2d,
+        siny.atan2(cosy) * r2d,
+    ]
 }
 
-/// Custom speedometer: hide on tick (scale-zero), values on tick,
-/// big digits on render.
+/// Linear `[r, g, b, a]` (0..1, Unity `Color`) → egui color.
+/// Round-trips through linear `Rgba`: `Color32` itself is gamma-space
+/// premultiplied, so naive u8 scaling loses precision for a < 1.
+fn f32_to_color(c: [f32; 4]) -> egui::Color32 {
+    egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]).into()
+}
+
+/// egui color → linear `[r, g, b, a]` (0..1).
+fn color_to_f32(c: egui::Color32) -> [f32; 4] {
+    egui::Rgba::from(c).to_rgba_unmultiplied()
+}
+
+/// Published snapshot of one object (tick writes on discovery, render
+/// clones; swapped under a brief lock, never held across Unity calls).
+#[derive(Clone)]
+struct ObjSnap {
+    owner: String,
+    comp: CompKind,
+    active: bool,
+    tr_addr: usize,
+    comp_addr: usize,
+    pos: [f32; 3],
+    euler: [f32; 3],
+    scale: [f32; 3],
+    color: [f32; 4],
+    font_size: Option<f32>,
+    text: String,
+}
+
+/// First-recorded originals per address pair (restore source).
+struct OrigRec {
+    tr: usize,
+    comp: usize,
+    pos: [f32; 3],
+    scale: [f32; 3],
+    color: [f32; 4],
+    font_size: Option<f32>,
+}
+
+/// One queued one-shot write (render pushes, tick drains).
+struct WriteReq {
+    addr: usize,
+    op: u8,
+    v: [f32; 4],
+}
+
+/// Render-side mirror of [`ObjSnap`] with editable buffers. Lives only
+/// on the present thread (`&mut` in `on_draw_ui`); rebuilt whenever
+/// the snapshot version bumps. Edits mutate these buffers and queue a
+/// [`WriteReq`] — the snapshot itself is never written by the UI.
+struct UiObj {
+    owner: String,
+    comp: CompKind,
+    active: bool,
+    tr_addr: usize,
+    comp_addr: usize,
+    pos: [f32; 3],
+    euler: [f32; 3],
+    scale: [f32; 3],
+    color: egui::Color32,
+    size: Option<f32>,
+    text: String,
+}
+
 pub struct SpeedoMod {
     enabled: AtomicBool,
     unity: Mutex<Option<UnityCache>>,
     tick: AtomicU64,
-    /// Hide slots (one per table entry).
-    slots: Mutex<Vec<HideSlot>>,
-    /// Group checkboxes (UI writes, tick reads).
+    /// Discover on next tick (arming, Refresh button).
+    pending: AtomicBool,
+    /// Restore originals on next tick (Restore button, no disable).
+    restore_now: AtomicBool,
+    /// Last tick a (re-)init was attempted; 0 = never.
+    last_init: AtomicU64,
+    /// Group checkboxes (UI writes, tick reads; gear binds only when on).
     gauge: AtomicBool,
     speed: AtomicBool,
     gear: AtomicBool,
     nitro: AtomicBool,
-    /// Immediate resolve on next tick (arming, Refresh button).
-    pending: AtomicBool,
-    /// Last tick a resolve pass ran (missing-target throttle).
-    last_resolve: AtomicU64,
-    /// One-shot "N/M found" summary per arming.
-    armed_logged: AtomicBool,
-    /// Pinned TMP handles for value reads (no enumeration per read).
-    speed_target: Mutex<Option<usize>>,
-    gear_target: Mutex<Option<usize>>,
-    /// Published readout (render reads atomics only).
-    speed_bits: AtomicU32,
-    gear_val: AtomicI32,
-    valid: AtomicBool,
-    /// Debug display (raw text + unit + source, UI reads).
-    raw: Mutex<String>,
-    unit: Mutex<String>,
-    source: Mutex<String>,
-    /// Render-side smoothing state (only touched in `on_draw_ui`).
-    disp: f32,
+    /// Published snapshots + version (render clones).
+    snaps: Mutex<Vec<ObjSnap>>,
+    snap_ver: AtomicU64,
+    /// First-recorded originals (tick only).
+    origs: Mutex<Vec<OrigRec>>,
+    /// Queued one-shot writes (render pushes, tick drains).
+    writes: Mutex<Vec<WriteReq>>,
+    /// Discovery status for the status line.
+    status_ok: AtomicU64,
+    status_total: AtomicU64,
+    /// Render-side mirror (present thread only).
+    ui: Vec<UiObj>,
+    ui_ver: u64,
     /// Pin + opacity chrome (shared tool pattern).
     tool: ToolChrome,
 }
+
+// SAFETY: all shared state is atomics or mutex-guarded plain data;
+// Unity handles are `usize`, never dereferenced.
+unsafe impl Send for SpeedoMod {}
+unsafe impl Sync for SpeedoMod {}
 
 impl SpeedoMod {
     pub fn new() -> Self {
@@ -205,23 +234,21 @@ impl SpeedoMod {
             enabled: AtomicBool::new(false),
             unity: Mutex::new(None),
             tick: AtomicU64::new(0),
-            slots: Mutex::new(HIDE_TARGETS.iter().map(|t| HideSlot::fresh(*t)).collect()),
+            pending: AtomicBool::new(false),
+            restore_now: AtomicBool::new(false),
+            last_init: AtomicU64::new(0),
             gauge: AtomicBool::new(true),
             speed: AtomicBool::new(true),
             gear: AtomicBool::new(false),
             nitro: AtomicBool::new(false),
-            pending: AtomicBool::new(false),
-            last_resolve: AtomicU64::new(0),
-            armed_logged: AtomicBool::new(false),
-            speed_target: Mutex::new(None),
-            gear_target: Mutex::new(None),
-            speed_bits: AtomicU32::new(0.0f32.to_bits()),
-            gear_val: AtomicI32::new(0),
-            valid: AtomicBool::new(false),
-            raw: Mutex::new(String::new()),
-            unit: Mutex::new(String::from("km/h")),
-            source: Mutex::new(String::new()),
-            disp: 0.0,
+            snaps: Mutex::new(Vec::new()),
+            snap_ver: AtomicU64::new(0),
+            origs: Mutex::new(Vec::new()),
+            writes: Mutex::new(Vec::new()),
+            status_ok: AtomicU64::new(0),
+            status_total: AtomicU64::new(0),
+            ui: Vec::new(),
+            ui_ver: 0,
             tool: ToolChrome::new(),
         }
     }
@@ -230,6 +257,7 @@ impl SpeedoMod {
         self.enabled.load(Ordering::SeqCst)
     }
 
+    /// Group checkbox read for a target (tick side).
     fn group_on(&self, id: u8) -> bool {
         group_enabled(
             id,
@@ -240,10 +268,21 @@ impl SpeedoMod {
         )
     }
 
-    fn ensure_unity(&self) -> bool {
-        if self.unity.lock().unwrap().is_some() {
+    /// Resolve the method/field cache once, then serve from memory.
+    /// The hot path (cache present) performs zero Unity calls. A
+    /// missing cache attempts resolution at most every
+    /// `RESOLVE_EVERY_TICKS` unless `force`.
+    fn ensure_unity(&self, tick: u64, force: bool) -> bool {
+        if lock(&self.unity).is_some() {
             return true;
         }
+        if !force {
+            let last = self.last_init.load(Ordering::SeqCst);
+            if last != 0 && tick.saturating_sub(last) < RESOLVE_EVERY_TICKS {
+                return false;
+            }
+        }
+        self.last_init.store(tick.saturating_add(1), Ordering::SeqCst);
         let api = match crate::il2cpp_api() {
             Some(a) => a,
             None => return false,
@@ -259,448 +298,335 @@ impl SpeedoMod {
                 None => return false,
             }
         };
-        *self.unity.lock().unwrap() = Some(cache);
+        *lock(&self.unity) = Some(cache);
         true
     }
 
-    /// Bind value sources (tick thread, throttled by caller): one TMP
-    /// enumeration, exact-name match for speed + gear (fallback:
-    /// name containing "speed" for the speed source only). No hiding
-    /// here — hiding is the slots' job (`resolve`). Pins raw pointers;
-    /// every use is alive-checked first.
-    fn bind_values(&self) {
-        if !self.ensure_unity() {
+    /// One-shot discovery (tick thread, explicit trigger only):
+    /// each checked target binds via `GameObject.Find` + `GetComponent`
+    /// — direct lookups, zero enumeration — then one snapshot read per
+    /// match, first-seen originals recorded, snapshot published. No
+    /// periodic work — the game owns the values afterwards. A missing
+    /// target stays missing until the next manual Refresh (status n/m).
+    fn discover(&self) {
+        let tick = self.tick.load(Ordering::SeqCst);
+        if !self.ensure_unity(tick, true) {
             return;
         }
         let api = match crate::il2cpp_api() {
             Some(a) => a,
             None => return,
         };
-        let cached = self.unity.lock().unwrap().as_ref().copied();
+        let cached = lock(&self.unity).as_ref().copied();
         let cache = match cached {
             Some(c) => c,
             None => return,
         };
+        // Checked wants only (gear binds solely when its group is on).
+        let wants: Vec<Want> = WANTS
+            .iter()
+            .copied()
+            .filter(|w| self.group_on(w.group))
+            .collect();
         let t0 = std::time::Instant::now();
-        // SAFETY: attached tick thread; enumeration consumed now.
+        // Bind: Find → alive → GetComponent → alive. One `Find` chain
+        // per candidate, no walk; a dead intermediate unbinds silently.
+        // SAFETY: attached tick thread; every handle alive-checked
+        // before any further invoke, consumed immediately.
+        let found: Vec<(Want, usize, usize)> = unsafe {
+            let mut out = Vec::new();
+            for want in wants.iter().copied() {
+                let klass = match want.comp {
+                    CompKind::Image => cache.image_klass,
+                    CompKind::Tmp => cache.tmp_klass,
+                };
+                if klass.is_null() {
+                    continue;
+                }
+                for name in find_candidates(want.owner) {
+                    let go = match crate::unity::go_find(api, &cache, &name) {
+                        Some(g) => g,
+                        None => continue,
+                    };
+                    if go.is_null() {
+                        continue;
+                    }
+                    match crate::unity::object_alive(api, &cache, go) {
+                        Some(true) => {}
+                        _ => continue,
+                    }
+                    let comp = match crate::unity::go_get_component(api, &cache, go, klass) {
+                        Some(c) => c,
+                        None => continue,
+                    };
+                    if comp.is_null() {
+                        continue;
+                    }
+                    match crate::unity::object_alive(api, &cache, comp) {
+                        Some(true) => {}
+                        _ => continue,
+                    }
+                    out.push((want, comp as usize, go as usize));
+                    break;
+                }
+            }
+            out
+        };
+        // Read one snapshot per match. Originals accumulate locally
+        // and merge under a brief lock AFTER the Unity calls — no
+        // Mutex is ever held across an invoke (a slow call would
+        // stall the present thread into skipping this window).
+        // SAFETY: same contract; transform derived from the live owner.
+        let mut snaps = Vec::new();
+        let mut fresh_origs = Vec::new();
+        // Addresses already recorded (merge skips them). The guard
+        // ends here (last use) — well before any Unity call below.
+        let known = lock(&self.origs);
+        let mut seen: Vec<(usize, usize)> = known.iter().map(|r| (r.tr, r.comp)).collect();
+        drop(known);
+            unsafe {
+                for (want, comp, go_addr) in found {
+                    let comp_p = comp as *mut std::ffi::c_void;
+                    // Owner game object comes from the bind step above;
+                    // re-probed here (a churn between bind and read
+                    // frees it), then its transform.
+                    let go = go_addr as *mut std::ffi::c_void;
+                    match crate::unity::object_alive(api, &cache, go) {
+                        Some(true) => {}
+                        _ => continue,
+                    }
+                    let tr = match crate::unity::go_transform(api, &cache, go) {
+                        Some(t) => t,
+                        None => continue,
+                    };
+                if tr.is_null() {
+                    continue;
+                }
+                match crate::unity::object_alive(api, &cache, tr) {
+                    Some(true) => {}
+                    _ => continue,
+                }
+                let active = crate::unity::go_active(api, &cache, go).unwrap_or(true);
+                let scale = crate::unity::tr_get_scale(api, &cache, tr).unwrap_or([1.0, 1.0, 1.0]);
+                let pos = crate::unity::tr_position(api, &cache, tr).unwrap_or([0.0, 0.0, 0.0]);
+                let quat = crate::unity::tr_get_rotation(api, &cache, tr).unwrap_or([0.0, 0.0, 0.0, 1.0]);
+                let color = crate::unity::graphic_get_color(api, &cache, comp_p)
+                    .unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                let (font_size, text) = if want.comp == CompKind::Tmp {
+                    let size = crate::unity::tmp_get_font_size(api, &cache, comp_p);
+                    let txt = crate::unity::tmp_get_text(api, &cache, comp_p).unwrap_or_default();
+                    (size, txt)
+                } else {
+                    (None, String::new())
+                };
+                let tr_addr = tr as usize;
+                if !seen.iter().any(|&(t, c)| t == tr_addr && c == comp) {
+                    seen.push((tr_addr, comp));
+                    fresh_origs.push(OrigRec {
+                        tr: tr_addr,
+                        comp,
+                        pos,
+                        scale,
+                        color,
+                        font_size,
+                    });
+                }
+                snaps.push(ObjSnap {
+                    owner: want.owner.to_string(),
+                    comp: want.comp,
+                    active,
+                    tr_addr,
+                    comp_addr: comp,
+                    pos,
+                    euler: quat_to_euler(quat),
+                    scale,
+                    color,
+                    font_size,
+                    text,
+                });
+            }
+        }
+        // Merge first-seen originals + swap the snapshot, both under
+        // brief locks with zero Unity calls in between.
+        lock(&self.origs).extend(fresh_origs);
+        let n = snaps.len();
+        let total = wants.len();
+        *lock(&self.snaps) = snaps;
+        self.snap_ver.fetch_add(1, Ordering::SeqCst);
+        self.status_ok.store(n as u64, Ordering::SeqCst);
+        self.status_total.store(total as u64, Ordering::SeqCst);
+        let ms = t0.elapsed().as_millis();
+        crate::log_line(&format!("speedo: objets {n}/{total} ({ms} ms)"));
+    }
+
+    /// Drain queued one-shot writes (tick thread, only when the UI
+    /// queued edits). Each address alive-checked right before its
+    /// invoke; at most one log line per drain.
+    fn drain_writes(&self) {
+        let reqs = std::mem::take(&mut *lock(&self.writes));
+        if reqs.is_empty() {
+            return;
+        }
+        let tick = self.tick.load(Ordering::SeqCst);
+        if !self.ensure_unity(tick, false) {
+            lock(&self.writes).splice(0..0, reqs);
+            return;
+        }
+        let api = match crate::il2cpp_api() {
+            Some(a) => a,
+            None => return,
+        };
+        let cached = lock(&self.unity).as_ref().copied();
+        let cache = match cached {
+            Some(c) => c,
+            None => return,
+        };
+        let total = reqs.len();
+        let mut ok = 0usize;
+        // SAFETY: attached tick thread; per-request alive probe.
         unsafe {
-            for obj in crate::unity::find_tmp_texts(api, &cache) {
-                // Dead-object check BEFORE any touch: a null
-                // m_CachedPtr means reads AND writes crash.
-                // SAFETY: m_CachedPtr probe copies one pointer.
+            for r in &reqs {
+                let obj = r.addr as *mut std::ffi::c_void;
                 match crate::unity::object_alive(api, &cache, obj) {
                     Some(true) => {}
                     _ => continue,
                 }
-                let go = match crate::unity::component_gameobject(api, &cache, obj) {
-                    Some(g) => g,
-                    None => continue,
+                let wrote = match r.op {
+                    OP_SCALE => crate::unity::tr_set_scale(api, &cache, obj, [r.v[0], r.v[1], r.v[2]]),
+                    OP_POS => crate::unity::tr_set_position(api, &cache, obj, [r.v[0], r.v[1], r.v[2]]),
+                    OP_COLOR => crate::unity::graphic_set_color(api, &cache, obj, r.v),
+                    OP_FONT => crate::unity::tmp_set_font_size(api, &cache, obj, r.v[0]),
+                    _ => false,
                 };
-                let name = crate::unity::object_name(api, &cache, go);
-                if name == "Text (TMP) Speed" {
-                    *self.speed_target.lock().unwrap() = Some(obj as usize);
-                    let mut source = self.source.lock().unwrap();
-                    if *source != name {
-                        crate::log_line(&format!("speedo: speed source '{name}'"));
-                        *source = name;
-                    }
-                } else if name == "Text (TMP) Gear" {
-                    *self.gear_target.lock().unwrap() = Some(obj as usize);
-                } else if name.to_lowercase().contains("speed")
-                    && self.speed_target.lock().unwrap().is_none()
-                {
-                    // Tolerant fallback for renamed builds.
-                    *self.speed_target.lock().unwrap() = Some(obj as usize);
-                    let mut source = self.source.lock().unwrap();
-                    if *source != name {
-                        crate::log_line(&format!("speedo: speed source '{name}' (fallback)"));
-                        *source = name;
-                    }
+                if wrote {
+                    ok += 1;
                 }
             }
         }
-        // Slow-pass tripwire (diagnostic, not spam).
-        let ms = t0.elapsed().as_millis();
-        if ms > 500 {
-            crate::log_line(&format!("speedo: slow bind pass ({ms} ms)"));
-        }
+        crate::log_line(&format!("speedo: écritures {ok}/{total}"));
     }
 
-    /// Locate one slot's transform, no writes: `GameObject.Find(root)`,
-    /// `Transform` of it, then `Transform.Find(child)` or itself.
-    /// Returns the transform address, or `None` (missing API, missing
-    /// object, dead wrapper — never throws, never writes).
-    ///
-    /// # Safety
-    /// Attached tick thread; handles consumed immediately.
-    unsafe fn locate(
-        api: &crate::il2cpp::Il2cppApi,
-        cache: &crate::unity::UnityCache,
-        target: HideTarget,
-    ) -> Option<usize> {
-        // SAFETY: attached tick thread; each step null-checked, the
-        // wrapper alive-checked before use.
-        unsafe {
-            let go = crate::unity::go_find(api, cache, target.root)?;
-            if go.is_null() {
-                return None;
-            }
-            let root_tr = crate::unity::go_transform(api, cache, go)?;
-            let tr = match target.child {
-                Some(c) => crate::unity::tr_find(api, cache, root_tr, c)?,
-                None => root_tr,
-            };
-            if tr.is_null() {
-                return None;
-            }
-            match crate::unity::object_alive(api, cache, tr) {
-                Some(true) => Some(tr as usize),
-                _ => None,
-            }
-        }
-    }
-
-    /// Resolve pass (tick thread): bind every checked-but-unresolved
-    /// slot, record its original scale (never a zero one), hide it.
-    /// At most one Find chain per slot per pass; missing targets are
-    /// only retried on the resolve cadence. Logs one summary per arming.
-    fn resolve(&self) {
-        if !self.ensure_unity() {
-            return;
-        }
-        let api = match crate::il2cpp_api() {
-            Some(a) => a,
-            None => return,
-        };
-        let cached = self.unity.lock().unwrap().as_ref().copied();
-        let cache = match cached {
-            Some(c) => c,
-            None => return,
-        };
-        // Snapshot the work list, then drop the guard: no Mutex held
-        // across any Unity call below.
-        let work: Vec<(usize, HideTarget)> = {
-            let slots = self.slots.lock().unwrap();
-            slots
-                .iter()
-                .enumerate()
-                .filter(|(_, s)| s.addr.is_none() && self.group_on(s.target.group))
-                .map(|(i, s)| (i, s.target))
-                .collect()
-        };
-        if work.is_empty() {
-            return;
-        }
-        let t0 = std::time::Instant::now();
-        let mut found = 0usize;
-        let mut missing: Vec<String> = Vec::new();
-        // SAFETY: attached tick thread; each located handle consumed now.
-        unsafe {
-            for (idx, target) in work {
-                let path = match target.child {
-                    Some(c) => format!("{}/{}", target.root, c),
-                    None => target.root.to_string(),
-                };
-                let tr = match Self::locate(api, &cache, target) {
-                    Some(t) => t as *mut std::ffi::c_void,
-                    None => {
-                        missing.push(path);
-                        continue;
-                    }
-                };
-                let live = match crate::unity::tr_get_scale(api, &cache, tr) {
-                    Some(s) => s,
-                    None => {
-                        missing.push(path);
-                        continue;
-                    }
-                };
-                let orig = if is_zero_scale(live) { FALLBACK_SCALE } else { live };
-                let mut wrote = false;
-                if !is_zero_scale(live)
-                    && crate::unity::tr_set_scale(api, &cache, tr, ZERO_SCALE)
-                {
-                    let back = crate::unity::tr_get_scale(api, &cache, tr);
-                    crate::log_line(&format!(
-                        "speedo: '{path}' hidden (readback={back:?})"
-                    ));
-                    wrote = true;
-                }
-                // Brief merge: plain data only, no Unity calls.
-                {
-                    let mut slots = self.slots.lock().unwrap();
-                    if let Some(slot) = slots.get_mut(idx) {
-                        // Re-check the group: the user may have unchecked
-                        // mid-pass; never hide for a deselected group.
-                        if self.group_on(slot.target.group) {
-                            slot.addr = Some(tr as usize);
-                            slot.orig = Some(orig);
-                            if wrote {
-                                found += 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // One-shot summary per arming (checked targets only).
-        if !self.armed_logged.swap(true, Ordering::SeqCst) {
-            let total: usize = {
-                let slots = self.slots.lock().unwrap();
-                slots.iter().filter(|s| self.group_on(s.target.group)).count()
-            };
-            // Count bound slots (resolved now or earlier this arming).
-            let bound: usize = {
-                let slots = self.slots.lock().unwrap();
-                slots
-                    .iter()
-                    .filter(|s| self.group_on(s.target.group) && s.addr.is_some())
-                    .count()
-            };
-            let _ = found;
-            let mut msg = format!("speedo: {bound}/{total} cibles trouvées");
-            if !missing.is_empty() {
-                msg.push_str(&format!(" (manquantes : {})", missing.join(", ")));
-            }
-            crate::log_line(&msg);
-        }
-        // Slow-pass tripwire (diagnostic, not spam).
-        let ms = t0.elapsed().as_millis();
-        if ms > 500 {
-            crate::log_line(&format!("speedo: slow resolve pass ({ms} ms)"));
-        }
-    }
-
-    /// Maintain pass (~1 Hz, tick thread): for resolved slots, re-hide
-    /// only on transition (game restored the scale), or restore the
-    /// original when the group was unchecked. No blind rewrites.
-    fn maintain(&self) {
-        if !self.ensure_unity() {
-            return;
-        }
-        let api = match crate::il2cpp_api() {
-            Some(a) => a,
-            None => return,
-        };
-        let cached = self.unity.lock().unwrap().as_ref().copied();
-        let cache = match cached {
-            Some(c) => c,
-            None => return,
-        };
-        // Snapshot (index, wanted-hidden?) then drop the guard.
-        let work: Vec<(usize, bool)> = {
-            let slots = self.slots.lock().unwrap();
-            slots
-                .iter()
-                .enumerate()
-                .filter_map(|(i, s)| {
-                    if s.addr.is_none() || s.orig.is_none() {
-                        return None;
-                    }
-                    Some((i, self.group_on(s.target.group)))
-                })
-                .collect()
-        };
-        // SAFETY: attached tick thread; handles re-validated per touch.
-        unsafe {
-            for (idx, want_hidden) in work {
-                // Re-read addr+orig under a brief lock (may have been
-                // cleared by restore/disable meanwhile).
-                let (addr, orig) = {
-                    let slots = self.slots.lock().unwrap();
-                    match slots.get(idx) {
-                        Some(s) => match (s.addr, s.orig) {
-                            (Some(a), Some(o)) => (a, o),
-                            _ => continue,
-                        },
-                        None => continue,
-                    }
-                };
-                let tr = addr as *mut std::ffi::c_void;
-                // SAFETY: m_CachedPtr probe copies one pointer.
-                match crate::unity::object_alive(api, &cache, tr) {
-                    Some(true) => {}
-                    _ => {
-                        // Dead: unbind, discovery rebinds next pass.
-                        let mut slots = self.slots.lock().unwrap();
-                        if let Some(s) = slots.get_mut(idx) {
-                            s.addr = None;
-                        }
-                        continue;
-                    }
-                }
-                let path = {
-                    let slots = self.slots.lock().unwrap();
-                    match slots.get(idx) {
-                        Some(s) => s.path(),
-                        None => continue,
-                    }
-                };
-                let current = match crate::unity::tr_get_scale(api, &cache, tr) {
-                    Some(s) => s,
-                    None => continue,
-                };
-                if want_hidden {
-                    if !is_zero_scale(current)
-                        && crate::unity::tr_set_scale(api, &cache, tr, ZERO_SCALE)
-                    {
-                        crate::log_line(&format!(
-                            "speedo: '{path}' restored by game — hiding again"
-                        ));
-                    }
-                } else if is_zero_scale(current)
-                    && crate::unity::tr_set_scale(api, &cache, tr, orig)
-                {
-                    crate::log_line(&format!("speedo: '{path}' restored (group off)"));
-                }
-            }
-        }
-    }
-
-    /// Restore all recorded originals (disable path): one fresh locate
-    /// per slot, write-back only where our zero is still in place.
-    /// Dead or missing objects are skipped silently.
+    /// Write back first-recorded originals (disable / Restore paths,
+    /// tick thread, one shot). Dead objects are skipped; the records
+    /// are consumed so the next discovery starts fresh.
     fn restore_all(&self) {
-        if !self.ensure_unity() {
+        let tick = self.tick.load(Ordering::SeqCst);
+        if !self.ensure_unity(tick, true) {
             return;
         }
         let api = match crate::il2cpp_api() {
             Some(a) => a,
             None => return,
         };
-        let cached = self.unity.lock().unwrap().as_ref().copied();
+        let cached = lock(&self.unity).as_ref().copied();
         let cache = match cached {
             Some(c) => c,
             None => return,
         };
-        // Snapshot (target, orig) pairs, then drop the guard.
-        let work: Vec<(HideTarget, [f32; 3])> = {
-            let slots = self.slots.lock().unwrap();
-            slots
-                .iter()
-                .filter_map(|s| s.orig.map(|o| (s.target, o)))
-                .collect()
-        };
-        if work.is_empty() {
+        // Take the records (brief lock, no Unity under it).
+        let recs = std::mem::take(&mut *lock(&self.origs));
+        if recs.is_empty() {
             return;
         }
-        let t0 = std::time::Instant::now();
-        // SAFETY: attached tick thread (loader transitions never run on
-        // the UI thread); each located handle consumed now.
+        let mut ok = 0usize;
+        let total = recs.len();
+        // SAFETY: attached tick thread; per-handle alive probes.
         unsafe {
-            for (target, orig) in work {
-                let path = match target.child {
-                    Some(c) => format!("{}/{}", target.root, c),
-                    None => target.root.to_string(),
-                };
-                let tr = match Self::locate(api, &cache, target) {
-                    Some(t) => t as *mut std::ffi::c_void,
-                    None => continue,
-                };
-                let current = match crate::unity::tr_get_scale(api, &cache, tr) {
-                    Some(s) => s,
-                    None => continue,
-                };
-                if is_zero_scale(current)
-                    && crate::unity::tr_set_scale(api, &cache, tr, orig)
-                {
-                    crate::log_line(&format!("speedo: '{path}' restored"));
+            for r in &recs {
+                let tr = r.tr as *mut std::ffi::c_void;
+                let comp = r.comp as *mut std::ffi::c_void;
+                let mut restored = false;
+                if crate::unity::object_alive(api, &cache, tr) == Some(true) {
+                    restored |= crate::unity::tr_set_scale(api, &cache, tr, r.scale);
+                    restored |= crate::unity::tr_set_position(api, &cache, tr, r.pos);
+                }
+                if crate::unity::object_alive(api, &cache, comp) == Some(true) {
+                    restored |= crate::unity::graphic_set_color(api, &cache, comp, r.color);
+                    if let Some(size) = r.font_size {
+                        restored |= crate::unity::tmp_set_font_size(api, &cache, comp, size);
+                    }
+                }
+                if restored {
+                    ok += 1;
                 }
             }
         }
-        let ms = t0.elapsed().as_millis();
-        if ms > 500 {
-            crate::log_line(&format!("speedo: slow restore pass ({ms} ms)"));
-        }
-        // Fresh start next arming (scene may have changed meanwhile).
-        let mut slots = self.slots.lock().unwrap();
-        for s in slots.iter_mut() {
-            s.addr = None;
-            s.orig = None;
-            s.missing_logged = false;
-        }
+        crate::log_line(&format!("speedo: restaurés {ok}/{total}"));
+        // Fresh UI next arming (scene may have changed meanwhile).
+        *lock(&self.snaps) = Vec::new();
+        self.snap_ver.fetch_add(1, Ordering::SeqCst);
+        self.status_ok.store(0, Ordering::SeqCst);
+        self.status_total.store(WANTS.len() as u64, Ordering::SeqCst);
     }
 
-    /// Fast value reads (tick thread, ~15 Hz): alive-checked reads on
-    /// pinned TMP handles, published via atomics (`valid` gates the
-    /// render). No enumeration here. A dead target unbinds; the bind
-    /// pass rebinds next cycle.
-    fn read_values(&self) {
-        if !self.ensure_unity() {
+    /// Rebuild the render-side mirror when the snapshot version bumped
+    /// (discovery / restore). Brief clone, lock released before draw.
+    fn sync_ui(&mut self) {
+        let ver = self.snap_ver.load(Ordering::SeqCst);
+        if ver == self.ui_ver {
             return;
         }
-        let api = match crate::il2cpp_api() {
-            Some(a) => a,
-            None => return,
-        };
-        let cached = self.unity.lock().unwrap().as_ref().copied();
-        let cache = match cached {
-            Some(c) => c,
-            None => return,
-        };
-        let speed_addr = *self.speed_target.lock().unwrap();
-        let gear_addr = *self.gear_target.lock().unwrap();
-        let mut speed_ok = false;
-        // SAFETY: m_CachedPtr probes; reads only on proven-live wrappers.
-        unsafe {
-            if let Some(a) = speed_addr {
-                let obj = a as *mut std::ffi::c_void;
-                match crate::unity::object_alive(api, &cache, obj) {
-                    Some(true) => {}
-                    _ => {
-                        *self.speed_target.lock().unwrap() = None;
-                    }
-                }
-            }
-            if let Some(a) = *self.speed_target.lock().unwrap() {
-                let obj = a as *mut std::ffi::c_void;
-                if let Some(text) = crate::unity::tmp_get_text(api, &cache, obj) {
-                    if let Some(value) = parse_speed(&text) {
-                        self.speed_bits.store(value.to_bits(), Ordering::SeqCst);
-                        *self.raw.lock().unwrap() = text.clone();
-                        let lower = text.to_lowercase();
-                        *self.unit.lock().unwrap() = if lower.contains("mph") {
-                            String::from("mph")
-                        } else {
-                            String::from("km/h")
-                        };
-                        speed_ok = true;
-                    }
-                } else {
-                    *self.speed_target.lock().unwrap() = None;
-                }
-            }
-            if let Some(a) = gear_addr {
-                let obj = a as *mut std::ffi::c_void;
-                match crate::unity::object_alive(api, &cache, obj) {
-                    Some(true) => {}
-                    _ => {
-                        *self.gear_target.lock().unwrap() = None;
-                    }
-                }
-            }
-            if let Some(a) = *self.gear_target.lock().unwrap() {
-                let obj = a as *mut std::ffi::c_void;
-                if let Some(text) = crate::unity::tmp_get_text(api, &cache, obj) {
-                    if let Some(g) = parse_gear(&text) {
-                        self.gear_val.store(g, Ordering::SeqCst);
-                    }
-                } else {
-                    *self.gear_target.lock().unwrap() = None;
-                }
-            }
-        }
-        self.valid.store(speed_ok, Ordering::SeqCst);
+        self.ui_ver = ver;
+        let snaps = lock(&self.snaps).clone();
+        self.ui = snaps
+            .into_iter()
+            .map(|s| UiObj {
+                owner: s.owner,
+                comp: s.comp,
+                active: s.active,
+                tr_addr: s.tr_addr,
+                comp_addr: s.comp_addr,
+                pos: s.pos,
+                euler: s.euler,
+                scale: s.scale,
+                color: f32_to_color(s.color),
+                size: s.font_size,
+                text: s.text,
+            })
+            .collect();
     }
 
-    /// Restore exactly the components this mod turned off (disable
-    /// path): re-enumerate live TMP texts, revive ours, skip the dead.
-    /// (Legacy beh-flag restore, kept while any pre-scale-zero hide
-    /// from an older build may still be in effect.)
-    fn restore(&self) {
-        // No beh-flag hides are created anymore (scale-zero replaced
-        // them); originals live in the slots, restored by restore_all.
-        self.restore_all();
+    /// One `Position / Rotation / Scale` trio row: three X/Y/Z
+    /// `DragValue`s. Rotation is display-only (the game drives it);
+    /// position/scale edits queue one-shot writes. Associated function
+    /// (no `&self`) so the caller keeps its `&mut` UI mirror while
+    /// pushing to the queue: disjoint field borrows.
+    fn xyz_row(
+        queue: &Mutex<Vec<WriteReq>>,
+        ui: &mut egui::Ui,
+        name: &str,
+        vals: &mut [f32; 3],
+        editable: bool,
+        addr: usize,
+        op: u8,
+    ) {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(name).weak().monospace());
+            // Borrow discipline: the `iter_mut` borrow lives for the
+            // whole loop, so the queued write goes out AFTER it ends.
+            let mut edited = false;
+            for (axis, v) in vals.iter_mut().enumerate() {
+                let tag = ["X", "Y", "Z"][axis];
+                ui.label(egui::RichText::new(tag).weak().small());
+                if editable {
+                    let resp = ui.add(
+                        egui::DragValue::new(v).speed(0.01).max_decimals(3),
+                    );
+                    if resp.changed() {
+                        edited = true;
+                    }
+                } else {
+                    ui.monospace(format!("{v:.2}"));
+                }
+            }
+            if edited {
+                lock(queue).push(WriteReq {
+                    addr,
+                    op,
+                    v: [vals[0], vals[1], vals[2], 0.0],
+                });
+            }
+        });
     }
 }
 
@@ -739,70 +665,54 @@ impl Mod for SpeedoMod {
         if !self.is_enabled() {
             return;
         }
-        let tick = self.tick.fetch_add(1, Ordering::SeqCst);
-        // Arming (or Refresh) forces an immediate resolve + bind.
+        let _tick = self.tick.fetch_add(1, Ordering::SeqCst);
+        // Explicit triggers only: discovery, restore, queued edits.
+        // An idle tick performs zero Unity calls (no polling — that
+        // crashed the game), so the present thread never skips us.
         if self.pending.swap(false, Ordering::SeqCst) {
-            self.last_resolve.store(tick, Ordering::SeqCst);
-            self.resolve();
-            self.bind_values();
+            self.discover();
         }
-        // Slow re-resolve while a checked target is missing.
-        let missing = {
-            let slots = self.slots.lock().unwrap();
-            slots.iter().any(|s| {
-                s.addr.is_none() && self.group_on(s.target.group)
-            })
-        };
-        if missing && tick.saturating_sub(self.last_resolve.load(Ordering::SeqCst)) >= RESOLVE_EVERY_TICKS {
-            self.last_resolve.store(tick, Ordering::SeqCst);
-            self.resolve();
+        if self.restore_now.swap(false, Ordering::SeqCst) {
+            self.restore_all();
         }
-        // Maintain (~1 Hz): re-hide on transition, restore unchecked.
-        if tick % MAINTAIN_EVERY_TICKS == 0 {
-            self.maintain();
-        }
-        // Value reads (~15 Hz) on pinned handles, published atomically.
-        if tick % READ_EVERY_TICKS == 0 {
-            self.read_values();
-        }
-        // Rebind value sources when lost (throttled like resolve).
-        let unbound = self.speed_target.lock().unwrap().is_none()
-            || self.gear_target.lock().unwrap().is_none();
-        if unbound && tick.saturating_sub(self.last_resolve.load(Ordering::SeqCst)) >= RESOLVE_EVERY_TICKS {
-            self.last_resolve.store(tick, Ordering::SeqCst);
-            self.bind_values();
+        if !lock(&self.writes).is_empty() {
+            self.drain_writes();
         }
     }
 
     fn on_draw_ui(&mut self, ctx: &egui::Context) {
-        // Proportional window: a fixed pixel box would dwarf small
-        // screens or shrink on 4K; derive everything from height.
-        let h = (ctx.screen_rect().height() * 0.42).clamp(260.0, 560.0);
-        let w = h * 1.15;
+        let code = crate::i18n::current().code();
+        self.sync_ui();
         let win = egui::Window::new("Speedometer")
-            .resizable(false)
-            .fixed_size(egui::Vec2::new(w, h))
+            .resizable(true)
             .frame(self.tool.frame(ctx))
             .show(ctx, |ui| {
                 self.tool.enter(ui);
                 ui.horizontal(|ui| {
                     self.tool.pin_toggle(ui);
-                    if ui.button("Refresh").clicked() {
-                        // Force re-resolution on the tick (never Unity
-                        // calls on the present thread).
-                        {
-                            let mut slots = self.slots.lock().unwrap();
-                            for s in slots.iter_mut() {
-                                s.addr = None;
-                                s.missing_logged = false;
-                            }
-                        }
-                        *self.speed_target.lock().unwrap() = None;
-                        *self.gear_target.lock().unwrap() = None;
+                    if ui.button(self::i18n::refresh_label(code)).clicked() {
+                        // Re-discover (scene changed, objects rebound).
                         self.pending.store(true, Ordering::SeqCst);
                     }
+                    if ui.button(self::i18n::restore_label(code)).clicked() {
+                        // Write back originals without disabling.
+                        self.restore_now.store(true, Ordering::SeqCst);
+                    }
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            ui.weak(format!(
+                                "{} {}/{}",
+                                self::i18n::objects_label(code),
+                                self.status_ok.load(Ordering::SeqCst),
+                                self.status_total.load(Ordering::SeqCst),
+                            ));
+                        },
+                    );
                 });
-                ui.separator();
+                // Discovery groups: unchecked targets are never bound
+                // (the gear readout binds solely when Gear is on).
+                // Takes effect on the next Refresh / arming.
                 ui.horizontal(|ui| {
                     let mut gauge = self.gauge.load(Ordering::SeqCst);
                     if ui.checkbox(&mut gauge, "Gauge").changed() {
@@ -822,45 +732,87 @@ impl Mod for SpeedoMod {
                     }
                 });
                 ui.separator();
-                if self.valid.load(Ordering::SeqCst) {
-                    // Exponential smoothing on the render clock so the
-                    // ~15 Hz tick readout glides instead of stepping.
-                    let dt = ctx.input(|i| i.stable_dt).min(0.1);
-                    let target = f32::from_bits(self.speed_bits.load(Ordering::SeqCst));
-                    let k = 1.0 - (-8.0f32 * dt).exp();
-                    self.disp += (target - self.disp) * k;
-                    let gear = self.gear_val.load(Ordering::SeqCst);
-                    let gear_txt = match gear {
-                        -1 => String::from("R"),
-                        0 => String::from("N"),
-                        v => v.to_string(),
-                    };
-                    ui.vertical_centered(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!("{:.0}", self.disp))
-                                .size(h * 0.24)
-                                .strong(),
-                        );
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(self.unit.lock().unwrap().clone())
-                                    .size(h * 0.075)
-                                    .weak(),
-                            );
-                            ui.label(
-                                egui::RichText::new(gear_txt)
-                                    .size(h * 0.075)
-                                    .strong(),
-                            );
-                        });
-                        ui.separator();
-                        ui.weak(format!("game: {}", self.raw.lock().unwrap().clone()));
-                    });
-                } else {
-                    ui.vertical_centered(|ui| {
-                        ui.weak("en attente du jeu… (menu, garage, changement de scène)");
-                    });
+                if self.ui.is_empty() {
+                    ui.weak(self::i18n::hint_label(code));
                 }
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for obj in self.ui.iter_mut() {
+                            let header = format!("{}  [{}]", obj.owner, obj.comp.label());
+                            egui::CollapsingHeader::new(header)
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    // — GameObject —
+                                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                                        ui.monospace("GameObject");
+                                        ui.horizontal(|ui| {
+                                            ui.label(egui::RichText::new("Nom").weak());
+                                            ui.monospace(&obj.owner);
+                                        });
+                                        ui.horizontal(|ui| {
+                                            ui.label(egui::RichText::new("Actif").weak());
+                                            ui.monospace(if obj.active { "●" } else { "○" });
+                                        });
+                                    });
+                                    // — Transform —
+                                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                                        ui.monospace("Transform");
+                                        // Split borrows: rows need `&mut`
+                                        // fields while `queue` needs
+                                        // `&self` — copy addresses out.
+                                        let tr = obj.tr_addr;
+                                        let comp = obj.comp_addr;
+                                        let queue = &self.writes;
+                                        Self::xyz_row(queue, ui, "Position", &mut obj.pos, true, tr, OP_POS);
+                                        Self::xyz_row(queue, ui, "Rotation", &mut obj.euler, false, tr, OP_POS);
+                                        Self::xyz_row(queue, ui, "Échelle", &mut obj.scale, true, tr, OP_SCALE);
+                                        // — Image / TextMeshProUGUI —
+                                        ui.monospace(obj.comp.label());
+                                        ui.horizontal(|ui| {
+                                            ui.label(egui::RichText::new("Couleur").weak());
+                                            if ui.color_edit_button_srgba(&mut obj.color).changed() {
+                                                lock(queue).push(WriteReq {
+                                                    addr: comp,
+                                                    op: OP_COLOR,
+                                                    v: color_to_f32(obj.color),
+                                                });
+                                            }
+                                        });
+                                        if obj.comp == CompKind::Tmp {
+                                            ui.horizontal(|ui| {
+                                                ui.label(egui::RichText::new("Texte").weak());
+                                                let preview: String =
+                                                    obj.text.chars().take(40).collect();
+                                                ui.monospace(format!("“{preview}”"));
+                                            });
+                                            ui.horizontal(|ui| {
+                                                ui.label(egui::RichText::new("Taille").weak());
+                                                match &mut obj.size {
+                                                    Some(size) => {
+                                                        let resp = ui.add(
+                                                            egui::DragValue::new(size)
+                                                                .speed(0.5)
+                                                                .range(4.0..=300.0),
+                                                        );
+                                                        if resp.changed() {
+                                                            lock(queue).push(WriteReq {
+                                                                addr: comp,
+                                                                op: OP_FONT,
+                                                                v: [*size, 0.0, 0.0, 0.0],
+                                                            });
+                                                        }
+                                                    }
+                                                    None => {
+                                                        ui.monospace("n/a");
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    });
+                                });
+                        }
+                    });
             });
         if let Some(r) = win {
             self.tool.context_menu(&r.response);
@@ -870,18 +822,14 @@ impl Mod for SpeedoMod {
     fn on_enable(&mut self) {
         self.enabled.store(true, Ordering::SeqCst);
         self.pending.store(true, Ordering::SeqCst);
-        self.armed_logged.store(false, Ordering::SeqCst);
-        crate::log_line("speedo: armed (scale-zero hide per group)");
+        crate::log_line("speedo: inspection des objets (one-shot)");
     }
 
     fn on_disable(&mut self) {
         self.enabled.store(false, Ordering::SeqCst);
-        self.restore();
         self.restore_all();
-        *self.speed_target.lock().unwrap() = None;
-        *self.gear_target.lock().unwrap() = None;
-        self.valid.store(false, Ordering::SeqCst);
-        crate::log_line("speedo: off (originals restored)");
+        *lock(&self.writes) = Vec::new();
+        crate::log_line("speedo: off (originaux restaurés)");
     }
 }
 
@@ -892,61 +840,7 @@ pub fn register() {
 
 #[cfg(test)]
 mod tests {
-    use super::{group_enabled, is_zero_scale, parse_gear, parse_speed};
-
-    #[test]
-    fn parses_plain_integer() {
-        assert_eq!(parse_speed("123"), Some(123.0));
-    }
-
-    #[test]
-    fn parses_with_unit_suffix() {
-        assert_eq!(parse_speed("87 km/h"), Some(87.0));
-    }
-
-    #[test]
-    fn parses_mph_suffix() {
-        assert_eq!(parse_speed("45 mph"), Some(45.0));
-    }
-
-    #[test]
-    fn parses_decimal_dot_and_comma() {
-        assert_eq!(parse_speed(" 92.5 "), Some(92.5));
-        assert_eq!(parse_speed("92,5"), Some(92.5));
-        assert_eq!(parse_speed("12,5"), Some(12.5));
-    }
-
-    #[test]
-    fn rejects_non_numeric() {
-        assert_eq!(parse_speed(""), None);
-        assert_eq!(parse_speed("km/h"), None);
-        assert_eq!(parse_speed("--"), None);
-    }
-
-    #[test]
-    fn parses_gears() {
-        assert_eq!(parse_gear("1"), Some(1));
-        assert_eq!(parse_gear(" 3 "), Some(3));
-        assert_eq!(parse_gear("N"), Some(0));
-        assert_eq!(parse_gear("n"), Some(0));
-        assert_eq!(parse_gear("R"), Some(-1));
-        assert_eq!(parse_gear("r"), Some(-1));
-    }
-
-    #[test]
-    fn rejects_bad_gears() {
-        assert_eq!(parse_gear(""), None);
-        assert_eq!(parse_gear("D"), None);
-        assert_eq!(parse_gear("--"), None);
-    }
-
-    #[test]
-    fn zero_scale_checks() {
-        assert!(is_zero_scale([0.0, 0.0, 0.0]));
-        assert!(is_zero_scale([1e-7, 0.0, -1e-7]));
-        assert!(!is_zero_scale([1.0, 1.0, 1.0]));
-        assert!(!is_zero_scale([0.0, 1.0, 0.0]));
-    }
+    use super::{WANTS, color_to_f32, f32_to_color, group_enabled, quat_to_euler};
 
     #[test]
     fn group_flags() {
@@ -956,5 +850,49 @@ mod tests {
         assert!(group_enabled(2, false, false, true, false));
         assert!(group_enabled(3, false, false, false, true));
         assert!(!group_enabled(9, true, true, true, true));
+    }
+
+    #[test]
+    fn table_covers_gauge_and_texts() {
+        let owners: Vec<&str> = WANTS.iter().map(|w| w.owner).collect();
+        for need in [
+            "Background",
+            "Tachometer",
+            "Arrow",
+            "Text (TMP) Speed",
+            "Text (TMP) Gear",
+            "Nitro",
+        ] {
+            assert!(owners.contains(&need), "missing {need}");
+        }
+    }
+
+    #[test]
+    fn quat_identity_is_zero_euler() {
+        let e = quat_to_euler([0.0, 0.0, 0.0, 1.0]);
+        assert!(e[0].abs() < 1e-4 && e[1].abs() < 1e-4 && e[2].abs() < 1e-4);
+    }
+
+    #[test]
+    fn quat_z90_is_yaw_90() {
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        let e = quat_to_euler([0.0, 0.0, s, s]);
+        assert!(e[0].abs() < 0.05 && e[1].abs() < 0.05 && (e[2] - 90.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn color_roundtrip() {
+        for c in [
+            [1.0, 1.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0, 1.0],
+            [0.2, 0.4, 0.6, 0.8],
+            [0.0, 0.0, 0.0, 0.0],
+        ] {
+            let back = color_to_f32(f32_to_color(c));
+            for i in 0..4 {
+                // Gamma u8 quantization between the two linear ends.
+                assert!((back[i] - c[i]).abs() < 0.012, "{c:?} -> {back:?}");
+            }
+        }
     }
 }

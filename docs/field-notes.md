@@ -179,6 +179,24 @@ Diagnostic line (zero keypresses needed):
 - Registration nuance: `ModInfo.enabled_by_default=false` ≠ disarmed
   (`enabled=false` in `new()`). `register()` only lists; the loader
   flips it on with a `pending` tick when the tile enables.
+- REDESIGN 2026-10-09 (crash isolation): 5 min clean with the mod off,
+  segfault ~1 min with it on — sustained foreign-thread traffic (even
+  reads) is unsafe. Polling + custom egui gauge deleted. New design,
+  Unity-Inspector style, strictly one-shot: discovery binds each
+  checked target via `GameObject.Find` + `GetComponent` (direct
+  lookups, zero enumeration — repeated enumeration from the tick had
+  crashed another mod), snapshots scale/pos/rot/color/size/text once;
+  edits queue single writes drained on the tick; idle ticks do zero
+  Unity calls; missing targets never auto-retry (manual Refresh).
+  Helpers added: `GameObject.GetComponent(Type)` (managed-exception
+  mismatch degrades to missing, never crashes), `Graphic.get/set_color`
+  (one pair covers `Image` + TMP via virtual dispatch), TMP
+  `get/set_fontSize`. Originals recorded first-seen per address,
+  restored on disable/Restore. UI mirrors the snapshot in render-side
+  buffers (no present-thread locks except brief clone/queue pushes);
+  egui `Color32` is gamma-premultiplied — convert through linear
+  `Rgba`, never naive u8 scaling. All mod mutexes via `common::lock`
+  (poison-recovering).
 
 ## How other tools modify Unity values (research 2026-10-06)
 

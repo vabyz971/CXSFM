@@ -7,6 +7,7 @@
 //!   only surface a mod may touch.
 //! - [`loader`]: the isolated registry (per-mod panic quarantine, lock
 //!   discipline, disable-before-remove).
+//! - [`common`]: tiny shared plumbing (poison-recovering mutex lock).
 pub mod api;
 pub mod camera;
 pub mod common;

@@ -295,6 +295,57 @@ pub unsafe fn tr_position(
     }
 }
 
+/// `Transform.set_position(Vector3)`. Struct-by-address, like minhud's
+/// proven `set_localScale` (safe on pinned handles).
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn tr_set_position(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    tr: *mut std::ffi::c_void,
+    pos: [f32; 3],
+) -> bool {
+    if cache.m_tr_set_position.is_null() || tr.is_null() {
+        return false;
+    }
+    // SAFETY: single Vector3 argument passed by address, as the ABI wants.
+    // Void callee: `invoke_void`, never `invoke` (see its docs).
+    unsafe {
+        let mut v = pos;
+        let params = [&mut v as *mut [f32; 3] as *mut std::ffi::c_void];
+        il2cpp::invoke_void(api, cache.m_tr_set_position, tr, &params)
+    }
+}
+
+/// `Transform.get_rotation()` as `[x, y, z, w]` (boxed Quaternion).
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn tr_get_rotation(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    tr: *mut std::ffi::c_void,
+) -> Option<[f32; 4]> {
+    if cache.m_tr_get_rotation.is_null() || tr.is_null() || api.object_unbox.is_none() {
+        return None;
+    }
+    // SAFETY: cached getter; boxed Quaternion is 4 packed floats.
+    unsafe {
+        let boxed = il2cpp::invoke(api, cache.m_tr_get_rotation, tr, &[])?;
+        let p = api.object_unbox.unwrap()(boxed) as *const f32;
+        if p.is_null() {
+            return None;
+        }
+        Some([
+            std::ptr::read_unaligned(p),
+            std::ptr::read_unaligned(p.add(1)),
+            std::ptr::read_unaligned(p.add(2)),
+            std::ptr::read_unaligned(p.add(3)),
+        ])
+    }
+}
+
 /// `GameObject.Find(name)` (static): root lookup by exact scene path
 /// name. Returns `None` when missing — never throws.
 ///
@@ -387,5 +438,103 @@ pub unsafe fn tr_set_scale(
         let mut v = scale;
         let params = [&mut v as *mut [f32; 3] as *mut std::ffi::c_void];
         il2cpp::invoke_void(api, cache.m_tr_set_local_scale, tr, &params)
+    }
+}
+
+/// `GameObject.GetComponent(Type)` — fetch a component by runtime type.
+///
+/// The `Type` object comes from `class_get_type` + `type_get_object`
+/// (both best-effort); `None` anywhere degrades to missing, never throws.
+/// NOTE: `GetComponent` has 1-arg overloads (`Type`, `string`) and the
+/// resolver returns the first in metadata order (Unity declares the
+/// `Type` one first). If a build ever returned the `string` overload
+/// instead, the invoke raises a *managed* exception on the argument
+/// mismatch, which `invoke` swallows into `None` — graceful
+/// degradation, never a crash. The caller still alive-checks the
+/// returned wrapper before any further use.
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn go_get_component(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    go: *mut std::ffi::c_void,
+    klass: *mut std::ffi::c_void,
+) -> Option<*mut std::ffi::c_void> {
+    if cache.m_go_get_component.is_null() || go.is_null() || klass.is_null() {
+        return None;
+    }
+    let class_get_type = api.class_get_type?;
+    let type_get_object = api.type_get_object?;
+    // SAFETY: live class; the conversions copy handles, no payload read.
+    let comp = unsafe {
+        let t = class_get_type(klass);
+        if t.is_null() {
+            return None;
+        }
+        let type_obj = type_get_object(t);
+        if type_obj.is_null() {
+            return None;
+        }
+        let params = [type_obj];
+        il2cpp::invoke(api, cache.m_go_get_component, go, &params)?
+    };
+    if comp.is_null() {
+        return None;
+    }
+    Some(comp)
+}
+
+/// `Graphic.get_color()` as `[r, g, b, a]` (UnityEngine.Color, 4 packed
+/// floats). Works on any `Graphic` subclass instance (`Image` sprites,
+/// TMP texts — virtual dispatch reaches the override).
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn graphic_get_color(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    obj: *mut std::ffi::c_void,
+) -> Option<[f32; 4]> {
+    if cache.m_graphic_get_color.is_null() || obj.is_null() || api.object_unbox.is_none() {
+        return None;
+    }
+    // SAFETY: cached getter; boxed Color is 4 packed floats.
+    unsafe {
+        let boxed = il2cpp::invoke(api, cache.m_graphic_get_color, obj, &[])?;
+        let p = api.object_unbox.unwrap()(boxed) as *const f32;
+        if p.is_null() {
+            return None;
+        }
+        Some([
+            std::ptr::read_unaligned(p),
+            std::ptr::read_unaligned(p.add(1)),
+            std::ptr::read_unaligned(p.add(2)),
+            std::ptr::read_unaligned(p.add(3)),
+        ])
+    }
+}
+
+/// `Graphic.set_color(Color)`. Struct-by-address, like `tr_set_scale`.
+/// One shot is enough: the setter flags the vertices dirty and the
+/// Canvas rebuilds the mesh on the next frame by itself.
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn graphic_set_color(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    obj: *mut std::ffi::c_void,
+    color: [f32; 4],
+) -> bool {
+    if cache.m_graphic_set_color.is_null() || obj.is_null() {
+        return false;
+    }
+    // SAFETY: single Color argument passed by address, as the ABI wants.
+    // Void callee: `invoke_void`, never `invoke` (see its docs).
+    unsafe {
+        let mut v = color;
+        let params = [&mut v as *mut [f32; 4] as *mut std::ffi::c_void];
+        il2cpp::invoke_void(api, cache.m_graphic_set_color, obj, &params)
     }
 }

@@ -31,11 +31,15 @@ pub use camera::{
 };
 pub use object::{
     beh_get_enabled, beh_set_enabled, component_active, component_gameobject, get_instance_id,
-    go_active, go_find, go_set_active, go_transform, object_alive, object_name, tr_child,
-    tr_child_count, tr_find, tr_get_scale, tr_position, tr_set_scale,
+    go_active, go_find, go_get_component, go_set_active, go_transform, graphic_get_color,
+    graphic_set_color, object_alive, object_name, tr_child, tr_child_count, tr_find,
+    tr_get_rotation, tr_get_scale, tr_position, tr_set_position, tr_set_scale,
 };
 pub use scene::{loaded_scenes, scene_root_objects};
-pub use text::{find_texts, find_tmp_texts, get_text, set_text, tmp_get_text, tmp_set_text};
+pub use text::{
+    find_images, find_texts, find_tmp_texts, get_text, set_text, tmp_get_font_size, tmp_get_text,
+    tmp_set_font_size, tmp_set_text,
+};
 pub use video::{
     antialiasing, quality_level, quality_names, render_ambient, render_fog, render_fog_density,
     screen_fullscreen, screen_resolution, screen_set_resolution, set_antialiasing,
@@ -76,6 +80,19 @@ pub struct UnityCache {
     pub m_tmp_get_text: *mut std::ffi::c_void,
     /// `TextMeshProUGUI.set_text(string)` (1 arg, optional).
     pub m_tmp_set_text: *mut std::ffi::c_void,
+    /// `TextMeshProUGUI.get_fontSize()` (0 args, optional).
+    pub m_tmp_get_font_size: *mut std::ffi::c_void,
+    /// `TextMeshProUGUI.set_fontSize(float)` (1 arg, optional).
+    pub m_tmp_set_font_size: *mut std::ffi::c_void,
+    /// `UnityEngine.UI.Graphic` class (optional — color live here for
+    /// sprites (`Image`) and TMP texts alike).
+    pub graphic_klass: *mut std::ffi::c_void,
+    /// `UnityEngine.UI.Image` class (optional — sprite enumeration).
+    pub image_klass: *mut std::ffi::c_void,
+    /// `Graphic.get_color()` (0 args, optional — boxed Color).
+    pub m_graphic_get_color: *mut std::ffi::c_void,
+    /// `Graphic.set_color(Color)` (1 arg, optional).
+    pub m_graphic_set_color: *mut std::ffi::c_void,
     /// `Component.get_gameObject()` (optional — visibility diagnosis).
     pub m_comp_get_gameobject: *mut std::ffi::c_void,
     /// `GameObject.get_activeInHierarchy()` (optional — same).
@@ -97,6 +114,9 @@ pub struct UnityCache {
     pub m_go_set_active: *mut std::ffi::c_void,
     /// `GameObject.Find(name)` (static, 1 string arg, optional).
     pub m_go_find: *mut std::ffi::c_void,
+    /// `GameObject.GetComponent(Type)` (1 arg, optional — see
+    /// `go_get_component` for the overload note).
+    pub m_go_get_component: *mut std::ffi::c_void,
     /// `Transform` class (optional — hierarchy walk + position).
     pub tr_klass: *mut std::ffi::c_void,
     /// `Transform.get_childCount()` (optional).
@@ -111,6 +131,10 @@ pub struct UnityCache {
     pub m_tr_set_local_scale: *mut std::ffi::c_void,
     /// `Transform.get_position()` (optional — boxed Vector3).
     pub m_tr_get_position: *mut std::ffi::c_void,
+    /// `Transform.set_position(Vector3)` (optional — freecam drive).
+    pub m_tr_set_position: *mut std::ffi::c_void,
+    /// `Transform.get_rotation()` (optional — boxed Quaternion).
+    pub m_tr_get_rotation: *mut std::ffi::c_void,
     /// `SceneManager.GetActiveScene()` (static, optional — root walk).
     pub m_scene_get_active: *mut std::ffi::c_void,
     /// `SceneManager.GetSceneCount()` (static, optional — all scenes).
@@ -268,6 +292,31 @@ pub unsafe fn init(
                 il2cpp::get_method(api, tmp_klass, "set_text", 1),
             )
         };
+        let (m_tmp_get_font_size, m_tmp_set_font_size) = if tmp_klass.is_null() {
+            (None, None)
+        } else {
+            (
+                il2cpp::get_method(api, tmp_klass, "get_fontSize", 0),
+                il2cpp::get_method(api, tmp_klass, "set_fontSize", 1),
+            )
+        };
+
+        // UI styling is optional: `Graphic` carries `color` for sprites
+        // (`Image`) and TMP texts alike; `Image` is enumerated like TMP.
+        // `get_method` finds inherited members (proven: TMP `text`
+        // resolves on the concrete class), so one pair covers both.
+        let graphic_klass = il2cpp::find_class(api, domain, Some("UnityEngine.UI"), "UnityEngine.UI", "Graphic")
+            .unwrap_or(std::ptr::null_mut());
+        let (m_graphic_get_color, m_graphic_set_color) = if graphic_klass.is_null() {
+            (None, None)
+        } else {
+            (
+                il2cpp::get_method(api, graphic_klass, "get_color", 0),
+                il2cpp::get_method(api, graphic_klass, "set_color", 1),
+            )
+        };
+        let image_klass = il2cpp::find_class(api, domain, Some("UnityEngine.UI"), "UnityEngine.UI", "Image")
+            .unwrap_or(std::ptr::null_mut());
 
         // Component/GameObject state: optional visibility diagnosis
         // (an enumerated object may live on a disabled branch — writing
@@ -357,6 +406,17 @@ pub unsafe fn init(
                     il2cpp::get_method(api, tr_klass, "get_position", 0),
                 )
             };
+        // Position setter + rotation getter (one-shot Inspector
+        // writes on pinned handles).
+        let (m_tr_set_position, m_tr_get_rotation) =
+            if tr_klass.is_null() {
+                (None, None)
+            } else {
+                (
+                    il2cpp::get_method(api, tr_klass, "set_position", 1),
+                    il2cpp::get_method(api, tr_klass, "get_rotation", 0),
+                )
+            };
         // HUD scale-zero hiding: child lookup + localScale get/set.
         // Same struct-by-address shapes as the setters above.
         let (m_tr_find, m_tr_get_local_scale, m_tr_set_local_scale) =
@@ -381,6 +441,11 @@ pub unsafe fn init(
             None
         } else {
             il2cpp::get_method(api, go_klass, "Find", 1)
+        };
+        let m_go_get_component = if go_klass.is_null() {
+            None
+        } else {
+            il2cpp::get_method(api, go_klass, "GetComponent", 1)
         };
 
         // Video/quality knobs: pure static getters/setters, the same
@@ -554,6 +619,12 @@ pub unsafe fn init(
             tmp_klass,
             m_tmp_get_text: m_tmp_get_text.unwrap_or(std::ptr::null_mut()),
             m_tmp_set_text: m_tmp_set_text.unwrap_or(std::ptr::null_mut()),
+            m_tmp_get_font_size: m_tmp_get_font_size.unwrap_or(std::ptr::null_mut()),
+            m_tmp_set_font_size: m_tmp_set_font_size.unwrap_or(std::ptr::null_mut()),
+            graphic_klass,
+            m_graphic_get_color: m_graphic_get_color.unwrap_or(std::ptr::null_mut()),
+            m_graphic_set_color: m_graphic_set_color.unwrap_or(std::ptr::null_mut()),
+            image_klass,
             m_comp_get_gameobject: m_comp_get_gameobject.unwrap_or(std::ptr::null_mut()),
             m_go_get_active: m_go_get_active.unwrap_or(std::ptr::null_mut()),
             m_beh_set_enabled: m_beh_set_enabled.unwrap_or(std::ptr::null_mut()),
@@ -564,6 +635,7 @@ pub unsafe fn init(
             go_klass,
             m_go_get_transform: m_go_get_transform.unwrap_or(std::ptr::null_mut()),
             m_go_set_active: m_go_set_active.unwrap_or(std::ptr::null_mut()),
+            m_go_get_component: m_go_get_component.unwrap_or(std::ptr::null_mut()),
             m_go_find: m_go_find.unwrap_or(std::ptr::null_mut()),
             tr_klass,
             m_tr_get_child_count: m_tr_get_child_count.unwrap_or(std::ptr::null_mut()),
@@ -572,6 +644,8 @@ pub unsafe fn init(
             m_tr_get_local_scale: m_tr_get_local_scale.unwrap_or(std::ptr::null_mut()),
             m_tr_set_local_scale: m_tr_set_local_scale.unwrap_or(std::ptr::null_mut()),
             m_tr_get_position: m_tr_get_position.unwrap_or(std::ptr::null_mut()),
+            m_tr_set_position: m_tr_set_position.unwrap_or(std::ptr::null_mut()),
+            m_tr_get_rotation: m_tr_get_rotation.unwrap_or(std::ptr::null_mut()),
             m_scene_get_active: m_scene_get_active.unwrap_or(std::ptr::null_mut()),
             m_scene_get_count: m_scene_get_count.unwrap_or(std::ptr::null_mut()),
             m_scene_get_at: m_scene_get_at.unwrap_or(std::ptr::null_mut()),

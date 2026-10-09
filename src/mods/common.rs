@@ -1,8 +1,11 @@
-//! Shared mod helpers: cadences, caps and log formatting.
+//! Shared mod helpers: cadences, caps, log formatting, and the
+//! approved mutex lock.
 //!
 //! Unity calls from a foreign thread must stay rare (1 Hz verify,
 //! ~0.2 Hz search) and log lines single-line; these constants keep
 //! every mod on the same proven rhythm.
+
+use std::sync::{Mutex, MutexGuard};
 
 /// Resolve attempts while armed but handle-less (~1 Hz at 60 Hz tick).
 pub const RESOLVE_EVERY_TICKS: u64 = 60;
@@ -30,4 +33,17 @@ pub fn preview(text: &str) -> String {
     } else {
         flat
     }
+}
+
+/// Lock `m`, recovering the guard when a previous holder panicked.
+///
+/// A poisoned mutex means a previous holder panicked (the loader
+/// quarantines panicking mods, so poisoning is a live possibility,
+/// not theory). Crashing the overlay — or stalling the game — over
+/// one stale panic is never acceptable, so the guard is recovered
+/// instead of `unwrap()`ing into an abort. Call sites must treat the
+/// data as merely *possibly* torn (in practice our critical sections
+/// are short plain-data updates, so recovery is exact).
+pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
