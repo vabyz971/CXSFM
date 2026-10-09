@@ -161,6 +161,36 @@ pub fn draw_icon(painter: &egui::Painter, c: egui::Pos2, s: f32, icon: TileIcon)
                 );
             }
         }
+        TileIcon::Gauge => {
+            // Semicircular dial: tick marks, arc segments, needle + hub.
+            let r = s * 0.48;
+            let n_ticks = 7;
+            for i in 0..n_ticks {
+                let a = std::f32::consts::PI * (1.0 - i as f32 / (n_ticks - 1) as f32);
+                let (outer, inner) = (r, r - s * 0.1);
+                painter.line_segment(
+                    [
+                        egui::pos2(c.x + outer * a.cos(), c.y - outer * a.sin()),
+                        egui::pos2(c.x + inner * a.cos(), c.y - inner * a.sin()),
+                    ],
+                    thin,
+                );
+            }
+            let n_arc = 16;
+            let mut prev = egui::pos2(c.x + r, c.y);
+            for i in 1..=n_arc {
+                let a = std::f32::consts::PI * (1.0 - i as f32 / n_arc as f32);
+                let p = egui::pos2(c.x + r * a.cos(), c.y - r * a.sin());
+                painter.line_segment([prev, p], w);
+                prev = p;
+            }
+            let na = std::f32::consts::PI * 0.72;
+            painter.line_segment(
+                [c, egui::pos2(c.x + r * 0.8 * na.cos(), c.y - r * 0.8 * na.sin())],
+                w,
+            );
+            painter.circle_filled(c, 2.5, col);
+        }
     }
 }
 

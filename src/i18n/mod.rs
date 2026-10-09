@@ -239,6 +239,7 @@ fn mod_tile(key: &str) -> Option<&'static str> {
         "mod_camera" => Some(crate::mods::camera::i18n::tile_label(code)),
         "mod_video" => Some(crate::mods::video::i18n::tile_label(code)),
         "mod_gamelog" => Some(crate::mods::gamelog::i18n::tile_label(code)),
+        "mod_speedo" => Some(crate::mods::speedo::i18n::tile_label(code)),
         _ => None,
     }
 }

@@ -218,6 +218,7 @@ fn deferred_init() {
         // (reads were fine). The module stays compiled in
         // `mods::video` until the faulting setter is isolated.
         // mods::video::register();
+        mods::speedo::register();
         log_line("mods registered, starting tick thread");
         spawn_tick_thread();
         headless_ui_check();

@@ -153,6 +153,33 @@ Diagnostic line (zero keypresses needed):
   5 s search cadence otherwise misses fast toggle on/off presses
   entirely (seen in log: arm→off in <1 s, zero maintain lines).
 
+## Speedometer mod (scale-zero hide + custom readout)
+
+- Hiding a whole tachometer via `Behaviour.set_enabled(false)` on the
+  text component leaves the dial/needle visible; hiding via
+  `GameObject.SetActive(false)` stops the text updates. Scale-zero
+  (`Transform.localScale=(0,0,0)` on `Speedometer/Background`,
+  `Speedometer/Tachometer`, `Speedometer/Arrow`, `Speedometer/Nitro`)
+  keeps every object ACTIVE (texts keep updating every frame) while
+  shrinking them to an invisible point. Original scale recorded BEFORE
+  the first write, never a zero one (fallback `(1,1,1)`); restore writes
+  back the recorded originals on disable/uncheck.
+- Targeting rule: `GameObject.Find(<root>)` then `Transform.Find` for
+  the child path — no recursive tree walk, no per-tick enumeration.
+  Resolve only on arming, Refresh press, dead-pointer recheck, or the
+  slow missing-target cadence (>= 5 s). ~1 Hz maintain re-hides after a
+  menu/scene transition (compare-then-write, `activeInHierarchy` logged
+  on changes only).
+- Value pipeline: TMP handles for `Text (TMP) Speed` / `Text (TMP)
+  Gear` bound once (alive-checked), read at ~15 Hz on the tick thread,
+  published to atomics (`speed_bits`, `gear_val`, `valid`); the render
+  thread only reads atomics + `stable_dt` smoothing — no Unity call, no
+  Mutex on the present path. Speed parser takes the first number
+  (tolerates `km/h`/`mph`, `.`/`,`); gear maps `N→0`, `R→-1`.
+- Registration nuance: `ModInfo.enabled_by_default=false` ≠ disarmed
+  (`enabled=false` in `new()`). `register()` only lists; the loader
+  flips it on with a `pending` tick when the tile enables.
+
 ## How other tools modify Unity values (research 2026-10-06)
 
 - **BepInEx/MelonLoader**: plugins are MonoBehaviours living on the

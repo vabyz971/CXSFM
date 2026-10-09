@@ -43,6 +43,8 @@ pub enum TileIcon {
     Sliders,
     /// Log lines (game log viewer).
     Log,
+    /// Gauge dial (custom speedometer).
+    Gauge,
 }
 
 impl Default for TileIcon {

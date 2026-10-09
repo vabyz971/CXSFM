@@ -19,3 +19,4 @@ pub mod hud_scout;
 pub mod hud_text;
 pub mod inspector;
 pub mod video;
+pub mod speedo;
