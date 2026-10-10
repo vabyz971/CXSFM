@@ -774,26 +774,28 @@ impl SpeedoMod {
     /// mutate the render-side buffer ONLY — nothing reaches Unity
     /// until the Appliquer batch. Returns true when a value changed
     /// (markers re-anchor on value-driven frames).
-    fn xyz_row(ui: &mut egui::Ui, name: &str, vals: &mut [f32; 3], editable: bool) -> bool {
-        let mut edited = false;
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(name).weak().monospace());
-            for (axis, v) in vals.iter_mut().enumerate() {
-                let tag = ["X", "Y", "Z"][axis];
-                ui.label(egui::RichText::new(tag).weak().small());
-                if editable {
-                    if ui
-                        .add(egui::DragValue::new(v).speed(0.01).max_decimals(3))
-                        .changed()
-                    {
-                        edited = true;
-                    }
-                } else {
-                    ui.monospace(format!("{v:.2}"));
-                }
-            }
-        });
-        edited
+    /// One transform group (`Position`…) as three full-width rows
+    /// (`X`/`Y`/`Z`), each with a label column and a fixed-width value
+    /// field. Vertical on purpose (horizontal triples overflowed narrow
+    /// panes), and fixed widths only: `available_width()` can report
+    /// infinite during egui's measure phase, which used to blow the
+    /// window up to 3000px.
+    fn axis_rows(ui: &mut egui::Ui, name: &str, vals: &mut [f32; 3]) {
+        for (axis, v) in vals.iter_mut().enumerate() {
+            let tag = ["X", "Y", "Z"][axis];
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("{name}.{tag}"))
+                        .weak()
+                        .monospace(),
+                );
+                let h = ui.spacing().interact_size.y;
+                ui.add_sized(
+                    [96.0, h],
+                    egui::DragValue::new(v).speed(0.01).max_decimals(3),
+                );
+            });
+        }
     }
 
     /// Build the Appliquer batch from every render-side buffer: one
@@ -846,12 +848,15 @@ impl SpeedoMod {
     /// LOCAL transform buffers, color + opacity, TMP text/size.
     /// Buffers only — nothing reaches Unity before Appliquer.
     fn draw_obj_params(ui: &mut egui::Ui, obj: &mut UiObj, code: &str) {
-        // — GameObject —
+        // — GameObject card: plain rows with a truncated name (a Grid
+        // + wrapping label measured unbounded here and blew the window
+        // to 3000px — see layout_stays_within_window).
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.monospace("GameObject");
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Nom").weak());
-                ui.monospace(&obj.owner);
+                let short: String = obj.owner.chars().take(28).collect();
+                ui.monospace(short);
             });
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Actif").weak());
@@ -864,13 +869,15 @@ impl SpeedoMod {
                 ui.checkbox(&mut obj.visible, "");
             });
         });
-        // — Transform —
+        // — Transform card: one full-width row per axis.
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.monospace("Transform");
-            Self::xyz_row(ui, "Position", &mut obj.pos, true);
-            Self::xyz_row(ui, "Rotation", &mut obj.euler, true);
-            Self::xyz_row(ui, "Échelle", &mut obj.scale, true);
-            // — Image / TextMeshProUGUI —
+            Self::axis_rows(ui, "Position", &mut obj.pos);
+            Self::axis_rows(ui, "Rotation", &mut obj.euler);
+            Self::axis_rows(ui, "Échelle", &mut obj.scale);
+        });
+        // — Image / TextMeshProUGUI —
+        egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.monospace(obj.comp.label());
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Couleur").weak());
@@ -879,7 +886,12 @@ impl SpeedoMod {
             // TMP draws through a text material: some elements ignore
             // the vertex color no matter what we write.
             if obj.comp == CompKind::Tmp {
-                ui.weak(self::i18n::color_hint(code));
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(self::i18n::color_hint(code)).small(),
+                    )
+                    .wrap(),
+                );
             }
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Opacité").weak());
@@ -888,7 +900,10 @@ impl SpeedoMod {
                 // whichever source was read.
                 let mut pct = obj.opacity * 100.0;
                 if ui
-                    .add(egui::Slider::new(&mut pct, 0.0..=100.0).suffix("%"))
+                    .add_sized(
+                        [160.0, ui.spacing().interact_size.y],
+                        egui::Slider::new(&mut pct, 0.0..=100.0).suffix("%"),
+                    )
                     .changed()
                 {
                     obj.opacity = (pct / 100.0).clamp(0.0, 1.0);
@@ -1064,19 +1079,37 @@ impl Mod for SpeedoMod {
                             )
                         })
                         .collect();
-                    ui.horizontal_top(|ui| {
+                    // Two explicit columns (NOT bare `horizontal_top`): a
+                    // ScrollArea inherits its parent layout, so inside a
+                    // horizontal row both panes flowed sideways and blew
+                    // the window to 3000px. `allocate_ui_with_layout`
+                    // forces `top_down` + fixed widths instead.
+                    let pane_h = ui.available_height().max(200.0);
+                    ui.horizontal(|ui| {
+                        ui.allocate_ui_with_layout(
+                            egui::Vec2::new(230.0, pane_h),
+                            egui::Layout::top_down(egui::Align::LEFT),
+                            |ui| {
                         egui::ScrollArea::vertical()
                             .id_salt("speedo_list")
-                            .max_width(230.0)
                             .show(ui, |ui| {
-                                ui.set_min_width(210.0);
                                 for (owner, comp, active) in &names {
                                     let dot = if *active { "●" } else { "○" };
+                                    // Unwrapped labels never shrink: cap the
+                                    // name so long owners can't bleed into
+                                    // the params pane.
+                                    let short: String =
+                                        owner.chars().take(24).collect();
+                                    let short = if short.len() < owner.len() {
+                                        format!("{short}…")
+                                    } else {
+                                        short
+                                    };
                                     if ui
                                         .selectable_label(
                                             self.selected.as_deref()
                                                 == Some(owner.as_str()),
-                                            format!("{dot} {owner}  [{comp}]"),
+                                            format!("{dot} {short}  [{comp}]"),
                                         )
                                         .clicked()
                                     {
@@ -1084,7 +1117,14 @@ impl Mod for SpeedoMod {
                                     }
                                 }
                             });
+                            },
+                        );
                         ui.separator();
+                        let rest_w = (ui.available_width() - 8.0).max(300.0);
+                        ui.allocate_ui_with_layout(
+                            egui::Vec2::new(rest_w, pane_h),
+                            egui::Layout::top_down(egui::Align::LEFT),
+                            |ui| {
                         egui::ScrollArea::vertical()
                             .id_salt("speedo_params")
                             .show(ui, |ui| {
@@ -1103,6 +1143,8 @@ impl Mod for SpeedoMod {
                                     }
                                 }
                             });
+                            },
+                        );
                     });
                 }
             });
@@ -1133,7 +1175,7 @@ pub fn register() {
 
 #[cfg(test)]
 mod tests {
-    use super::{WANTS, color_to_f32, f32_to_color, group_enabled};
+    use super::{WANTS, color_to_f32, f32_to_color, group_enabled, mesh_max_x};
 
     #[test]
     fn group_flags() {
@@ -1179,4 +1221,119 @@ mod tests {
             }
         }
     }
+
+    /// Layout regression: the window is fixed 760px wide, so no painted
+    /// primitive may extend past it (catches unbounded rows that used
+    /// to stretch the window across the whole screen).
+    #[test]
+    fn layout_fixed_window_sanity() {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1920.0, 1080.0),
+            )),
+            ..Default::default()
+        };
+        let mut max_x = 0.0f32;
+        for _ in 0..3 {
+            ctx.begin_pass(input.clone());
+            egui::Window::new("sanity")
+                .title_bar(false)
+                .collapsible(false)
+                .resizable(false)
+                .fixed_size(egui::Vec2::new(760.0, 540.0))
+                .show(&ctx, |ui| {
+                    ui.label("hello");
+                });
+            let mut out = ctx.end_pass();
+            out.textures_delta.clear();
+            let prims = ctx.tessellate(out.shapes, out.pixels_per_point);
+            max_x = mesh_max_x(&prims);
+        }
+        assert!(max_x <= 800.0, "even a bare fixed window blows up?!");
+    }
+
+    /// Layout regression: the window is fixed 760px wide, so no painted
+    /// primitive may extend past it (catches unbounded rows that used
+    /// to stretch the window across the whole screen).
+    #[test]
+    fn layout_stays_within_window() {
+        use super::{CompKind, SpeedoMod, UiObj};
+        use crate::mods::api::Mod;
+
+        fn obj(owner: &str, comp: CompKind) -> UiObj {
+            UiObj {
+                owner: owner.into(),
+                comp,
+                active: true,
+                tr_addr: 0,
+                comp_addr: 0,
+                pos: [26.0, -116.1, 0.0],
+                euler: [0.0; 3],
+                scale: [1.0; 3],
+                color: egui::Color32::WHITE,
+                opacity: 1.0,
+                cg: None,
+                size: if comp == CompKind::Tmp {
+                    Some(40.0)
+                } else {
+                    None
+                },
+                text: "000".into(),
+                visible: true,
+            }
+        }
+
+        let mut m = SpeedoMod::new();
+        m.ui = vec![
+            obj("Background", CompKind::Image),
+            obj("Text (TMP) Speed", CompKind::Tmp),
+            obj("Text (TMP) Gear With A Very Long Name", CompKind::Tmp),
+        ];
+        m.selected = Some("Text (TMP) Speed".into());
+        // Pin the window: placement itself is not under test.
+        m.tool.pos = Some(egui::pos2(100.0, 100.0));
+
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1920.0, 1080.0),
+            )),
+            ..Default::default()
+        };
+        let mut max_x = 0.0f32;
+        // Several passes: first-frame auto-size must settle.
+        for _ in 0..3 {
+            ctx.begin_pass(input.clone());
+            m.on_draw_ui(&ctx);
+            let mut out = ctx.end_pass();
+            // Font atlas upload happens on the first pass: consume the
+            // deltas like the renderer does (0.36 debug-asserts this).
+            out.textures_delta.clear();
+            let prims = ctx.tessellate(out.shapes, out.pixels_per_point);
+            max_x = mesh_max_x(&prims);
+        }
+        assert!(
+            max_x <= 100.0 + 760.0 + 40.0,
+            "overlay overflows its 760px window: max_x={max_x}"
+        );
+    }
+}
+
+/// Max painted vertex x over tessellated mesh primitives.
+///
+/// Layer clips (`Noop`/background) may legitimately span the screen —
+/// only mesh vertices are real paint.
+#[cfg(test)]
+fn mesh_max_x(prims: &[egui::ClippedPrimitive]) -> f32 {
+    prims
+        .iter()
+        .filter_map(|p| match &p.primitive {
+            egui::epaint::Primitive::Mesh(m) => Some(m),
+            _ => None,
+        })
+        .flat_map(|m| m.vertices.iter().map(|v| v.pos.x))
+        .fold(0.0f32, f32::max)
 }
