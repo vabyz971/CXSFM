@@ -257,11 +257,11 @@ impl Mod for GameLogMod {
                             }
                             let text = egui::RichText::new(line).monospace().size(14.0);
                             if is_error(line) {
-                                ui.label(text.color(egui::Color32::from_rgb(0xE8, 0x70, 0x60)));
+                                ui.label(text.color(crate::ui::theme::STATE_ERR));
                             } else if line.contains("[cxsfm") {
-                                ui.label(text.color(egui::Color32::from_rgb(0x8F, 0xD0, 0x8A)));
+                                ui.label(text.color(crate::ui::theme::STATE_OK));
                             } else {
-                                ui.label(text.color(egui::Color32::from_rgb(0xDC, 0xDC, 0xE2)));
+                                ui.label(text.color(crate::ui::theme::LOG_TEXT));
                             }
                         }
                     });

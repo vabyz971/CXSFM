@@ -42,11 +42,8 @@ const LOAD_BUDGET: usize = 1000;
 const MAX_MATCHES: usize = 200;
 
 /// Readable state colors on the dark panel.
-const GREEN: egui::Color32 = egui::Color32::from_rgb(0x8F, 0xD0, 0x8A);
-const ORANGE: egui::Color32 = egui::Color32::from_rgb(0xE8, 0xA0, 0x40);
-const RED: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x70, 0x60);
-const DIM: egui::Color32 = egui::Color32::from_rgb(0x8A, 0x8A, 0x92);
-const BRIGHT: egui::Color32 = egui::Color32::from_rgb(0xEC, 0xEC, 0xF0);
+// State/text colors live in the shared theme (single visual language).
+use crate::ui::theme::{STATE_ERR as RED, STATE_OK as GREEN, STATE_WARN as ORANGE, TEXT_BRIGHT as BRIGHT, TEXT_DIM as DIM};
 
 /// One scene object, owned data (no live handles escape the walk).
 /// Children load on demand: `children` fills when the node opens in

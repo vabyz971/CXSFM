@@ -23,6 +23,14 @@ pub const ACCENT: egui::Color32 = egui::Color32::from_rgb(0xF5, 0xC5, 0x18);
 pub const ICON_COLOR: egui::Color32 = egui::Color32::from_rgb(0xE8, 0xE8, 0xEA);
 /// Secondary text.
 pub const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(0x9A, 0x9A, 0xA2);
+/// Bright text (active nodes, titles on dark).
+pub const TEXT_BRIGHT: egui::Color32 = egui::Color32::from_rgb(0xEC, 0xEC, 0xF0);
+/// State colors (inspector dots, GameLog lines): readable on dark.
+pub const STATE_OK: egui::Color32 = egui::Color32::from_rgb(0x8F, 0xD0, 0x8A);
+pub const STATE_WARN: egui::Color32 = egui::Color32::from_rgb(0xE8, 0xA0, 0x40);
+pub const STATE_ERR: egui::Color32 = egui::Color32::from_rgb(0xE0, 0x70, 0x60);
+/// Default log line text.
+pub const LOG_TEXT: egui::Color32 = egui::Color32::from_rgb(0xDC, 0xDC, 0xE2);
 /// Footer bar background (dark like the game, not red).
 pub const FOOTER_BG: egui::Color32 = egui::Color32::from_rgb(0x1C, 0x1C, 0x1F);
 /// Footer top edge: thin yellow rule like game section dividers.

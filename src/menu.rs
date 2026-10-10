@@ -60,15 +60,23 @@ pub fn draw_menu_ui(ctx: &egui::Context) {
     // Dark menu palette, scoped to this window. Text is never
     // selectable (labels would otherwise eat drags/clicks and start
     // selection marquees over the tiles). egui 0.36 themes styles per
-    // Theme: mutate the active one (was global `set_style`).
+    // Theme: mutate the active one — once per theme switch, not every
+    // frame (style mutation is wasteful in immediate mode).
+    static STYLED: AtomicU8 = AtomicU8::new(u8::MAX);
     let theme = ctx.theme();
-    ctx.style_mut_of(theme, |style| {
-        // Game overlay is always dark, whatever the ambient theme is.
-        style.visuals.dark_mode = true;
-        style.visuals.window_fill = WIN_BG;
-        style.visuals.window_corner_radius = ROUNDING.into();
-        style.interaction.selectable_labels = false;
-    });
+    let code = match theme {
+        egui::Theme::Dark => 0,
+        egui::Theme::Light => 1,
+    };
+    if STYLED.swap(code, Ordering::SeqCst) != code {
+        ctx.style_mut_of(theme, |style| {
+            // Game overlay is always dark, whatever the ambient theme is.
+            style.visuals.dark_mode = true;
+            style.visuals.window_fill = WIN_BG;
+            style.visuals.window_corner_radius = ROUNDING.into();
+            style.interaction.selectable_labels = false;
+        });
+    }
 
     // Resizable + responsive: the grid derives its columns from the
     // available width (up to 4, wrapping below; compact past 8 mods)
