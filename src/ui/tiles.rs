@@ -161,6 +161,51 @@ pub fn draw_icon(painter: &egui::Painter, c: egui::Pos2, s: f32, icon: TileIcon)
                 );
             }
         }
+        TileIcon::Cars => {
+            // Two overlapping car bodies (side view): rounded body +
+            // two wheels each, rear one dimmed behind the front one.
+            for (i, dx) in [-0.22, 0.18].iter().enumerate() {
+                let bc = c + egui::Vec2::new(s * dx, s * if i == 0 { -0.12 } else { 0.12 });
+                let body = egui::Rect::from_center_size(
+                    bc,
+                    egui::Vec2::new(s * 0.62, s * 0.26),
+                );
+                let stroke = if i == 0 { thin } else { w };
+                painter.rect_stroke(body, 4.0, stroke);
+                for wx in [-0.18, 0.18] {
+                    painter.circle_filled(
+                        bc + egui::Vec2::new(s * wx, s * 0.18),
+                        2.5,
+                        col,
+                    );
+                }
+            }
+        }
+        TileIcon::Gamepad => {
+            // Gamepad: rounded body, d-pad cross left, two buttons right.
+            let body = egui::Rect::from_center_size(
+                c,
+                egui::Vec2::new(s * 1.0, s * 0.62),
+            );
+            painter.rect_stroke(body, 8.0, w);
+            let l = c + egui::Vec2::new(-s * 0.28, 0.0);
+            painter.line_segment(
+                [
+                    l + egui::Vec2::new(-s * 0.12, 0.0),
+                    l + egui::Vec2::new(s * 0.12, 0.0),
+                ],
+                thin,
+            );
+            painter.line_segment(
+                [
+                    l + egui::Vec2::new(0.0, -s * 0.12),
+                    l + egui::Vec2::new(0.0, s * 0.12),
+                ],
+                thin,
+            );
+            painter.circle_filled(c + egui::Vec2::new(s * 0.22, -s * 0.08), 2.5, col);
+            painter.circle_filled(c + egui::Vec2::new(s * 0.32, s * 0.06), 2.5, col);
+        }
         TileIcon::Gauge => {
             // Semicircular dial: tick marks, arc segments, needle + hub.
             let r = s * 0.48;

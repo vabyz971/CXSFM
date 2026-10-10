@@ -22,6 +22,38 @@ pub unsafe fn main_camera(api: &Il2cppApi, cache: &UnityCache) -> Option<*mut st
     }
 }
 
+/// `Camera.WorldToScreenPoint(world)` → `[x, y, depth]` (pixels,
+/// y bottom-up, depth = distance in front of the camera plane;
+/// negative = behind). Struct-by-address argument, boxed Vector3 out.
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn world_to_screen(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    cam: *mut std::ffi::c_void,
+    world: [f32; 3],
+) -> Option<[f32; 3]> {
+    if cache.m_cam_world_to_screen.is_null() || cam.is_null() || api.object_unbox.is_none() {
+        return None;
+    }
+    // SAFETY: cached method, one Vector3 by address; boxed Vector3 out.
+    unsafe {
+        let mut v = world;
+        let params = [&mut v as *mut [f32; 3] as *mut std::ffi::c_void];
+        let boxed = il2cpp::invoke(api, cache.m_cam_world_to_screen, cam, &params)?;
+        let p = api.object_unbox.unwrap()(boxed) as *const f32;
+        if p.is_null() {
+            return None;
+        }
+        Some([
+            std::ptr::read_unaligned(p),
+            std::ptr::read_unaligned(p.add(1)),
+            std::ptr::read_unaligned(p.add(2)),
+        ])
+    }
+}
+
 /// Read a camera's field of view in degrees.
 ///
 /// # Safety
@@ -75,6 +107,19 @@ pub unsafe fn cm_brain_list(
 ) -> Vec<*mut std::ffi::c_void> {
     // SAFETY: cached class handle, consumed immediately.
     unsafe { find_objects_of_class(api, cache, cache.cm_brain_klass) }
+}
+
+/// All live game `CameraController` instances (freecam cutoff: disable
+/// to stop the game driving the camera, restore on disable).
+///
+/// # Safety
+/// Same contract as [`cm_brain_list`].
+pub unsafe fn cam_controller_list(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+) -> Vec<*mut std::ffi::c_void> {
+    // SAFETY: cached class handle, consumed immediately.
+    unsafe { find_objects_of_class(api, cache, cache.cam_controller_klass) }
 }
 
 /// All live `CinemachineVirtualCamera` instances (derived game vcams
@@ -169,6 +214,29 @@ pub unsafe fn cm_vcam_follow_name(
             return None;
         }
         let go = super::component_gameobject(api, cache, follow)?;
+        Some(super::object_name(api, cache, go))
+    }
+}
+
+/// LookAt target's GameObject name for one vcam (`None` when unknown).
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn cm_vcam_lookat_name(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    vcam: *mut std::ffi::c_void,
+) -> Option<String> {
+    if cache.m_vcam_get_lookat.is_null() || vcam.is_null() {
+        return None;
+    }
+    // SAFETY: LookAt Transform → its GameObject → name, all immediate.
+    unsafe {
+        let lookat = il2cpp::invoke(api, cache.m_vcam_get_lookat, vcam, &[])?;
+        if lookat.is_null() {
+            return None;
+        }
+        let go = super::component_gameobject(api, cache, lookat)?;
         Some(super::object_name(api, cache, go))
     }
 }

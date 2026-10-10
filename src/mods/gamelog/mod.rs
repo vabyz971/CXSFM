@@ -12,6 +12,7 @@
 pub mod i18n;
 
 use crate::mods::api::{Mod, TileIcon};
+use crate::mods::common::lock;
 use crate::mods::tool::ToolChrome;
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::Mutex;
@@ -93,8 +94,11 @@ impl GameLogMod {
     }
 
     /// Read new bytes (tick thread). Rotation/truncation rewinds.
+    /// Slow polls (>200 ms) log a tripwire: the present thread clones
+    /// under the same lock, so a slow tick visibly stalls frames.
     fn poll(&self) {
-        let path = self.path.lock().unwrap().clone();
+        let t0 = std::time::Instant::now();
+        let path = lock(&self.path).clone();
         let path = match path {
             Some(p) => p,
             None => return,
@@ -104,11 +108,11 @@ impl GameLogMod {
             Err(_) => return,
         };
         let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-        let mut offset = self.offset.lock().unwrap();
+        let mut offset = lock(&self.offset);
         if len < *offset {
             // Rotated (Player.log → Player-prev.log): start over.
             *offset = 0;
-            self.pending.lock().unwrap().clear();
+            lock(&self.pending).clear();
         }
         if len == *offset {
             return;
@@ -125,10 +129,10 @@ impl GameLogMod {
         *offset += n as u64;
         drop(offset);
         buf.truncate(n);
-        let mut pending = self.pending.lock().unwrap();
+        let mut pending = lock(&self.pending);
         pending.push_str(&String::from_utf8_lossy(&buf));
         // Drain complete lines, keep the tail.
-        let mut lines = self.lines.lock().unwrap();
+        let mut lines = lock(&self.lines);
         while let Some(pos) = pending.find('\n') {
             let line: String = pending.drain(..=pos).collect();
             let line = line.trim_end_matches(['\n', '\r']).to_string();
@@ -139,6 +143,12 @@ impl GameLogMod {
         if lines.len() > MAX_LINES {
             let drop_n = lines.len() - MAX_LINES;
             lines.drain(..drop_n);
+        }
+        drop(lines);
+        drop(pending);
+        let ms = t0.elapsed().as_millis();
+        if ms > 200 {
+            crate::log_line(&format!("gamelog: slow poll ({ms} ms)"));
         }
     }
 }
@@ -178,17 +188,17 @@ impl Mod for GameLogMod {
         if !self.is_enabled() {
             return;
         }
-        if self.path.lock().unwrap().is_none() {
+        if lock(&self.path).is_none() {
             let p = player_log_path();
             if let Some(ref path) = p {
                 // Start at the tail: history belongs to Player-prev.log.
                 let off = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-                *self.offset.lock().unwrap() = off;
+                *lock(&self.offset) = off;
                 if !self.logged_path.swap(true, Ordering::SeqCst) {
                     crate::log_line(&format!("gamelog: watching {}", path.display()));
                 }
             }
-            *self.path.lock().unwrap() = p;
+            *lock(&self.path) = p;
         }
         let tick = self.tick.fetch_add(1, Ordering::SeqCst);
         if tick % POLL_EVERY_TICKS == 0 {
@@ -215,7 +225,12 @@ impl Mod for GameLogMod {
                     ui.checkbox(&mut self.errors_only, "errors");
                     self.tool.pin_toggle(ui);
                 });
-                let lines = self.lines.lock().unwrap();
+                // Clone under a brief lock: the tick's poll() also
+                // takes it, and holding it across the whole ScrollArea
+                // layout would stall the tick (visible as skipped
+                // frames, and a stalled tick holds the mod lock that
+                // the present thread skips on).
+                let lines = lock(&self.lines).clone();
                 if lines.is_empty() {
                     ui.weak("No lines yet — play a bit, the game logs as it goes.");
                     return;

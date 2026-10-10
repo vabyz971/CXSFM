@@ -48,17 +48,17 @@ unsafe fn get_method_any(
 
 // Re-exported so `crate::unity::X` paths keep working after the split.
 pub use camera::{
-    cm_active_vcam_name, cm_brain_list, cm_composer_list, cm_orbital_list,
-    cm_set_vcam_priority, cm_transposer_list, cm_vcam_follow_name, cm_vcam_list, cm_vcam_priority,
-    get_fov, main_camera, set_fov,
+    cam_controller_list, cm_active_vcam_name, cm_brain_list, cm_composer_list, cm_orbital_list,
+    cm_set_vcam_priority, cm_transposer_list, cm_vcam_follow_name, cm_vcam_list, cm_vcam_lookat_name,
+    cm_vcam_priority, get_fov, main_camera, set_fov, world_to_screen,
 };
 pub use object::{
-    beh_get_enabled, beh_set_enabled, component_active, component_gameobject, get_instance_id,
-    go_active, go_find, go_get_component, go_set_active, go_transform, graphic_get_color,
-    graphic_set_color, object_alive, object_name, tr_child, tr_child_count, tr_find,
-    tr_get_rotation, tr_get_scale, tr_position, tr_set_position, tr_set_scale,
-    all_transforms,
-    tr_parent,
+    all_transforms, beh_get_enabled, beh_set_enabled, canvasgroup_get_alpha, canvasgroup_set_alpha,
+    collider_list, component_active, component_gameobject, get_instance_id, go_active, go_find,
+    go_get_component, go_set_active, go_transform, graphic_get_color, graphic_set_color,
+    object_alive, object_name, tr_child, tr_child_count, tr_find, tr_get_local_euler,
+    tr_get_local_position, tr_get_rotation, tr_get_scale, tr_parent, tr_position,
+    tr_set_local_euler, tr_set_local_position, tr_set_position, tr_set_rotation, tr_set_scale,
 };
 pub use scene::{loaded_scenes, scene_root_objects, transform_scene_name};
 pub use text::{
@@ -84,6 +84,9 @@ pub struct UnityCache {
     pub m_get_fov: *mut std::ffi::c_void,
     /// `Camera.set_fieldOfView(float)` (1 arg).
     pub m_set_fov: *mut std::ffi::c_void,
+    /// `Camera.WorldToScreenPoint(Vector3)` (1 arg, boxed Vector3 out,
+    /// optional — overlay marker projection + px/world calibration).
+    pub m_cam_world_to_screen: *mut std::ffi::c_void,
     /// `UnityEngine.UI.Text` class (optional: absent on builds stripping UI).
     pub text_klass: *mut std::ffi::c_void,
     /// `Object.FindObjectsOfType(Type)` (static, 1 arg).
@@ -126,6 +129,8 @@ pub struct UnityCache {
     pub m_beh_set_enabled: *mut std::ffi::c_void,
     /// `Behaviour.get_enabled()` (optional — read-back).
     pub m_beh_get_enabled: *mut std::ffi::c_void,
+    /// `Collider` class (optional — player-collision toggle).
+    pub collider_klass: *mut std::ffi::c_void,
     /// `Input.GetKey(KeyCode)` (static, 1 arg; optional — null when the
     /// Input class can't be resolved, in which case `key_held` is false).
     pub m_get_key: *mut std::ffi::c_void,
@@ -163,6 +168,23 @@ pub struct UnityCache {
     pub m_tr_set_position: *mut std::ffi::c_void,
     /// `Transform.get_rotation()` (optional — boxed Quaternion).
     pub m_tr_get_rotation: *mut std::ffi::c_void,
+    /// `Transform.set_rotation(Quaternion)` (optional — freecam drive).
+    pub m_tr_set_rotation: *mut std::ffi::c_void,
+    /// `Transform.get_localPosition()` (optional — boxed Vector3; the
+    /// UI-persistent position, miniHUD proven).
+    pub m_tr_get_local_position: *mut std::ffi::c_void,
+    /// `Transform.set_localPosition(Vector3)` (optional).
+    pub m_tr_set_local_position: *mut std::ffi::c_void,
+    /// `Transform.get_localEulerAngles()` (optional — boxed Vector3).
+    pub m_tr_get_local_euler: *mut std::ffi::c_void,
+    /// `Transform.set_localEulerAngles(Vector3)` (optional).
+    pub m_tr_set_local_euler: *mut std::ffi::c_void,
+    /// `UnityEngine.UI.CanvasGroup` class (optional — UI opacity).
+    pub canvasgroup_klass: *mut std::ffi::c_void,
+    /// `CanvasGroup.get_alpha()` (0 args, optional — boxed float).
+    pub m_canvasgroup_get_alpha: *mut std::ffi::c_void,
+    /// `CanvasGroup.set_alpha(float)` (1 arg, optional).
+    pub m_canvasgroup_set_alpha: *mut std::ffi::c_void,
     /// `SceneManager.GetActiveScene()` (static, optional — root walk).
     pub m_scene_get_active: *mut std::ffi::c_void,
     /// `SceneManager.GetSceneCount()` (static, optional — all scenes).
@@ -240,6 +262,9 @@ pub struct UnityCache {
     pub cm_brain_klass: *mut std::ffi::c_void,
     /// `CinemachineBrain.get_ActiveVirtualCamera()`.
     pub m_brain_get_active_vcam: *mut std::ffi::c_void,
+    /// Game `CameraController` class (`CarX.Street.GameModes.Base`,
+    /// optional — freecam cutoff switch).
+    pub cam_controller_klass: *mut std::ffi::c_void,
     /// `CinemachineVirtualCamera` class.
     pub cm_vcam_klass: *mut std::ffi::c_void,
     /// `CinemachineVirtualCamera.get_Follow/get_LookAt`.
@@ -256,12 +281,16 @@ pub struct UnityCache {
     pub m_trans_offset: *mut std::ffi::c_void,
     /// `m_XDamping/m_YDamping/m_ZDamping` fields (transposer).
     pub m_trans_damp: [*mut std::ffi::c_void; 3],
+    /// `m_BindingMode` field (transposer, enum as int).
+    pub m_trans_binding: *mut std::ffi::c_void,
     /// `CinemachineOrbitalTransposer` class + `m_FollowOffset` field.
     pub cm_orbital_klass: *mut std::ffi::c_void,
     /// `CinemachineOrbitalTransposer` class + `m_FollowOffset` field.
     pub m_orbital_offset: *mut std::ffi::c_void,
     /// `m_XDamping/m_YDamping/m_ZDamping` fields (orbital).
     pub m_orbital_damp: [*mut std::ffi::c_void; 3],
+    /// `m_BindingMode` field (orbital, enum as int).
+    pub m_orbital_binding: *mut std::ffi::c_void,
     /// `CinemachineComposer` class + `m_TrackedObjectOffset` field.
     pub cm_composer_klass: *mut std::ffi::c_void,
     /// `CinemachineComposer` class + `m_TrackedObjectOffset` field.
@@ -299,6 +328,8 @@ pub unsafe fn init(
         let m_cam_main = il2cpp::get_method(api, cam_klass, "get_main", 0)?;
         let m_get_fov = il2cpp::get_method(api, cam_klass, "get_fieldOfView", 0);
         let m_set_fov = il2cpp::get_method(api, cam_klass, "set_fieldOfView", 1)?;
+        let m_cam_world_to_screen =
+            il2cpp::get_method(api, cam_klass, "WorldToScreenPoint", 1).unwrap_or(std::ptr::null_mut());
 
         // UI text is optional: present in full builds, stripped in some.
         let text_klass = il2cpp::find_class(api, domain, Some("UnityEngine.UI"), "UnityEngine.UI", "Text").unwrap_or(std::ptr::null_mut());
@@ -392,6 +423,11 @@ pub unsafe fn init(
             )
         };
 
+        // Colliders (player-collision toggle): class only, enable flag
+        // goes through the shared Behaviour methods above.
+        let collider_klass = il2cpp::find_class(api, domain, Some("UnityEngine.PhysicsModule"), "UnityEngine", "Collider")
+            .unwrap_or(std::ptr::null_mut());
+
         // Instance ids: Object.GetInstanceID, stable per object.
         let m_get_instance_id =
             il2cpp::get_method(api, obj_klass, "GetInstanceID", 0);
@@ -476,21 +512,54 @@ pub unsafe fn init(
                     il2cpp::get_method(api, tr_klass, "get_position", 0),
                 )
             };
-        // Position setter + rotation getter (one-shot Inspector
-        // writes on pinned handles).
-        let (m_tr_set_position, m_tr_get_rotation) =
+        // Freecam drive: position/rotation setters + rotation getter.
+        // Same struct-by-address shapes as minhud's set_localScale
+        // (proven safe on pinned handles).
+        let (m_tr_set_position, m_tr_get_rotation, m_tr_set_rotation) =
             if tr_klass.is_null() {
-                (None, None)
+                (None, None, None)
             } else {
                 (
                     il2cpp::get_method(api, tr_klass, "set_position", 1),
                     il2cpp::get_method(api, tr_klass, "get_rotation", 0),
+                    il2cpp::get_method(api, tr_klass, "set_rotation", 1),
                 )
             };
         let m_tr_get_parent = if tr_klass.is_null() {
             None
         } else {
             il2cpp::get_method(api, tr_klass, "get_parent", 0)
+        };
+        // UI-persistent transforms (miniHUD proven): the Canvas layout
+        // recomputes world positions from rect data, discarding
+        // world-space writes — local variants stick.
+        let (m_tr_get_local_position, m_tr_set_local_position) = if tr_klass.is_null() {
+            (None, None)
+        } else {
+            (
+                il2cpp::get_method(api, tr_klass, "get_localPosition", 0),
+                il2cpp::get_method(api, tr_klass, "set_localPosition", 1),
+            )
+        };
+        let (m_tr_get_local_euler, m_tr_set_local_euler) = if tr_klass.is_null() {
+            (None, None)
+        } else {
+            (
+                il2cpp::get_method(api, tr_klass, "get_localEulerAngles", 0),
+                il2cpp::get_method(api, tr_klass, "set_localEulerAngles", 1),
+            )
+        };
+        // UI opacity: `CanvasGroup` carries one `alpha` for the whole
+        // subtree (miniHUD proven); absent → color alpha fallback.
+        let canvasgroup_klass = il2cpp::find_class(api, domain, Some("UnityEngine.UI"), "UnityEngine", "CanvasGroup")
+            .unwrap_or(std::ptr::null_mut());
+        let (m_canvasgroup_get_alpha, m_canvasgroup_set_alpha) = if canvasgroup_klass.is_null() {
+            (None, None)
+        } else {
+            (
+                il2cpp::get_method(api, canvasgroup_klass, "get_alpha", 0),
+                il2cpp::get_method(api, canvasgroup_klass, "set_alpha", 1),
+            )
         };
         // HUD scale-zero hiding: child lookup + localScale get/set.
         // Same struct-by-address shapes as the setters above.
@@ -617,6 +686,10 @@ pub unsafe fn init(
         } else {
             il2cpp::get_method(api, cm_brain_klass, "get_ActiveVirtualCamera", 0)
         };
+        // Game camera driver: disabling its Behaviour(s) stops the game
+        // from fighting freecam writes (restored on disable).
+        let cam_controller_klass = il2cpp::find_class(api, domain, None, "CarX.Street.GameModes.Base", "CameraController")
+            .unwrap_or(std::ptr::null_mut());
         let cm_vcam_klass = il2cpp::find_class(api, domain, None, "Cinemachine", "CinemachineVirtualCamera")
             .unwrap_or(std::ptr::null_mut());
         let (m_vcam_get_follow, m_vcam_get_lookat) = if cm_vcam_klass.is_null() {
@@ -654,6 +727,12 @@ pub unsafe fn init(
                 il2cpp::find_field(api, cm_trans_klass, "m_ZDamping"),
             ]
         };
+        let m_trans_binding = if cm_trans_klass.is_null() {
+            None
+        } else {
+            // SAFETY: live class + static name.
+            il2cpp::find_field(api, cm_trans_klass, "m_BindingMode")
+        };
         let cm_orbital_klass = il2cpp::find_class(api, domain, None, "Cinemachine", "CinemachineOrbitalTransposer")
             .unwrap_or(std::ptr::null_mut());
         let m_orbital_offset = if cm_orbital_klass.is_null() {
@@ -672,6 +751,12 @@ pub unsafe fn init(
                 il2cpp::find_field(api, cm_orbital_klass, "m_ZDamping"),
             ]
         };
+        let m_orbital_binding = if cm_orbital_klass.is_null() {
+            None
+        } else {
+            // SAFETY: live class + static name.
+            il2cpp::find_field(api, cm_orbital_klass, "m_BindingMode")
+        };
         let cm_composer_klass = il2cpp::find_class(api, domain, None, "Cinemachine", "CinemachineComposer")
             .unwrap_or(std::ptr::null_mut());
         let m_composer_tracked = if cm_composer_klass.is_null() {
@@ -686,6 +771,7 @@ pub unsafe fn init(
             m_cam_main,
             m_get_fov: m_get_fov.unwrap_or(std::ptr::null_mut()),
             m_set_fov,
+            m_cam_world_to_screen,
             text_klass,
             m_find_objects,
             m_get_name: m_get_name.unwrap_or(std::ptr::null_mut()),
@@ -705,6 +791,7 @@ pub unsafe fn init(
             m_go_get_scene: m_go_get_scene.unwrap_or(std::ptr::null_mut()),
             m_beh_set_enabled: m_beh_set_enabled.unwrap_or(std::ptr::null_mut()),
             m_beh_get_enabled: m_beh_get_enabled.unwrap_or(std::ptr::null_mut()),
+            collider_klass,
             m_get_key,
             m_get_instance_id: m_get_instance_id.unwrap_or(std::ptr::null_mut()),
             m_cached_ptr: m_cached_ptr.unwrap_or(std::ptr::null_mut()),
@@ -723,6 +810,14 @@ pub unsafe fn init(
             m_tr_get_position: m_tr_get_position.unwrap_or(std::ptr::null_mut()),
             m_tr_set_position: m_tr_set_position.unwrap_or(std::ptr::null_mut()),
             m_tr_get_rotation: m_tr_get_rotation.unwrap_or(std::ptr::null_mut()),
+            m_tr_set_rotation: m_tr_set_rotation.unwrap_or(std::ptr::null_mut()),
+            m_tr_get_local_position: m_tr_get_local_position.unwrap_or(std::ptr::null_mut()),
+            m_tr_set_local_position: m_tr_set_local_position.unwrap_or(std::ptr::null_mut()),
+            m_tr_get_local_euler: m_tr_get_local_euler.unwrap_or(std::ptr::null_mut()),
+            m_tr_set_local_euler: m_tr_set_local_euler.unwrap_or(std::ptr::null_mut()),
+            canvasgroup_klass,
+            m_canvasgroup_get_alpha: m_canvasgroup_get_alpha.unwrap_or(std::ptr::null_mut()),
+            m_canvasgroup_set_alpha: m_canvasgroup_set_alpha.unwrap_or(std::ptr::null_mut()),
             m_scene_get_active: m_scene_get_active.unwrap_or(std::ptr::null_mut()),
             m_scene_get_count: m_scene_get_count.unwrap_or(std::ptr::null_mut()),
             m_scene_get_at: m_scene_get_at.unwrap_or(std::ptr::null_mut()),
@@ -756,6 +851,7 @@ pub unsafe fn init(
             m_rs_set_ambient: m_rs_set_ambient.unwrap_or(std::ptr::null_mut()),
             cm_brain_klass,
             m_brain_get_active_vcam: m_brain_get_active_vcam.unwrap_or(std::ptr::null_mut()),
+            cam_controller_klass,
             cm_vcam_klass,
             m_vcam_get_follow: m_vcam_get_follow.unwrap_or(std::ptr::null_mut()),
             m_vcam_get_lookat: m_vcam_get_lookat.unwrap_or(std::ptr::null_mut()),
@@ -764,9 +860,11 @@ pub unsafe fn init(
             cm_trans_klass,
             m_trans_offset: m_trans_offset.unwrap_or(std::ptr::null_mut()),
             m_trans_damp: m_trans_damp.map(|f| f.unwrap_or(std::ptr::null_mut())),
+            m_trans_binding: m_trans_binding.unwrap_or(std::ptr::null_mut()),
             cm_orbital_klass,
             m_orbital_offset: m_orbital_offset.unwrap_or(std::ptr::null_mut()),
             m_orbital_damp: m_orbital_damp.map(|f| f.unwrap_or(std::ptr::null_mut())),
+            m_orbital_binding: m_orbital_binding.unwrap_or(std::ptr::null_mut()),
             cm_composer_klass,
             m_composer_tracked: m_composer_tracked.unwrap_or(std::ptr::null_mut()),
         })

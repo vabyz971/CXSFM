@@ -173,16 +173,9 @@ mods/
   loader.rs     isolated registry: catch_unwind per hook, quarantine +
                 auto-disable on panic, lock never held across mod code,
                 unregister disables first, poison recovered
-  common.rs     shared cadences (1 Hz verify / 0.2 Hz search) + preview()
-  hud_scout/    example: read-only HUD text inventory (mod.rs + i18n.rs)
-  hud_hide/     example: hide one element, restore on disable
-  hud_text/     example: replace (or blank) one text, restore on disable
   inspector/    tool: scene tree via SceneManager roots + Transform walk
                 (names, ids, active, position; throttled snapshot)
-  camera/       PARKED (writes): live Cinemachine discovery, sliders
-                simulate recipes into the log without touching the game
-  video/        PARKED: reads fine, some setters crash the game —
-                re-enable once the faulting setter is isolated
+  speedo/       tool: custom speedometer (hides game speed texts, restore)
   fpv_camera.rs parked (render-hook future)
 mod_api.rs      façade: ModManager delegates to the loader (paths stable)
 i18n/           mod.rs (detection + dispatch) + one file per language;

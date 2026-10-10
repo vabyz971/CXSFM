@@ -1042,6 +1042,27 @@ pub unsafe fn field_get_f32(
     }
 }
 
+/// Read an `Int32`/enum field payload (e.g. Cinemachine `BindingMode`).
+///
+/// # Safety
+/// Same contract as [`field_get_vec3`].
+pub unsafe fn field_get_i32(
+    api: &Il2cppApi,
+    obj: *mut std::ffi::c_void,
+    field: *mut std::ffi::c_void,
+) -> Option<i32> {
+    let get_value = api.field_get_value?;
+    if obj.is_null() || field.is_null() {
+        return None;
+    }
+    // SAFETY: 4-byte caller buffer, exactly an Int32 payload.
+    unsafe {
+        let mut out = 0i32;
+        get_value(obj, field, &mut out as *mut i32 as *mut std::ffi::c_void);
+        Some(out)
+    }
+}
+
 /// Write a `Single` (float) field payload (verify via read-back).
 ///
 /// # Safety

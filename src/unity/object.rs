@@ -171,6 +171,13 @@ pub unsafe fn object_alive(
     if cache.m_cached_ptr.is_null() || obj.is_null() {
         return None;
     }
+    // Stale-handle guard: a wrapper freed by the GC / destroyed on
+    // scene change is unreadable memory. `field_get_value` on it is a
+    // SIGSEGV (the delayed crash minutes after enabling a mod), so
+    // report dead *before* touching it.
+    if !crate::memory::ptr_readable(obj as usize, std::mem::size_of::<*mut std::ffi::c_void>()) {
+        return Some(false);
+    }
     // SAFETY: IntPtr-sized caller buffer, field-sized copy by the runtime.
     unsafe {
         let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
@@ -346,6 +353,29 @@ pub unsafe fn tr_get_rotation(
     }
 }
 
+/// `Transform.set_rotation(Quaternion)`. Struct-by-address, like
+/// `tr_set_position`.
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn tr_set_rotation(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    tr: *mut std::ffi::c_void,
+    rot: [f32; 4],
+) -> bool {
+    if cache.m_tr_set_rotation.is_null() || tr.is_null() {
+        return false;
+    }
+    // SAFETY: single Quaternion argument passed by address, as the ABI wants.
+    // Void callee: `invoke_void`, never `invoke` (see its docs).
+    unsafe {
+        let mut v = rot;
+        let params = [&mut v as *mut [f32; 4] as *mut std::ffi::c_void];
+        il2cpp::invoke_void(api, cache.m_tr_set_rotation, tr, &params)
+    }
+}
+
 /// `Transform.get_parent()` (`None` = scene root or unknown).
 ///
 /// # Safety
@@ -406,6 +436,22 @@ pub unsafe fn all_transforms(
         }
         out
     }
+}
+
+/// All live `Collider` components (capped at 256 — scenes carry many).
+///
+/// # Safety
+/// Same contract as `super::init`, plus the array-consumed-immediately
+/// rule from `il2cpp::find_objects_of_type`.
+pub unsafe fn collider_list(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+) -> Vec<*mut std::ffi::c_void> {
+    use super::find_objects_of_class;
+    // SAFETY: cached class handle, consumed immediately.
+    let mut out = unsafe { find_objects_of_class(api, cache, cache.collider_klass) };
+    out.truncate(256);
+    out
 }
 
 /// `GameObject.Find(name)` (static): root lookup by exact scene path
@@ -598,5 +644,154 @@ pub unsafe fn graphic_set_color(
         let mut v = color;
         let params = [&mut v as *mut [f32; 4] as *mut std::ffi::c_void];
         il2cpp::invoke_void(api, cache.m_graphic_set_color, obj, &params)
+    }
+}
+
+/// `Transform.get_localPosition()` as `[x, y, z]`.
+///
+/// For UI (`RectTransform`) this is what persists: the Canvas layout
+/// recomputes world positions from rect data every rebuild, silently
+/// discarding world-space writes (miniHUD proven shapes).
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn tr_get_local_position(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    tr: *mut std::ffi::c_void,
+) -> Option<[f32; 3]> {
+    if cache.m_tr_get_local_position.is_null() || tr.is_null() || api.object_unbox.is_none() {
+        return None;
+    }
+    // SAFETY: cached getter; boxed Vector3 is 3 packed floats.
+    unsafe {
+        let boxed = il2cpp::invoke(api, cache.m_tr_get_local_position, tr, &[])?;
+        let p = api.object_unbox.unwrap()(boxed) as *const f32;
+        if p.is_null() {
+            return None;
+        }
+        Some([
+            std::ptr::read_unaligned(p),
+            std::ptr::read_unaligned(p.add(1)),
+            std::ptr::read_unaligned(p.add(2)),
+        ])
+    }
+}
+
+/// `Transform.set_localPosition(Vector3)`. Struct-by-address.
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn tr_set_local_position(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    tr: *mut std::ffi::c_void,
+    pos: [f32; 3],
+) -> bool {
+    if cache.m_tr_set_local_position.is_null() || tr.is_null() {
+        return false;
+    }
+    // SAFETY: single Vector3 argument passed by address, as the ABI wants.
+    // Void callee: `invoke_void`, never `invoke` (see its docs).
+    unsafe {
+        let mut v = pos;
+        let params = [&mut v as *mut [f32; 3] as *mut std::ffi::c_void];
+        il2cpp::invoke_void(api, cache.m_tr_set_local_position, tr, &params)
+    }
+}
+
+/// `Transform.get_localEulerAngles()` as `[x, y, z]` degrees.
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn tr_get_local_euler(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    tr: *mut std::ffi::c_void,
+) -> Option<[f32; 3]> {
+    if cache.m_tr_get_local_euler.is_null() || tr.is_null() || api.object_unbox.is_none() {
+        return None;
+    }
+    // SAFETY: cached getter; boxed Vector3 is 3 packed floats.
+    unsafe {
+        let boxed = il2cpp::invoke(api, cache.m_tr_get_local_euler, tr, &[])?;
+        let p = api.object_unbox.unwrap()(boxed) as *const f32;
+        if p.is_null() {
+            return None;
+        }
+        Some([
+            std::ptr::read_unaligned(p),
+            std::ptr::read_unaligned(p.add(1)),
+            std::ptr::read_unaligned(p.add(2)),
+        ])
+    }
+}
+
+/// `Transform.set_localEulerAngles(Vector3 degrees)`. Struct-by-address.
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn tr_set_local_euler(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    tr: *mut std::ffi::c_void,
+    euler: [f32; 3],
+) -> bool {
+    if cache.m_tr_set_local_euler.is_null() || tr.is_null() {
+        return false;
+    }
+    // SAFETY: single Vector3 argument passed by address, as the ABI wants.
+    // Void callee: `invoke_void`, never `invoke` (see its docs).
+    unsafe {
+        let mut v = euler;
+        let params = [&mut v as *mut [f32; 3] as *mut std::ffi::c_void];
+        il2cpp::invoke_void(api, cache.m_tr_set_local_euler, tr, &params)
+    }
+}
+
+/// `CanvasGroup.get_alpha()` (boxed float). `None` when the object
+/// carries no `CanvasGroup` (caller falls back to color alpha).
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn canvasgroup_get_alpha(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    obj: *mut std::ffi::c_void,
+) -> Option<f32> {
+    if cache.m_canvasgroup_get_alpha.is_null() || obj.is_null() || api.object_unbox.is_none() {
+        return None;
+    }
+    // SAFETY: cached getter; boxed Single is one float.
+    unsafe {
+        let boxed = il2cpp::invoke(api, cache.m_canvasgroup_get_alpha, obj, &[])?;
+        let p = api.object_unbox.unwrap()(boxed) as *const f32;
+        if p.is_null() {
+            return None;
+        }
+        Some(std::ptr::read_unaligned(p))
+    }
+}
+
+/// `CanvasGroup.set_alpha(float)` — the clean UI opacity path (whole
+/// subtree, no color fights; miniHUD proven).
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn canvasgroup_set_alpha(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    obj: *mut std::ffi::c_void,
+    alpha: f32,
+) -> bool {
+    if cache.m_canvasgroup_set_alpha.is_null() || obj.is_null() {
+        return false;
+    }
+    // SAFETY: single float argument passed by address, as the ABI wants.
+    // Void callee: `invoke_void`, never `invoke` (see its docs).
+    unsafe {
+        let mut v = alpha;
+        let params = [&mut v as *mut f32 as *mut std::ffi::c_void];
+        il2cpp::invoke_void(api, cache.m_canvasgroup_set_alpha, obj, &params)
     }
 }

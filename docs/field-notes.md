@@ -197,6 +197,32 @@ Diagnostic line (zero keypresses needed):
   egui `Color32` is gamma-premultiplied — convert through linear
   `Rgba`, never naive u8 scaling. All mod mutexes via `common::lock`
   (poison-recovering).
+- BATCH APPLY 2026-10-09: per-change drains still crashed (~1 min —
+  dragging a slider = dozens of Unity passes). Edits now stage in
+  render-side buffers only; Appliquer sends everything in ONE pass
+  then re-discovers. Rotation editable (euler UI ↔ quat writes,
+  `tr_set_rotation`), opacity = color alpha slider (via linear Rgba).
+  Overlay markers: one-shot `Camera.WorldToScreenPoint` anchor + X/Y
+  calibration per object (same camera, signs automatic — no canvas
+  knowledge); draggable windows whose deltas convert back to world
+  offsets into Position; value edits re-anchor markers the same
+  frame. Bundle autopsy (`uihud_assets_hudspeedometer`, LZ4 blocks
+  decoded by hand — no pip on this box): prefab `HUDCarDashboard`,
+  `SpeedometerAtlas`, needle = `ImgPointer`, `speedometer_bg`,
+  `nitro_bar_new`, TMP texts, Orbitron/Digital fonts, driver scripts
+  `UITach`/`AngleRpm`/`TurboValue` (game keeps owning values).
+- MINIHUD 2026-10-09 (`/home/vabyz971/MODS/wyr`, wyr's C mod + cfg):
+  element names confirmed (`Tacho`, `Tachometer`, `Nitro`, `TextN2O`,
+  `Odometer`, `Text (TMP) Speed/Gear`, `Speedometer`) + per-element
+  opacity keys (`gear/speed/kmh/map_*_opacity`) and `gear_scale`.
+  Proven shapes adopted: opacity via `CanvasGroup.set_alpha` (whole
+  subtree, `AddComponent` if missing on their side — we only use an
+  existing group, color-alpha fallback otherwise), position/rotation
+  via LOCAL variants (`set_localPosition`, `set_localEulerAngles` —
+  the Canvas layout recomputes world transforms from rect data and
+  silently discards world-space writes, which is why moved objects
+  never stuck). Their cfg also documents periodic searches stuttering
+  the game ~1 s each — our zero-search design stands.
 
 ## How other tools modify Unity values (research 2026-10-06)
 

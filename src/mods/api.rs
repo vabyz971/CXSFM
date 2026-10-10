@@ -43,6 +43,10 @@ pub enum TileIcon {
     Sliders,
     /// Log lines (game log viewer).
     Log,
+    /// Two cars (player collision toggle).
+    Cars,
+    /// Gamepad (free camera drive).
+    Gamepad,
     /// Gauge dial (custom speedometer).
     Gauge,
 }
@@ -119,7 +123,7 @@ pub trait Mod: Send + Sync {
     ///
     /// Defaults to the technical `name()`; override with a stable key
     /// whose strings live in the mod's own `i18n` module (see
-    /// `hud_hide` for the pattern).
+    /// `inspector` for the pattern).
     #[inline]
     fn menu_label_key(&self) -> &'static str {
         self.name()

@@ -5,18 +5,14 @@ Un mod = **un dossier** sous `src/mods/`, compilé dans le framework
 
 | Dossier | Opération démontrée |
 |---|---|
-| `hud_scout/` | inspecter (read-only, zéro écriture) |
-| `hud_hide/` | **masquer** un élément (`Behaviour.enabled = false` + restore) |
-| `hud_text/` | **remplacer** un texte (drift-repair + restore) ; contenu vide = **masquer** le texte |
 | `inspector/` | outil : arbre de scène (roots + hiérarchie + position, snapshot throttlé) |
-| `camera/` | PARKÉ (écritures) : découverte Cinemachine live, sliders en simulation loggée |
+| `speedo/` | compteur custom : masque les textes vitesse du jeu, affiche le nôtre (restore) |
 | `gamelog/` | outil : `Player.log` du jeu en direct (filtre + erreurs, lecture seule) |
-| `video/` | PARKÉ : setters vidéo = crash jeu (lecture OK, écriture à isoler) |
 
 ## 1. Copier un dossier
 
 ```bash
-cp -r src/mods/hud_hide src/mods/mon_mod
+cp -r src/mods/inspector src/mods/mon_mod
 ```
 
 ## 2. Implémenter le trait `Mod` (`mod.rs`)
@@ -49,7 +45,7 @@ Règles Unity (prouvées en jeu, ne pas improviser) :
 - **jamais d'écriture aveugle** : capturer l'original → écrire →
   relire (read-back) → restaurer sur `on_disable` ;
 - verrous : binder le snapshot (`let cached = ...`) avant le `match`
-  (self-deadlock sinon) ; voir `hud_hide::maintain`.
+  (self-deadlock sinon).
 
 ## 3. Textes du mod (`i18n.rs`, 7 langues, fallback EN)
 

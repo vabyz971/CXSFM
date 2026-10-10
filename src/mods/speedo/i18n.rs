@@ -52,6 +52,32 @@ pub fn restore_label(lang_code: &str) -> &'static str {
     }
 }
 
+/// Apply-staged-edits button (single Unity pass).
+pub fn apply_label(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Appliquer",
+        "de" => "Anwenden",
+        "es" => "Aplicar",
+        "it" => "Applica",
+        "pt" => "Aplicar",
+        "ru" => "Применить",
+        _ => "Apply",
+    }
+}
+
+/// Apply button tooltip.
+pub fn apply_hint(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Écrit tout d'un coup (1 passe Unity)",
+        "de" => "Alles auf einmal schreiben (1 Unity-Durchlauf)",
+        "es" => "Escribe todo de una vez (1 pasada Unity)",
+        "it" => "Scrive tutto in una volta (1 passata Unity)",
+        "pt" => "Escreve tudo de uma vez (1 passagem Unity)",
+        "ru" => "Записать всё за раз (1 проход Unity)",
+        _ => "Write everything at once (1 Unity pass)",
+    }
+}
+
 /// Object counter prefix ("objets 5/6").
 pub fn objects_label(lang_code: &str) -> &'static str {
     match lang_code {

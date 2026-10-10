@@ -727,6 +727,55 @@ pub fn write_value<T>(address: usize, value: T) -> bool {
     write_memory_at(address, data).is_ok()
 }
 
+/// Whether `[addr, addr+len)` is mapped readable *right now*.
+///
+/// Crash guard for stale Unity handles: a managed wrapper freed by the
+/// GC / destroyed on scene change leaves a dangling pointer behind.
+/// Dereferencing it (even just `field_get_value` inside `object_alive`)
+/// is a SIGSEGV. This pre-check turns that into a `false`.
+///
+/// Linux: one `msync(MS_ASYNC)` per page — no file parsing, no signal,
+/// no allocation. Other OS: conservative `true` (callers still
+/// null-check + `object_alive`).
+pub fn ptr_readable(addr: usize, len: usize) -> bool {
+    if addr == 0 || len == 0 {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: `msync` with MS_ASYNC never syncs, only validates the
+        // mapping; page-aligned address, page-covering length.
+        unsafe {
+            const PAGE: usize = 4096;
+            let start = addr & !(PAGE - 1);
+            let end = addr.checked_add(len).unwrap_or(usize::MAX);
+            let end_page = (end + PAGE - 1) & !(PAGE - 1);
+            let mut p = start;
+            while p < end_page {
+                // `msync` returns 0 when mapped, -1 + ENOMEM when not.
+                if libc::msync(p as *mut libc::c_void, PAGE, libc::MS_ASYNC) != 0 {
+                    return false;
+                }
+                // Overflow guard (top-of-address-space mapping).
+                match p.checked_add(PAGE) {
+                    Some(n) => p = n,
+                    None => break,
+                }
+                // Cap pathological lengths (callers pass <= 8 bytes).
+                if p.wrapping_sub(start) > 65536 {
+                    break;
+                }
+            }
+            true
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (addr, len);
+        true
+    }
+}
+
 /// Extend implementation for range-based sliding window scan
 pub trait MemoryExt {
     /// Scan with a sliding window over memory regions

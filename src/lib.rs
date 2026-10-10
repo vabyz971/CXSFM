@@ -56,6 +56,7 @@
 pub mod memory;
 pub mod mod_api;
 pub mod mods;
+pub mod gamepad;
 pub mod il2cpp;
 pub mod hotkey;
 pub mod mainthread;
@@ -74,7 +75,7 @@ pub mod layer;
 mod shim;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 /// Delay after library load before probing game readiness.
@@ -390,67 +391,18 @@ fn log_line(msg: &str) {
 ///
 /// Returns false outside Unity (no API yet).
 fn poll_framework_input_edge(keycode: i32) -> bool {
-    static CACHE: LazyLock<Mutex<Option<unity::UnityCache>>> =
-        LazyLock::new(|| Mutex::new(None));
+    // Unity `Input.GetKey` path DISABLED (quit-crash fix): the scripting
+    // domain outlives its own input subsystem — `domain()` still answers
+    // while `GetKey` already segfaults (Player.log: SIGSEGV addr 0x470 in
+    // this exact function at quit, new build confirmed). SDL + X11 both
+    // report live in-game (`sdl live, x11 live`), so F8 loses nothing.
+    // Kept as a stub so the tick call-site stays a 3-source OR.
     static LOGGED: AtomicBool = AtomicBool::new(false);
-    static FAILED_LOGGED: AtomicBool = AtomicBool::new(false);
-    let api = match IL2CPP.get() {
-        Some(a) => a,
-        None => return false,
-    };
-    // NOTE: bind the snapshot to a variable FIRST so the `MutexGuard`
-    // temporary drops at the statement boundary. Matching directly on
-    // `CACHE.lock()...` extends the guard through the whole `match`, and
-    // the `None` arm below re-locks the same mutex — a deterministic
-    // self-deadlock that froze the tick thread on its very first input
-    // poll in-game (found via the thread's futex address in /proc).
-    let cached: Option<unity::UnityCache> = CACHE.lock().unwrap().as_ref().copied();
-    let cache = match cached {
-        Some(c) => c,
-        None => {
-            // SAFETY: tick thread is IL2CPP-attached (see
-            // `spawn_tick_thread`); resolve-once, reuse afterwards.
-            // `domain_checked` parks IL2CPP use if the runtime is
-            // dying (teardown) instead of crashing in its corpse.
-            let resolved = unsafe {
-                crate::il2cpp::domain_checked(api)
-                    .and_then(|domain| unity::init(api, domain))
-            };
-            match resolved {
-                Some(c) => {
-                    *CACHE.lock().unwrap() = Some(c);
-                    c
-                }
-                None => {
-                    // Resolve keeps retrying every poll; log once so a
-                    // permanently failing resolve is visible, not silent.
-                    // SDL/X11 states ride along — they don't need Unity.
-                    if !FAILED_LOGGED.swap(true, Ordering::SeqCst) {
-                        log_line(&format!(
-                            "input: unity cache resolve failed, sdl {}, x11 {} (retrying)",
-                            if hotkey::sdl_available() { "live" } else { "dead" },
-                            if hotkey::x11_available() { "live" } else { "dead" },
-                        ));
-                    }
-                    return false;
-                }
-            }
-        }
-    };
     if !LOGGED.swap(true, Ordering::SeqCst) {
-        log_line(&format!(
-            "input: unity cache resolved (GetKey {}), sdl {}, x11 {}",
-            if cache.m_get_key.is_null() {
-                "unavailable — SDL/X11 fallback only"
-            } else {
-                "ready"
-            },
-            if hotkey::sdl_available() { "live" } else { "dead" },
-            if hotkey::x11_available() { "live" } else { "dead" },
-        ));
+        log_line("input: unity path disabled (quit-crash), sdl+x11 only");
     }
-    // SAFETY: same attached thread + cached methods as above.
-    unsafe { hotkey::poll_unity_edge(api, &cache, keycode) == Some(true) }
+    let _ = keycode;
+    false
 }
 
 /// Whether the game is tearing down.
@@ -569,8 +521,15 @@ fn spawn_tick_thread() {
                 }
                 // Mod updates touch IL2CPP: skip them entirely during
                 // teardown (see above). The tick itself (heartbeat,
-                // SDL/X11 polls) keeps running.
-                if !down {
+                // SDL/X11 polls) keeps running. `domain_gone` covers the
+                // window where Vulkan objects still exist but the
+                // scripting domain is already dead (quit crash: SIGSEGV
+                // in tick at exit) — `domain_checked` parks after 3
+                // strikes, so this flips within ~50 ms of death.
+                let domain_gone = IL2CPP.get().is_some_and(|api| unsafe {
+                    crate::il2cpp::domain_checked(api).is_none()
+                });
+                if !down && !domain_gone {
                     mod_api::update_all_mods(dt);
                     // Main-thread hook upkeep (install retries, probes,
                     // slot election). Internal pacing only; no Unity
