@@ -2,18 +2,21 @@
 
 This document outlines the development roadmap for the CarX Street Framework Mod (CXSFM).
 
-## Phase 1: Hooking & UI (Current)
+## Phase 1: Hooking & UI (Done, proven in-game on Linux)
 
 - [x] Basic framework structure
 - [x] Cross-platform shared library compilation (.dll / .so / .dylib)
 - [x] Memory module with OS abstraction
-- [x] Egui integration scaffold
-- [x] Mod trait and manager
-- [ ] DirectX/Vulkan/OpenGL hooking layer
-- [ ] Egui renderer integration with game's graphics pipeline
-- [ ] Input event forwarding
+- [x] Egui integration (0.36 + egui-ash-renderer 0.13)
+- [x] Mod trait and manager (panic quarantine, lock-free snapshots)
+- [x] Vulkan hooking layer (implicit layer, present routing)
+- [x] Egui renderer integration with game's graphics pipeline
+- [x] Input event forwarding (SDL + X11 capture, F8 toggle)
+- [x] Stability pass: stale-handle re-resolve, teardown guards
 
-**Status**: ~70% Complete
+**Status**: Complete — menu renders in-game, no crash on scene
+change (garage ↔ race) or at quit. Binary max `GLIBC_2.35`
+(< Steam Runtime sniper 2.36).
 
 ---
 

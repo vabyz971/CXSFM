@@ -17,7 +17,7 @@ This document outlines how to develop new mods and extend the framework.
    ```
 
 3. **Set up your development environment**
-   - Ensure you have Rust 1.75+ installed
+   - Ensure you have Rust 1.95+ installed (`nix develop` provides 1.98)
    - For Windows: Install Visual Studio 2019+ with C++ support
    - For Linux: Install `gcc`, `make`, and `libc-dev`
    - For macOS: Install Xcode command line tools

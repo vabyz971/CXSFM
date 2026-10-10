@@ -5,10 +5,7 @@ This directory contains the technical documentation for the CarX Street Framewor
 ## Documents
 
 - [Architecture](architecture.md) - System architecture and design decisions
-- [API Reference](api.md) - Public API documentation
-- [Memory Module](memory.md) - Memory scanning and manipulation details
-- [Mod Development](mod_development.md) - Guide for creating new mods
-- [Injection Guide](injection.md) - Platform-specific injection methods
+- [Plugin Guide](plugin-guide.md) - Guide for creating new mods
 - [Field Notes](field-notes.md) - Verified in-game findings (input, IL2CPP, incidents)
 - [Overlay screenshot](overlay-proof.png) - egui UI live in CarX Street
 
