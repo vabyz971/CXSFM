@@ -221,6 +221,7 @@ impl Mod for GameLogMod {
         let win = win.show(ctx, |ui| {
                 self.tool.enter(ui);
                 self.tool.header(ui, "Game Log");
+                if !self.tool.hide_controls {
                 ui.horizontal(|ui| {
                     ui.label("🔍");
                     ui.add(
@@ -230,6 +231,7 @@ impl Mod for GameLogMod {
                     );
                     ui.checkbox(&mut self.errors_only, "errors");
                 });
+                } // hide_controls
                 // Clone under a brief lock: the tick's poll() also
                 // takes it, and holding it across the whole ScrollArea
                 // layout would stall the tick (visible as skipped

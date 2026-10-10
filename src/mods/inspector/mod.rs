@@ -662,6 +662,7 @@ impl Mod for InspectorMod {
         let win = win.show(ctx, |ui| {
                 self.tool.enter(ui);
                 self.tool.header(ui, "Scene Inspector");
+                if !self.tool.hide_controls {
                 ui.horizontal(|ui| {
                     ui.label("🔍");
                     let resp = ui.add(
@@ -676,6 +677,7 @@ impl Mod for InspectorMod {
                         self.refresh_wanted.store(true, Ordering::SeqCst);
                     }
                 });
+                } // hide_controls
                 let snap = self.snapshot.lock().unwrap();
                 match snap.as_ref() {
                     None => {

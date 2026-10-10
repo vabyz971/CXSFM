@@ -30,6 +30,7 @@ use crate::mods::api::{Mod, TileIcon};
 use crate::mods::common::lock;
 use crate::mods::tool::ToolChrome;
 use crate::unity::UnityCache;
+use std::collections::HashSet;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -255,8 +256,10 @@ pub struct SpeedoMod {
     /// Render-side mirror (present thread only).
     ui: Vec<UiObj>,
     ui_ver: u64,
-    /// Owner name selected in the left list (present thread only).
+    /// Owner name selected in the tree (present thread only).
     selected: Option<String>,
+    /// Expanded tree nodes by owner (present thread only).
+    tree_open: HashSet<String>,
     /// Pin + opacity chrome (shared tool pattern).
     tool: ToolChrome,
 }
@@ -289,6 +292,7 @@ impl SpeedoMod {
             ui: Vec::new(),
             ui_ver: 0,
             selected: None,
+            tree_open: HashSet::new(),
             tool: ToolChrome::new(),
         }
     }
@@ -979,8 +983,8 @@ impl Mod for SpeedoMod {
         let mut win = egui::Window::new("Speedometer")
             .title_bar(false)
             .collapsible(false)
-            .resizable(true)
-            .min_size(egui::Vec2::new(620.0, 420.0))
+            .resizable(false)
+            .fixed_size(egui::Vec2::new(760.0, 540.0))
             .frame(self.tool.frame(ctx));
         if let Some(p) = self.tool.pos {
             win = win.current_pos(p);
@@ -988,6 +992,7 @@ impl Mod for SpeedoMod {
         let win = win.show(ctx, |ui| {
                 self.tool.enter(ui);
                 self.tool.header(ui, "Speedometer");
+                if !self.tool.hide_controls {
                 ui.horizontal(|ui| {
                     if ui.button(self::i18n::refresh_label(code)).clicked() {
                         // Re-discover (scene changed, objects rebound).
@@ -1043,35 +1048,82 @@ impl Mod for SpeedoMod {
                         self.pending.store(true, Ordering::SeqCst);
                     }
                 });
+                } // hide_controls
                 ui.separator();
                 if self.ui.is_empty() {
                     ui.weak(self::i18n::hint_label(code));
                 } else {
-                    // LEFT: bound objects. RIGHT: selected params.
+                    // LEFT: Unity-style tree (object → components).
+                    // RIGHT: selected params.
                     // (Snapshot first: selection + draw must not share
                     // the `ui` borrow.)
-                    let names: Vec<(String, String, bool)> = self
+                    let nodes: Vec<(String, String, bool, bool)> = self
                         .ui
                         .iter()
-                        .map(|o| (o.owner.clone(), o.comp.label().to_string(), o.active))
+                        .map(|o| {
+                            (
+                                o.owner.clone(),
+                                o.comp.label().to_string(),
+                                o.active,
+                                o.cg.is_some(),
+                            )
+                        })
                         .collect();
                     ui.horizontal_top(|ui| {
                         egui::ScrollArea::vertical()
-                            .id_salt("speedo_list")
-                            .max_width(200.0)
+                            .id_salt("speedo_tree")
+                            .max_width(230.0)
                             .show(ui, |ui| {
-                                ui.set_min_width(180.0);
-                                for (owner, comp, active) in &names {
+                                ui.set_min_width(210.0);
+                                for (owner, comp, active, has_cg) in &nodes {
                                     let dot = if *active { "●" } else { "○" };
-                                    let label = format!("{dot} {owner}  [{comp}]");
-                                    if ui
-                                        .selectable_label(
-                                            self.selected.as_deref() == Some(owner.as_str()),
-                                            label,
-                                        )
-                                        .clicked()
-                                    {
-                                        self.selected = Some(owner.clone());
+                                    let open = self.tree_open.contains(owner);
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .small_button(if open { "▾" } else { "▸" })
+                                            .clicked()
+                                        {
+                                            if open {
+                                                self.tree_open.remove(owner);
+                                            } else {
+                                                self.tree_open.insert(owner.clone());
+                                            }
+                                        }
+                                        if ui
+                                            .selectable_label(
+                                                self.selected.as_deref()
+                                                    == Some(owner.as_str()),
+                                                format!("{dot} {owner}"),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.selected = Some(owner.clone());
+                                        }
+                                    });
+                                    if self.tree_open.contains(owner) {
+                                        ui.indent(
+                                            format!("speedo_tree_{owner}"),
+                                            |ui| {
+                                                let mut comps =
+                                                    vec!["Transform", comp.as_str()];
+                                                if *has_cg {
+                                                    comps.push("CanvasGroup");
+                                                }
+                                                for cname in comps {
+                                                    if ui
+                                                        .selectable_label(
+                                                            self.selected.as_deref()
+                                                                == Some(owner.as_str()),
+                                                            format!("▪ {cname}"),
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        self.selected =
+                                                            Some(owner.clone());
+                                                    }
+                                                }
+                                            },
+                                        );
                                     }
                                 }
                             });

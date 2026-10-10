@@ -14,8 +14,12 @@
 //! - **no_titlebar**: hides the header for a clean in-race overlay
 //!   (a slim restore strip stays: the window never strands).
 //!
-//! Display options live in the header's gear row (always reachable),
-//! plus the historical right-click menu as a bonus.
+//! - **no_titlebar / hide_controls**: frameless overlay and compact
+//!   mode (top control rows hidden), toggled from the header or the
+//!   right-click menu — the window never strands (restore strip).
+//!
+//! Display options live in the header's gear row (always reachable)
+//! and are mirrored in the right-click menu.
 
 /// Pin + opacity state, one per tool mod.
 pub struct ToolChrome {
@@ -27,6 +31,8 @@ pub struct ToolChrome {
     pub opacity: f32,
     /// Hide the title bar (frameless in-race overlay).
     pub no_titlebar: bool,
+    /// Hide the top control rows (buttons/search/groups).
+    pub hide_controls: bool,
     /// Show the display-options row (UI-only).
     pub show_opts: bool,
     /// Manual window position (`title_bar(false)` can't drag natively).
@@ -40,6 +46,7 @@ impl ToolChrome {
             bg: 235,
             opacity: 1.0,
             no_titlebar: false,
+            hide_controls: false,
             show_opts: false,
             pos: None,
         }
@@ -103,6 +110,16 @@ impl ToolChrome {
                             self.show_opts = !self.show_opts;
                         }
                         self.pin_toggle(ui);
+                        // Show/hide the window's top control rows
+                        // (buttons, search, groups) — compact overlay.
+                        let (glyph, tip) = if self.hide_controls {
+                            ("▸", "afficher les contrôles")
+                        } else {
+                            ("▾", "masquer les contrôles")
+                        };
+                        if ui.small_button(glyph).on_hover_text(tip).clicked() {
+                            self.hide_controls = !self.hide_controls;
+                        }
                     },
                 );
             })
@@ -130,10 +147,21 @@ impl ToolChrome {
     }
 
     /// Right-click menu on the window (title bar or background):
-    /// pin + background alpha + content opacity.
+    /// pin + background alpha + content opacity + control rows.
+    /// Also logs (once) when the popup actually opens — the in-game
+    /// proof that secondary-clicks reach egui through the X11 pump.
     pub fn context_menu(&mut self, resp: &egui::Response) {
+        static LOGGED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if resp.context_menu_opened()
+            && !LOGGED.swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            crate::log_line("tool: context menu opened (right-click OK)");
+        }
         resp.context_menu(|ui| {
             ui.checkbox(&mut self.pin, "keep visible (menu closed)");
+            ui.checkbox(&mut self.hide_controls, "hide top controls");
+            ui.checkbox(&mut self.no_titlebar, "hide title bar (overlay)");
             ui.add(egui::Slider::new(&mut self.bg, 40..=255).text("background"));
             ui.add(egui::Slider::new(&mut self.opacity, 0.25..=1.0).text("content"));
         });
