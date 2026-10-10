@@ -253,6 +253,7 @@ cxsfm/
 |-------|---------|---------|
 | egui | 0.36 (+`default_fonts`) | In-game UI rendering |
 | egui-ash-renderer | 0.13 | egui → Vulkan pipeline (egui 0.36 line) |
+| egui_material_icons | 0.8 | Material Symbols tile glyphs |
 | ash | 0.38 | Vulkan calls through layer-resolved pointers |
 | glam | 0.29 | 3D math vectors/matrices |
 | ctor | 0.2 | Library constructor (auto-init) |

@@ -550,6 +550,7 @@ fn spawn_tick_thread() {
 fn headless_ui_check() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let ctx = egui::Context::default();
+        egui_material_icons::initialize(&ctx);
         ctx.begin_pass(egui::RawInput::default());
         mod_api::draw_ui_all(&ctx, true);
         mod_api::draw_manager_ui(&ctx);

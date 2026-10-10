@@ -432,8 +432,7 @@ fn create_state(
             ..Default::default()
         };
         let signal = device.create_semaphore(&sem_info, None).map_err(|_| ())?;
-        let options = egui_ash_renderer::Options {
-            in_flight_frames: IN_FLIGHT_FRAMES,
+        let options = egui_ash_renderer::Options {            in_flight_frames: IN_FLIGHT_FRAMES,
             srgb_framebuffer: is_srgb(info.format),
             ..Default::default()
         };
@@ -445,6 +444,10 @@ fn create_state(
             options,
         )
         .map_err(|_| ())?;
+        // Icon font for tile glyphs (once per swapchain context —
+        // `add_font` rebuilds the atlas, never call it per frame).
+        let egui_ctx = egui::Context::default();
+        egui_material_icons::initialize(&egui_ctx);
         Ok(SwapchainState {
             dev,
             device,
@@ -458,7 +461,7 @@ fn create_state(
             signal,
             extent,
             images: info.images.clone(),
-            ctx: egui::Context::default(),
+            ctx: egui_ctx,
             pending_frees: Vec::new(),
             last_set: std::collections::HashMap::new(),
             frame: 0,
