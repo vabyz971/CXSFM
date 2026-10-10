@@ -208,13 +208,19 @@ impl Mod for GameLogMod {
 
     fn on_draw_ui(&mut self, ctx: &egui::Context) {
         // Fixed size: log lines must never resize the window.
-        // Right-click the window for pin + opacity.
-        let win = egui::Window::new("Game Log")
+        // Custom header (full-width bar + opacity options).
+        let mut win = egui::Window::new("Game Log")
+            .title_bar(false)
+            .collapsible(false)
             .resizable(false)
             .fixed_size(egui::Vec2::new(700.0, 500.0))
-            .frame(self.tool.frame(ctx))
-            .show(ctx, |ui| {
+            .frame(self.tool.frame(ctx));
+        if let Some(p) = self.tool.pos {
+            win = win.current_pos(p);
+        }
+        let win = win.show(ctx, |ui| {
                 self.tool.enter(ui);
+                self.tool.header(ui, "Game Log");
                 ui.horizontal(|ui| {
                     ui.label("🔍");
                     ui.add(
@@ -223,7 +229,6 @@ impl Mod for GameLogMod {
                             .desired_width(f32::INFINITY),
                     );
                     ui.checkbox(&mut self.errors_only, "errors");
-                    self.tool.pin_toggle(ui);
                 });
                 // Clone under a brief lock: the tick's poll() also
                 // takes it, and holding it across the whole ScrollArea
@@ -260,6 +265,7 @@ impl Mod for GameLogMod {
                     });
             });
         if let Some(r) = win {
+            self.tool.pos = Some(r.response.rect.min);
             self.tool.context_menu(&r.response);
         }
     }

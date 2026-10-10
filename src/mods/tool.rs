@@ -1,14 +1,21 @@
 //! Shared tool-window chrome: pin + opacity, one pattern for every
-//! tool window (inspector, game log, video …).
+//! tool window (inspector, game log, speedo …).
+//!
+//! Windows run with `title_bar(false)` so the bar spans the full frame
+//! (the native bar rendered short with custom frames). [`ToolChrome`]
+//! draws the replacement header itself: title + pin + options gear,
+//! draggable from anywhere on the row.
 //!
 //! - **pin**: the window stays visible when the menu closes (view-only:
 //!   input capture follows the menu, so a pinned window never freezes
 //!   game input — reopen the menu to interact with it).
 //! - **background**: per-window fill alpha (menu style untouched).
 //! - **content**: whole-content opacity, scoped to the window's `Ui`.
+//! - **no_titlebar**: hides the header for a clean in-race overlay
+//!   (a slim restore strip stays: the window never strands).
 //!
-//! Both live in a right-click menu on the window (title bar included)
-//! plus a pin checkbox in the content top bar.
+//! Display options live in the header's gear row (always reachable),
+//! plus the historical right-click menu as a bonus.
 
 /// Pin + opacity state, one per tool mod.
 pub struct ToolChrome {
@@ -18,6 +25,12 @@ pub struct ToolChrome {
     pub bg: u8,
     /// Whole-content opacity (0.25..=1.0).
     pub opacity: f32,
+    /// Hide the title bar (frameless in-race overlay).
+    pub no_titlebar: bool,
+    /// Show the display-options row (UI-only).
+    pub show_opts: bool,
+    /// Manual window position (`title_bar(false)` can't drag natively).
+    pub pos: Option<egui::Pos2>,
 }
 
 impl ToolChrome {
@@ -26,6 +39,9 @@ impl ToolChrome {
             pin: false,
             bg: 235,
             opacity: 1.0,
+            no_titlebar: false,
+            show_opts: false,
+            pos: None,
         }
     }
 
@@ -45,6 +61,72 @@ impl ToolChrome {
     /// Pin checkbox for the content top bar.
     pub fn pin_toggle(&mut self, ui: &mut egui::Ui) {
         ui.checkbox(&mut self.pin, "pin");
+    }
+
+    /// Custom title bar (windows run `title_bar(false)`): title left,
+    /// pin + gear right, draggable from the row. Gear opens the
+    /// display row (background/content opacity, hide-bar toggle).
+    /// Hidden mode keeps a slim restore strip so the window can
+    /// always get its bar back — and the strip drags too.
+    pub fn header(&mut self, ui: &mut egui::Ui, title: &str) {
+        if self.no_titlebar {
+            let r = ui
+                .horizontal(|ui| {
+                    if ui
+                        .small_button("▤")
+                        .on_hover_text("afficher la barre de titre")
+                        .clicked()
+                    {
+                        self.no_titlebar = false;
+                    }
+                })
+                .response;
+            self.drag_by(&r);
+            return;
+        }
+        let r = ui
+            .horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(title)
+                        .strong()
+                        .size(15.0)
+                        .color(egui::Color32::WHITE),
+                );
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        if ui
+                            .small_button("⚙")
+                            .on_hover_text("affichage")
+                            .clicked()
+                        {
+                            self.show_opts = !self.show_opts;
+                        }
+                        self.pin_toggle(ui);
+                    },
+                );
+            })
+            .response;
+        self.drag_by(&r);
+        if self.show_opts {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("fond").weak().small());
+                ui.add(egui::Slider::new(&mut self.bg, 40..=255));
+                ui.label(egui::RichText::new("contenu").weak().small());
+                ui.add(egui::Slider::new(&mut self.opacity, 0.25..=1.0));
+            });
+            ui.checkbox(&mut self.no_titlebar, "masquer la barre (overlay)");
+        }
+    }
+
+    /// Shift the manual position by a header drag delta.
+    fn drag_by(&mut self, r: &egui::Response) {
+        if r.dragged() {
+            let d = r.drag_delta();
+            if d != egui::Vec2::ZERO {
+                self.pos = Some(self.pos.unwrap_or(r.rect.min) + d);
+            }
+        }
     }
 
     /// Right-click menu on the window (title bar or background):

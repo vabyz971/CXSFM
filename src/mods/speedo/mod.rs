@@ -132,23 +132,10 @@ fn color_to_f32(c: egui::Color32) -> [f32; 4] {
     egui::Rgba::from(c).to_rgba_unmultiplied()
 }
 
-/// Overlay drag (egui px, y down-positive) → world offset, using the
-/// per-object calibration (`ex`, `ey` = screen px per world unit
-/// measured at discovery with the same camera). A zero factor means a
-/// locked axis (drag along it does nothing — the marker snaps back).
-/// Pure and unit-tested; the signs fall out of the calibration, no
-/// canvas knowledge required.
-fn screen_drag_to_world(drag: [f32; 2], ex: f32, ey: f32) -> [f32; 3] {
-    let wx = if ex.abs() > 1e-6 { drag[0] / ex } else { 0.0 };
-    let wy = if ey.abs() > 1e-6 { -drag[1] / ey } else { 0.0 };
-    [wx, wy, 0.0]
-}
-
 /// Published snapshot of one object (tick writes on discovery, render
 /// clones; swapped under a brief lock, never held across Unity calls).
 /// `pos`/`euler` are LOCAL (what persists on UI objects — the Canvas
-/// layout discards world-space writes); the marker projection uses a
-/// separate world read.
+/// layout discards world-space writes).
 #[derive(Clone)]
 struct ObjSnap {
     owner: String,
@@ -166,13 +153,6 @@ struct ObjSnap {
     cg: Option<usize>,
     font_size: Option<f32>,
     text: String,
-    /// Raw `WorldToScreenPoint` anchor (px, y bottom-up, z = depth;
-    /// `None` = behind camera or unprojectable → no marker).
-    screen: Option<[f32; 3]>,
-    /// Calibration: screen px per world unit on X / Y, measured with
-    /// the same camera (0 = locked axis).
-    ex: f32,
-    ey: f32,
 }
 
 /// First-recorded originals per address pair (restore source).
@@ -231,17 +211,9 @@ struct UiObj {
     cg: Option<usize>,
     size: Option<f32>,
     text: String,
-    screen: Option<[f32; 3]>,
-    ex: f32,
-    ey: f32,
     /// Scale-zero hide switch (Appliquer writes zero / buffer scale).
     /// Initialized from the snapshot (a zero scale reads as hidden).
     visible: bool,
-    /// Discovery-time position (marker anchor math).
-    pos0: [f32; 3],
-    /// Last marker window position (screen px, egui coords); marker
-    /// drag deltas convert to world offsets into `pos` above.
-    last_rect: Option<egui::Pos2>,
 }
 
 /// Scale epsilon: below this a scale counts as hidden (zero).
@@ -283,6 +255,8 @@ pub struct SpeedoMod {
     /// Render-side mirror (present thread only).
     ui: Vec<UiObj>,
     ui_ver: u64,
+    /// Owner name selected in the left list (present thread only).
+    selected: Option<String>,
     /// Pin + opacity chrome (shared tool pattern).
     tool: ToolChrome,
 }
@@ -314,6 +288,7 @@ impl SpeedoMod {
             status_total: AtomicU64::new(0),
             ui: Vec::new(),
             ui_ver: 0,
+            selected: None,
             tool: ToolChrome::new(),
         }
     }
@@ -437,26 +412,16 @@ impl SpeedoMod {
             }
             out
         };
-        // Projection camera (one lookup): overlay markers + the
-        // px/world calibration below run on the same camera, so signs
-        // and scale fall out measured — no canvas knowledge required.
-        // SAFETY: same contract; alive-probed like any handle.
-        let cam = unsafe {
-            match crate::unity::main_camera(api, &cache) {
-                Some(c) if !c.is_null() => {
-                    match crate::unity::object_alive(api, &cache, c) {
-                        Some(true) => Some(c),
-                        _ => None,
-                    }
-                }
-                _ => None,
-            }
-        };
         // Read one snapshot per match. Originals accumulate locally
         // and merge under a brief lock AFTER the Unity calls — no
         // Mutex is ever held across an invoke (a slow call would
         // stall the present thread into skipping this window).
         // SAFETY: same contract; transform derived from the live owner.
+        // NOTE: no screen projection here. The old overlay markers
+        // projected each object once at discovery, but the anchor went
+        // stale as soon as the camera moved — dragging a marker then
+        // wrote the object to the wrong place on Apply. All edits go
+        // through the panel buffers now (LOCAL space, camera-proof).
         let mut snaps = Vec::new();
         let mut fresh_origs = Vec::new();
         // Addresses already recorded (merge skips them). The guard
@@ -494,9 +459,6 @@ impl SpeedoMod {
                     .unwrap_or([0.0, 0.0, 0.0]);
                 let euler = crate::unity::tr_get_local_euler(api, &cache, tr)
                     .unwrap_or([0.0, 0.0, 0.0]);
-                // World position: projection + calibration only, never
-                // displayed or written.
-                let world = crate::unity::tr_position(api, &cache, tr).unwrap_or(pos);
                 let color = crate::unity::graphic_get_color(api, &cache, comp_p)
                     .unwrap_or([1.0, 1.0, 1.0, 1.0]);
                 // Opacity: CanvasGroup alpha when present (whole
@@ -527,35 +489,6 @@ impl SpeedoMod {
                 } else {
                     (None, String::new())
                 };
-                // Marker projection + calibration (same camera): anchor
-                // S0 plus one world unit along X and Y, from the WORLD
-                // position (projection space — never written).
-                // `screen` stays `None` behind the camera or without
-                // projection API.
-                let (screen, ex, ey) = match cam {
-                    Some(c) => {
-                        let s0 = crate::unity::world_to_screen(api, &cache, c, world);
-                        let sx = match s0 {
-                            Some(_) => crate::unity::world_to_screen(
-                                api, &cache, c, [world[0] + 1.0, world[1], world[2]],
-                            ),
-                            None => None,
-                        };
-                        let sy = match s0 {
-                            Some(_) => crate::unity::world_to_screen(
-                                api, &cache, c, [world[0], world[1] + 1.0, world[2]],
-                            ),
-                            None => None,
-                        };
-                        match (s0, sx, sy) {
-                            (Some(a), Some(b), Some(d)) if a[2] > 0.0 => {
-                                (Some(a), b[0] - a[0], d[1] - a[1])
-                            }
-                            _ => (None, 0.0, 0.0),
-                        }
-                    }
-                    None => (None, 0.0, 0.0),
-                };
                 let tr_addr = tr as usize;
                 if !seen.iter().any(|&(t, c)| t == tr_addr && c == comp) {
                     seen.push((tr_addr, comp));
@@ -573,13 +506,6 @@ impl SpeedoMod {
                         font_size,
                     });
                 }
-                if screen.is_some() {
-                    let s = screen.unwrap();
-                    crate::log_line(&format!(
-                        "speedo: '{}' projeté à ({:.0}, {:.0})",
-                        want.owner, s[0], s[1]
-                    ));
-                }
                 snaps.push(ObjSnap {
                     owner: want.owner.to_string(),
                     comp: want.comp,
@@ -594,9 +520,6 @@ impl SpeedoMod {
                     cg,
                     font_size,
                     text,
-                    screen,
-                    ex,
-                    ey,
                 });
             }
         }
@@ -833,7 +756,6 @@ impl SpeedoMod {
                 tr_addr: s.tr_addr,
                 comp_addr: s.comp_addr,
                 pos: s.pos,
-                pos0: s.pos,
                 euler: s.euler,
                 scale: s.scale,
                 color: f32_to_color(s.color),
@@ -841,11 +763,7 @@ impl SpeedoMod {
                 cg: s.cg,
                 size: s.font_size,
                 text: s.text,
-                screen: s.screen,
-                ex: s.ex,
-                ey: s.ey,
                 visible: !is_zero_scale(s.scale),
-                last_rect: None,
             })
             .collect();
         true
@@ -923,6 +841,86 @@ impl Default for SpeedoMod {
     }
 }
 
+impl SpeedoMod {
+    /// One object's full parameter card (right pane): GameObject state,
+    /// LOCAL transform buffers, color + opacity, TMP text/size.
+    /// Buffers only — nothing reaches Unity before Appliquer.
+    fn draw_obj_params(ui: &mut egui::Ui, obj: &mut UiObj, code: &str) {
+        // — GameObject —
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.monospace("GameObject");
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Nom").weak());
+                ui.monospace(&obj.owner);
+            });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Actif").weak());
+                ui.monospace(if obj.active { "●" } else { "○" });
+            });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Visible").weak());
+                // Scale-zero hide (staged — Appliquer writes zero or
+                // the buffer scale).
+                ui.checkbox(&mut obj.visible, "");
+            });
+        });
+        // — Transform —
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.monospace("Transform");
+            Self::xyz_row(ui, "Position", &mut obj.pos, true);
+            Self::xyz_row(ui, "Rotation", &mut obj.euler, true);
+            Self::xyz_row(ui, "Échelle", &mut obj.scale, true);
+            // — Image / TextMeshProUGUI —
+            ui.monospace(obj.comp.label());
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Couleur").weak());
+                ui.color_edit_button_srgba(&mut obj.color);
+            });
+            // TMP draws through a text material: some elements ignore
+            // the vertex color no matter what we write.
+            if obj.comp == CompKind::Tmp {
+                ui.weak(self::i18n::color_hint(code));
+            }
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Opacité").weak());
+                // Dedicated buffer: CanvasGroup path when present, merged
+                // into color alpha on Apply otherwise. Initialized from
+                // whichever source was read.
+                let mut pct = obj.opacity * 100.0;
+                if ui
+                    .add(egui::Slider::new(&mut pct, 0.0..=100.0).suffix("%"))
+                    .changed()
+                {
+                    obj.opacity = (pct / 100.0).clamp(0.0, 1.0);
+                }
+            });
+            if obj.comp == CompKind::Tmp {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Texte").weak());
+                    let preview: String =
+                        obj.text.chars().take(40).collect();
+                    ui.monospace(format!("“{preview}”"));
+                });
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Taille").weak());
+                    match &mut obj.size {
+                        Some(size) => {
+                            ui.add(
+                                egui::DragValue::new(size)
+                                    .speed(0.5)
+                                    .range(4.0..=300.0),
+                            );
+                        }
+                        None => {
+                            ui.monospace("n/a");
+                        }
+                    }
+                });
+            }
+        });
+    }
+}
+
 impl Mod for SpeedoMod {
     fn name(&self) -> &'static str {
         "Speedometer"
@@ -967,19 +965,30 @@ impl Mod for SpeedoMod {
         }
     }
 
+
     fn on_draw_ui(&mut self, ctx: &egui::Context) {
         let code = crate::i18n::current().code();
-        let just_synced = self.sync_ui();
-        // True when a panel edit moved values this frame: markers
-        // re-anchor on value-driven frames, stay free-draggable else.
-        let mut panel_edited = false;
-        let win = egui::Window::new("Speedometer")
+        self.sync_ui();
+        // Drop a selection whose object vanished (scene change):
+        // params must never edit a ghost row.
+        if let Some(sel) = self.selected.clone() {
+            if !self.ui.iter().any(|o| o.owner == sel) {
+                self.selected = None;
+            }
+        }
+        let mut win = egui::Window::new("Speedometer")
+            .title_bar(false)
+            .collapsible(false)
             .resizable(true)
-            .frame(self.tool.frame(ctx))
-            .show(ctx, |ui| {
+            .min_size(egui::Vec2::new(620.0, 420.0))
+            .frame(self.tool.frame(ctx));
+        if let Some(p) = self.tool.pos {
+            win = win.current_pos(p);
+        }
+        let win = win.show(ctx, |ui| {
                 self.tool.enter(ui);
+                self.tool.header(ui, "Speedometer");
                 ui.horizontal(|ui| {
-                    self.tool.pin_toggle(ui);
                     if ui.button(self::i18n::refresh_label(code)).clicked() {
                         // Re-discover (scene changed, objects rebound).
                         self.pending.store(true, Ordering::SeqCst);
@@ -1002,191 +1011,95 @@ impl Mod for SpeedoMod {
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
                             ui.weak(format!(
-                                "{} {}/{}",
+                                "{} {}",
+                                self.ui.len(),
                                 self::i18n::objects_label(code),
-                                self.status_ok.load(Ordering::SeqCst),
-                                self.status_total.load(Ordering::SeqCst),
                             ));
                         },
                     );
                 });
-                // Discovery groups: unchecked targets are never bound
-                // (the gear readout binds solely when Gear is on).
-                // Takes effect on the next Refresh / arming.
+                // Discovery groups: toggling re-discovers immediately so
+                // the list always matches the checkboxes (no ghost rows
+                // from a previously checked group).
                 ui.horizontal(|ui| {
                     let mut gauge = self.gauge.load(Ordering::SeqCst);
                     if ui.checkbox(&mut gauge, "Gauge").changed() {
                         self.gauge.store(gauge, Ordering::SeqCst);
+                        self.pending.store(true, Ordering::SeqCst);
                     }
                     let mut speed = self.speed.load(Ordering::SeqCst);
                     if ui.checkbox(&mut speed, "Speed").changed() {
                         self.speed.store(speed, Ordering::SeqCst);
+                        self.pending.store(true, Ordering::SeqCst);
                     }
                     let mut gear = self.gear.load(Ordering::SeqCst);
                     if ui.checkbox(&mut gear, "Gear").changed() {
                         self.gear.store(gear, Ordering::SeqCst);
+                        self.pending.store(true, Ordering::SeqCst);
                     }
                     let mut nitro = self.nitro.load(Ordering::SeqCst);
                     if ui.checkbox(&mut nitro, "Nitro").changed() {
                         self.nitro.store(nitro, Ordering::SeqCst);
+                        self.pending.store(true, Ordering::SeqCst);
                     }
                 });
                 ui.separator();
                 if self.ui.is_empty() {
                     ui.weak(self::i18n::hint_label(code));
-                }
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        for obj in self.ui.iter_mut() {
-                            let header = format!("{}  [{}]", obj.owner, obj.comp.label());
-                            egui::CollapsingHeader::new(header)
-                                .default_open(true)
-                                .show(ui, |ui| {
-                                    // — GameObject —
-                                    egui::Frame::group(ui.style()).show(ui, |ui| {
-                                        ui.monospace("GameObject");
-                                        ui.horizontal(|ui| {
-                                            ui.label(egui::RichText::new("Nom").weak());
-                                            ui.monospace(&obj.owner);
-                                        });
-                                        ui.horizontal(|ui| {
-                                            ui.label(egui::RichText::new("Actif").weak());
-                                            ui.monospace(if obj.active { "●" } else { "○" });
-                                        });
-                                        ui.horizontal(|ui| {
-                                            ui.label(egui::RichText::new("Visible").weak());
-                                            // Scale-zero hide (staged —
-                                            // Appliquer writes zero or
-                                            // the buffer scale).
-                                            if ui.checkbox(&mut obj.visible, "").changed() {
-                                                panel_edited = true;
+                } else {
+                    // LEFT: bound objects. RIGHT: selected params.
+                    // (Snapshot first: selection + draw must not share
+                    // the `ui` borrow.)
+                    let names: Vec<(String, String, bool)> = self
+                        .ui
+                        .iter()
+                        .map(|o| (o.owner.clone(), o.comp.label().to_string(), o.active))
+                        .collect();
+                    ui.horizontal_top(|ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("speedo_list")
+                            .max_width(200.0)
+                            .show(ui, |ui| {
+                                ui.set_min_width(180.0);
+                                for (owner, comp, active) in &names {
+                                    let dot = if *active { "●" } else { "○" };
+                                    let label = format!("{dot} {owner}  [{comp}]");
+                                    if ui
+                                        .selectable_label(
+                                            self.selected.as_deref() == Some(owner.as_str()),
+                                            label,
+                                        )
+                                        .clicked()
+                                    {
+                                        self.selected = Some(owner.clone());
+                                    }
+                                }
+                            });
+                        ui.separator();
+                        egui::ScrollArea::vertical()
+                            .id_salt("speedo_params")
+                            .show(ui, |ui| {
+                                ui.set_min_width(320.0);
+                                match self.selected.clone() {
+                                    Some(sel) => {
+                                        match self.ui.iter_mut().find(|o| o.owner == sel) {
+                                            Some(obj) => Self::draw_obj_params(ui, obj, code),
+                                            None => {
+                                                ui.weak(self::i18n::hint_label(code));
                                             }
-                                        });
-                                    });
-                                    // — Transform —
-                                    egui::Frame::group(ui.style()).show(ui, |ui| {
-                                        ui.monospace("Transform");
-                                        // Buffers only — Appliquer sends.
-                                        // `edited` is captured by the
-                                        // outer closure (no `self` borrow
-                                        // inside the rows themselves).
-                                        panel_edited |=
-                                            Self::xyz_row(ui, "Position", &mut obj.pos, true);
-                                        panel_edited |=
-                                            Self::xyz_row(ui, "Rotation", &mut obj.euler, true);
-                                        panel_edited |=
-                                            Self::xyz_row(ui, "Échelle", &mut obj.scale, true);
-                                        // — Image / TextMeshProUGUI —
-                                        ui.monospace(obj.comp.label());
-                                        ui.horizontal(|ui| {
-                                            ui.label(egui::RichText::new("Couleur").weak());
-                                            if ui.color_edit_button_srgba(&mut obj.color).changed() {
-                                                panel_edited = true;
-                                            }
-                                        });
-                                        ui.horizontal(|ui| {
-                                            ui.label(egui::RichText::new("Opacité").weak());
-                                            // Dedicated buffer: CanvasGroup
-                                            // path when present, merged
-                                            // into color alpha on Apply
-                                            // otherwise. Initialized from
-                                            // whichever source was read.
-                                            let mut pct = obj.opacity * 100.0;
-                                            if ui
-                                                .add(egui::Slider::new(&mut pct, 0.0..=100.0).suffix("%"))
-                                                .changed()
-                                            {
-                                                panel_edited = true;
-                                                obj.opacity = (pct / 100.0).clamp(0.0, 1.0);
-                                            }
-                                        });
-                                        if obj.comp == CompKind::Tmp {
-                                            ui.horizontal(|ui| {
-                                                ui.label(egui::RichText::new("Texte").weak());
-                                                let preview: String =
-                                                    obj.text.chars().take(40).collect();
-                                                ui.monospace(format!("“{preview}”"));
-                                            });
-                                            ui.horizontal(|ui| {
-                                                ui.label(egui::RichText::new("Taille").weak());
-                                                match &mut obj.size {
-                                                    Some(size) => {
-                                                        if ui
-                                                            .add(
-                                                                egui::DragValue::new(size)
-                                                                    .speed(0.5)
-                                                                    .range(4.0..=300.0),
-                                                            )
-                                                            .changed()
-                                                        {
-                                                            panel_edited = true;
-                                                        }
-                                                    }
-                                                    None => {
-                                                        ui.monospace("n/a");
-                                                    }
-                                                }
-                                            });
                                         }
-                                    });
-                                });
-                        }
+                                    }
+                                    None => {
+                                        ui.weak(self::i18n::select_hint(code));
+                                    }
+                                }
+                            });
                     });
+                }
             });
         if let Some(r) = win {
+            self.tool.pos = Some(r.response.rect.min);
             self.tool.context_menu(&r.response);
-        }
-        // — Overlay markers at the projected GameObject positions —
-        // Each marker is a small draggable window anchored where the
-        // game object projects on screen (one-shot projection at
-        // discovery). Dragging a marker converts the pixel delta back
-        // to a world offset (per-object calibration) straight into
-        // the Position buffer — Appliquer then moves the real object
-        // in the single batch. When panel values move instead, markers
-        // re-anchor on those value-driven frames (`driven`); free
-        // drags never fight.
-        let scr_h = ctx.content_rect().height();
-        for obj in self.ui.iter_mut() {
-            let (sx_raw, sy_raw) = match obj.screen {
-                Some(s) if s[2] > 0.0 => (s[0], s[1]),
-                _ => continue,
-            };
-            // Derived anchor: projection + (buffer − discovery) mapped
-            // back to pixels (egui y grows down, hence the flip).
-            let px = sx_raw + (obj.pos[0] - obj.pos0[0]) * obj.ex;
-            let py = scr_h - (sy_raw + (obj.pos[1] - obj.pos0[1]) * obj.ey);
-            let driven = just_synced || panel_edited;
-            let id = egui::Id::new(format!("speedo::marker::{}", obj.owner));
-            let mut w = egui::Window::new(format!("◎ {}", obj.owner))
-                .id(id)
-                .resizable(false)
-                .collapsible(false)
-                .default_pos(egui::pos2(px, py));
-            if driven {
-                w = w.current_pos(egui::pos2(px, py));
-            }
-            let mr = w.show(ctx, |ui| {
-                ui.monospace(format!("{px:.0},{py:.0}"));
-            });
-            if let Some(r) = mr {
-                let cur = r.response.rect.min;
-                match obj.last_rect {
-                    // Free drags only: value-driven frames already
-                    // placed the window, converting again would
-                    // double-apply.
-                    Some(prev) if !driven => {
-                        let d = [cur.x - prev.x, cur.y - prev.y];
-                        if d[0] != 0.0 || d[1] != 0.0 {
-                            let off = screen_drag_to_world(d, obj.ex, obj.ey);
-                            obj.pos[0] += off[0];
-                            obj.pos[1] += off[1];
-                        }
-                    }
-                    _ => {}
-                }
-                obj.last_rect = Some(cur);
-            }
         }
     }
 
@@ -1211,7 +1124,7 @@ pub fn register() {
 
 #[cfg(test)]
 mod tests {
-    use super::{WANTS, color_to_f32, f32_to_color, group_enabled, screen_drag_to_world};
+    use super::{WANTS, color_to_f32, f32_to_color, group_enabled};
 
     #[test]
     fn group_flags() {
@@ -1240,19 +1153,6 @@ mod tests {
         ] {
             assert!(owners.contains(&need), "missing {need}");
         }
-    }
-
-    #[test]
-    fn drag_to_world_mapping() {
-        // 100 px per world unit on both axes (W2S, y up).
-        let w = screen_drag_to_world([50.0, -20.0], 100.0, 100.0);
-        assert!((w[0] - 0.5).abs() < 1e-6);
-        // egui drag down (-20 dy) = up on screen = +0.2 world.
-        assert!((w[1] - 0.2).abs() < 1e-6);
-        assert_eq!(w[2], 0.0);
-        // Locked axis (zero factor) never moves.
-        let w = screen_drag_to_world([50.0, 50.0], 0.0, 0.0);
-        assert_eq!(w, [0.0, 0.0, 0.0]);
     }
 
     #[test]

@@ -92,8 +92,7 @@ pub fn objects_label(lang_code: &str) -> &'static str {
 }
 
 /// Empty-list hint (never discovered yet).
-pub fn hint_label(lang_code: &str) -> &'static str {
-    match lang_code {
+pub fn hint_label(lang_code: &str) -> &'static str {    match lang_code {
         "fr" => "En attente de découverte… (menu, garage, changement de scène : Actualiser)",
         "de" => "Warte auf Erkennung… (Menü, Garage, Szenenwechsel: Aktualisieren)",
         "es" => "Esperando detección… (menú, garaje, cambio de escena: Actualizar)",
@@ -101,5 +100,21 @@ pub fn hint_label(lang_code: &str) -> &'static str {
         "pt" => "A aguardar deteção… (menu, garagem, mudança de cena: Atualizar)",
         "ru" => "Ожидание поиска… (меню, гараж, смена сцены: Обновить)",
         _ => "Waiting for discovery… (menu, garage, scene change: Refresh)",
+    }
+}
+
+/// No-selection hint (right pane).
+pub fn select_hint(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Sélectionne un objet dans la liste.",
+        _ => "Select an object from the list.",
+    }
+}
+
+/// TMP color caveat (text material ignores vertex color).
+pub fn color_hint(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "La couleur peut être ignorée (matériau du texte).",
+        _ => "Color may be ignored (text material).",
     }
 }

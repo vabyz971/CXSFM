@@ -650,12 +650,18 @@ impl Mod for InspectorMod {
         // Fixed size: no auto-resize at all. Panes scroll inside;
         // the divider still adjusts the tree/details split.
         // Right-click the window for pin + opacity.
-        let win = egui::Window::new("Scene Inspector")
+        let mut win = egui::Window::new("Scene Inspector")
+            .title_bar(false)
+            .collapsible(false)
             .resizable(false)
             .fixed_size(egui::Vec2::new(700.0, 560.0))
-            .frame(self.tool.frame(ctx))
-            .show(ctx, |ui| {
+            .frame(self.tool.frame(ctx));
+        if let Some(p) = self.tool.pos {
+            win = win.current_pos(p);
+        }
+        let win = win.show(ctx, |ui| {
                 self.tool.enter(ui);
+                self.tool.header(ui, "Scene Inspector");
                 ui.horizontal(|ui| {
                     ui.label("🔍");
                     let resp = ui.add(
@@ -669,7 +675,6 @@ impl Mod for InspectorMod {
                     if ui.button("Refresh").clicked() {
                         self.refresh_wanted.store(true, Ordering::SeqCst);
                     }
-                    self.tool.pin_toggle(ui);
                 });
                 let snap = self.snapshot.lock().unwrap();
                 match snap.as_ref() {
@@ -819,6 +824,7 @@ impl Mod for InspectorMod {
                 }
             });
         if let Some(r) = win {
+            self.tool.pos = Some(r.response.rect.min);
             self.tool.context_menu(&r.response);
         }
     }
