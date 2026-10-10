@@ -41,3 +41,13 @@ objc = "0.2"
 
 [dev-dependencies]
 serde = { version = "1.0", features = ["derive"] }
+
+# Release binaire injecté en jeu : taille maîtrisée sans sacrifier
+# la perf (opt-level 3 conservé pour la tessellation/overlay).
+# - strip : ~1.5 MB de symtab/strtab en moins (egui 0.36 ≃ 8 MB sinon).
+# - lto + codegen-units = 1 : déduplique les génériques monomorphisés
+#   (egui/epaint/skrifa). Coût : builds release plus longs.
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
