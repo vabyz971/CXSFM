@@ -59,12 +59,14 @@ pub fn draw_menu_ui(ctx: &egui::Context) {
     }
     // Dark menu palette, scoped to this window. Text is never
     // selectable (labels would otherwise eat drags/clicks and start
-    // selection marquees over the tiles).
-    let mut style = (*ctx.style()).clone();
-    style.visuals.window_fill = WIN_BG;
-    style.visuals.window_rounding = ROUNDING.into();
-    style.interaction.selectable_labels = false;
-    ctx.set_style(style);
+    // selection marquees over the tiles). egui 0.36 themes styles per
+    // Theme: mutate the active one (was global `set_style`).
+    let theme = ctx.theme();
+    ctx.style_mut_of(theme, |style| {
+        style.visuals.window_fill = WIN_BG;
+        style.visuals.window_corner_radius = ROUNDING.into();
+        style.interaction.selectable_labels = false;
+    });
 
     // Resizable + responsive: the grid derives its columns from the
     // available width (up to 4, wrapping below; compact past 8 mods)

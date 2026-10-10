@@ -31,7 +31,7 @@ impl ToolChrome {
 
     /// Per-window frame with background alpha (menu style untouched).
     pub fn frame(&self, ctx: &egui::Context) -> egui::Frame {
-        let mut f = egui::Frame::window(&ctx.style());
+        let mut f = egui::Frame::window(&ctx.style_of(ctx.theme()));
         let c = f.fill;
         f.fill = egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), self.bg);
         f

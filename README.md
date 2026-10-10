@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Rust Edition](https://img.shields.io/badge/Rust-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/editions/2024.html)
-[![egui](https://img.shields.io/badge/egui-0.29-FF0000)](https://github.com/emilk/egui)
+[![egui](https://img.shields.io/badge/egui-0.36-FF0000)](https://github.com/emilk/egui)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)](https://github.com/CXSFM/cxsfm)
 
 ## What is CXSFM?
@@ -23,12 +23,15 @@ HUD version tag applied to the game's own nickname label](docs/overlay-proof.png
 ## Status (proven in-game, Linux)
 
 - ✅ Implicit Vulkan layer negotiated, `vkQueuePresentKHR` routed
-- ✅ egui overlay rendered into swapchain images (draggable windows,
+- ✅ egui 0.36 overlay rendered into swapchain images (draggable windows,
   checkboxes, software cursor, full text)
-- ✅ X11 input capture (grab + event pump) — the UI is clickable
-- ✅ IL2CPP bridge: Unity input polling, camera FOV, UI text read/write
-- ✅ Bundled mods: HUD Scout (read-only inventory), HUD Hide, HUD
-  Version Tag (all with restore-on-disable)
+- ✅ X11 input capture (grab + event pump) + SDL — the UI is clickable
+  (Unity `Input` path dropped: it segfaulted at teardown)
+- ✅ IL2CPP bridge: camera FOV, UI text read/write, scene inspection
+- ✅ Bundled mods: Scene Inspector (read-only), GameLog (Player.log),
+  Speedometer (HUD restyle, restore-on-disable)
+- ✅ Stability: stale-handle re-resolve, `object_alive` readability
+  guard, no crash on scene change (garage ↔ race) or at quit
 - ⏸️ FPV Camera mod (parked until per-frame application is possible)
 - 🔑 Single hotkey: **F8** = UI visibility + input capture (mods
   persist independently, toggled from the manager window)
@@ -59,9 +62,9 @@ We strictly adhere to CarX Street's Terms of Service by focusing **exclusively**
 
 ### Prerequisites
 
-- Nix with flakes enabled (`nix develop` provides the pinned Rust
+- Nix with flakes enabled (`nix develop` provides the Rust 1.98
   toolchain — no system Rust/CMake/C++ needed, everything is pure Rust)
-- Or plain Rust >= 1.75 (Edition 2024) with network access for crates
+- Or plain Rust >= 1.95 (MSRV of egui 0.36) with network access for crates
 
 ### Building
 
@@ -230,22 +233,26 @@ cxsfm/
     │   ├── metal.rs    # macOS stub
     │   └── overlay.rs  # egui-into-swapchain renderer
     ├── il2cpp.rs       # IL2CPP embedding bridge
-    ├── unity.rs        # Unity helpers (Input, Camera, Text/TMP)
-    ├── hotkey.rs       # SDL/Unity/X11 hotkeys + X11 input capture
+    ├── unity/          # Unity helpers (object, camera, scene, text)
+    ├── hotkey.rs       # SDL/X11 hotkeys + X11 input capture
     ├── memory.rs       # Maps/AOB scanning utilities
     ├── mod_api.rs      # Mod trait + ModManager
     ├── mods.rs         # Mod registry
     └── mods/
+        ├── api.rs         # Mod trait + tile types
+        ├── loader.rs      # Isolated registry (quarantine on panic)
         ├── fpv_camera.rs  # FPV camera mod (parked)
-        └── hud.rs         # HUD Scout / Hide / Version Tag
+        ├── inspector/     # Scene Inspector (read-only)
+        ├── gamelog/       # Game Player.log viewer
+        └── speedo/        # Speedometer restyle (restore-on-disable)
 ```
 
 ## Dependencies
 
 | Crate | Version | Purpose |
 |-------|---------|---------|
-| egui | 0.29 (+`default_fonts`) | In-game UI rendering |
-| egui-ash-renderer | 0.6 | egui → Vulkan pipeline (last line for egui 0.29) |
+| egui | 0.36 (+`default_fonts`) | In-game UI rendering |
+| egui-ash-renderer | 0.13 | egui → Vulkan pipeline (egui 0.36 line) |
 | ash | 0.38 | Vulkan calls through layer-resolved pointers |
 | glam | 0.29 | 3D math vectors/matrices |
 | ctor | 0.2 | Library constructor (auto-init) |

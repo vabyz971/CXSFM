@@ -692,21 +692,25 @@ fn translate_xevent(buf: &[u8; 192], fns: &CaptureFns) -> Vec<egui::Event> {
                 4 => vec![egui::Event::MouseWheel {
                     unit: egui::MouseWheelUnit::Line,
                     delta: egui::vec2(0.0, 1.0),
+                    phase: egui::TouchPhase::Move,
                     modifiers: mods,
                 }],
                 5 => vec![egui::Event::MouseWheel {
                     unit: egui::MouseWheelUnit::Line,
                     delta: egui::vec2(0.0, -1.0),
+                    phase: egui::TouchPhase::Move,
                     modifiers: mods,
                 }],
                 6 => vec![egui::Event::MouseWheel {
                     unit: egui::MouseWheelUnit::Line,
                     delta: egui::vec2(-1.0, 0.0),
+                    phase: egui::TouchPhase::Move,
                     modifiers: mods,
                 }],
                 7 => vec![egui::Event::MouseWheel {
                     unit: egui::MouseWheelUnit::Line,
                     delta: egui::vec2(1.0, 0.0),
+                    phase: egui::TouchPhase::Move,
                     modifiers: mods,
                 }],
                 b => {

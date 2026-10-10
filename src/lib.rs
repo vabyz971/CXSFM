@@ -15,7 +15,7 @@
 //! - **Cross-platform**: Compiles to `.dll` (Windows), `.so` (Linux), and `.dylib` (macOS)
 //! - **Modern Rust**: Uses `std::sync::LazyLock` instead of legacy lazy_static
 //! - **Safe Memory Access**: Encapsulates unsafe operations in `memory.rs` with careful bounds checking
-//! - **EGUI Integration**: Provides a headless UI layer compatible with egui >= 0.29
+//! - **EGUI Integration**: Provides a headless UI layer compatible with egui 0.36
 //! - **Mod Management**: Trait-based architecture for modular mod development
 //!
 //! # Installation

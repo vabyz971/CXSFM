@@ -51,7 +51,7 @@ struct SwapchainState {
     /// Owning VkDevice (for device-scoped teardown).
     dev: usize,
     device: ash::Device,
-    renderer: egui_ash_renderer::Renderer,
+    renderer: egui_ash_renderer::Renderer<egui_ash_renderer::allocator::DefaultAllocator>,
     render_pass: vk::RenderPass,
     views: Vec<vk::ImageView>,
     framebuffers: Vec<vk::Framebuffer>,
@@ -441,7 +441,7 @@ fn create_state(
             &instance,
             vk::PhysicalDevice::from_raw(phys as u64),
             device.clone(),
-            render_pass,
+            egui_ash_renderer::RenderMode::RenderPass(render_pass),
             options,
         )
         .map_err(|_| ())?;
@@ -476,8 +476,7 @@ fn create_state(
 /// blind).
 struct UiOutput {
     primitives: Vec<egui::ClippedPrimitive>,
-    set: Vec<(egui::TextureId, egui::epaint::ImageDelta)>,
-    free: Vec<egui::TextureId>,
+    textures: egui::TexturesDelta,
     /// How long egui wants to wait before the next repaint (static UI
     /// sleeps; animations/interaction repaint immediately).
     repaint_delay: std::time::Duration,
@@ -503,26 +502,29 @@ fn run_ui(
         ..Default::default()
     };
     input.events = events;
-    let output = ctx.run(input, |ui_ctx| {
-        crate::mod_api::draw_status_ui(ui_ctx);
-        crate::mod_api::draw_manager_ui(ui_ctx);
-        // Tool windows draw whenever the menu is open; pinned ones
-        // stay visible after it closes (their effects keep running
-        // either way — UI vs effects are independent).
-        crate::mod_api::draw_ui_all(ui_ctx, crate::hotkey::ui_visible());
-        // Software cursor on top while captured.
-        if crate::hotkey::is_captured() {
-            let (x, y) = crate::hotkey::cursor_pos();
-            egui::Area::new("cxsfm_cursor".into())
-                .order(egui::Order::Foreground)
-                .show(ui_ctx, |ui| {
-                    let p = ui.painter();
-                    let c = egui::pos2(x, y);
-                    p.circle_filled(c, 7.0, egui::Color32::from_white_alpha(96));
-                    p.circle_filled(c, 2.5, egui::Color32::WHITE);
-                });
-        }
-    });
+    // egui 0.36 removed `Context::run`; the pass is driven explicitly.
+    // `end_pass` returns the same `FullOutput` (`shapes`,
+    // `textures_delta`, `pixels_per_point`, `viewport_output`).
+    ctx.begin_pass(input);
+    crate::mod_api::draw_status_ui(ctx);
+    crate::mod_api::draw_manager_ui(ctx);
+    // Tool windows draw whenever the menu is open; pinned ones
+    // stay visible after it closes (their effects keep running
+    // either way — UI vs effects are independent).
+    crate::mod_api::draw_ui_all(ctx, crate::hotkey::ui_visible());
+    // Software cursor on top while captured.
+    if crate::hotkey::is_captured() {
+        let (x, y) = crate::hotkey::cursor_pos();
+        egui::Area::new("cxsfm_cursor".into())
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                let p = ui.painter();
+                let c = egui::pos2(x, y);
+                p.circle_filled(c, 7.0, egui::Color32::from_white_alpha(96));
+                p.circle_filled(c, 2.5, egui::Color32::WHITE);
+            });
+    }
+    let output = ctx.end_pass();
     let primitives = ctx.tessellate(output.shapes, output.pixels_per_point);
     let repaint_delay = output
         .viewport_output
@@ -531,8 +533,7 @@ fn run_ui(
         .unwrap_or(std::time::Duration::ZERO);
     UiOutput {
         primitives,
-        set: output.textures_delta.set,
-        free: output.textures_delta.free,
+        textures: output.textures_delta,
         repaint_delay,
         pixels_per_point: output.pixels_per_point,
     }
@@ -735,7 +736,7 @@ pub fn draw_frame(
         // not leave stale frames replaying) and presents untouched.
         let fresh: Option<UiOutput> = ui;
         match &fresh {
-            Some(u) if u.primitives.is_empty() && u.set.is_empty() => {
+            Some(u) if u.primitives.is_empty() && u.textures.is_empty() => {
                 for r in st.recorded.iter_mut() {
                     *r = false;
                 }
@@ -755,11 +756,11 @@ pub fn draw_frame(
         if let Some(u) = &fresh {
             // Free textures egui abandoned — EXCEPT ids (re-)set at
             // their free's emission frame or later (see field docs).
-            for (id, _) in &u.set {
+            for id in u.textures.set.keys() {
                 st.last_set.insert(*id, frame);
             }
             // Atlas-resize witness (rare by design).
-            if u.set.iter().any(|(id, _)| u.free.contains(id)) {
+            if u.textures.free.iter().any(|id| u.textures.set.contains_key(id)) {
                 crate::log_line("render/overlay: font atlas resized (free+set same id)");
             }
             let mut pending = std::mem::take(&mut st.pending_frees);
@@ -767,16 +768,20 @@ pub fn draw_frame(
                 st.last_set.get(id).copied().unwrap_or(0) < *emitted
             });
             if !pending.is_empty() {
-                let ids: Vec<egui::TextureId> =
-                    pending.iter().map(|(id, _)| *id).collect();
-                let _ = st.renderer.free_textures(&ids);
+                for (id, _) in &pending {
+                    let _ = st.renderer.free_texture(*id);
+                }
             }
             // Upload new textures (font atlas lands on the first drawn
             // frame). Synchronous inside the renderer (own submit + wait).
-            if !u.set.is_empty() {
-                st.renderer
-                    .set_textures(q, st.pool, &u.set)
-                    .map_err(|_| ())?;
+            // egui 0.36 batches deltas per texture (`set_texture` is
+            // per `(id, delta)`): one call per delta in the batch.
+            for (id, deltas) in &u.textures.set {
+                for delta in deltas {
+                    st.renderer
+                        .set_texture(q, st.pool, *id, delta)
+                        .map_err(|_| ())?;
+                }
             }
         }
         // 4. Record fresh commands, or replay the cached buffer.
@@ -912,7 +917,7 @@ pub fn draw_frame(
             .map_err(|_| ())?;
         if let Some(u) = fresh {
             st.recorded[idx] = true;
-            st.pending_frees = u.free.into_iter().map(|id| (id, frame)).collect();
+            st.pending_frees = u.textures.free.iter().copied().map(|id| (id, frame)).collect();
         }
         Ok(st.signal.as_raw() as usize)
     }

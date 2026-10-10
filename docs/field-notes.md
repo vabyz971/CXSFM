@@ -586,3 +586,20 @@ Diagnostic line (zero keypresses needed):
   (`unity: scene api count=… at=…` loggé une fois) ;
   `DontDestroyOnLoad` regroupé au refresh manuel seul ;
   enfants inspecteur à la demande (fin des walks 3000 nœuds tronqués).
+
+## egui 0.29 → 0.36 migration (branche egui-036, 2026-10-10)
+
+- Bump : `egui 0.36.2` + `egui-ash-renderer 0.13.0` (`ash 0.38`
+  inchangé). Toolchain rustup 1.99 (le flake reste à rustc 1.86,
+  MSRV 0.36 = 1.95) ; binaire final max `GLIBC_2.35` < sniper 2.36.
+- API : `Renderer<DefaultAllocator>` + `RenderMode::RenderPass` ;
+  `set_texture`/`free_texture` par item (`TexturesDelta.set` =
+  HashMap, `free` = HashSet) ; `ctx.run` → `begin_pass/end_pass` ;
+  `SidePanel` → `Panel` (`default_size`/`size_range`/`show`) ;
+  `Rounding` → `CornerRadius`, `rect_stroke` + `StrokeKind::Middle` ;
+  `allocate_new_ui` → `scope_builder` ; `ctx.style/set_style` →
+  `style_mut_of(ctx.theme())` (`window_fill`/`window_corner_radius`
+  dans `visuals`) ; `screen_rect()` → `content_rect()` ;
+  `Event::MouseWheel` + `phase: TouchPhase::Move`.
+- Comportement pixels préservé (strokes Middle, mêmes rects) ;
+  `cargo test` 20/20. Reste à valider en jeu (overlay + F8).
