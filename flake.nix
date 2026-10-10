@@ -2,32 +2,34 @@
   description = "Environnement dev - CXSFM";
 
   inputs = {
-    # Épinglé sur 25.05 : rustc 1.86 (OK pour l'edition 2024) + glibc 2.40.
-    # Un toolchain plus récent (unstable = glibc 2.44) tire des symboles
-    # libm re-versionnés (ex: atan2f@GLIBC_2.43) que le Steam Runtime
-    # (sniper = glibc 2.36) ne fournit pas → LD_PRELOAD échoue et le jeu
-    # ne démarre pas. Tout le shell DOIT venir de ce même nixpkgs pour
-    # que le link final utilise glibc 2.40 (ne pas mixer deux stdenv).
+    # Base 25.05 : glibc 2.40 + link final. Le Steam Runtime (sniper =
+    # glibc 2.36) ne fournit pas les symboles libm re-versionnés des
+    # glibc récentes (ex: atan2f@GLIBC_2.43) → le LINK final doit rester
+    # sur le cc/glibc 2.40 de ce nixpkgs (ne pas mixer deux stdenv
+    # pour le link).
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    # Toolchain Rust récente (MSRV egui 0.36 = rustc 1.95) : SEUL le
+    # toolchain vient d'ici, tout le reste (link, loaders) reste sur
+    # 25.05 ci-dessus. Rev pinnée par flake.lock (reproductible
+    # jusqu'au prochain `nix flake update nixpkgs-toolchain`).
+    # Après chaque bump, vérifier les symboles du binaire :
+    #   objdump -T target/release/libcxsfm.so | grep -oP "GLIBC_[0-9.]+"
+    # Référence build rustup 1.99 : max GLIBC_2.35 (< sniper 2.36).
+    nixpkgs-toolchain.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
-  outputs = { self, nixpkgs }: {
+  outputs = { self, nixpkgs, nixpkgs-toolchain }: {
     devShells.x86_64-linux.default = let
       pkgs = nixpkgs.legacyPackages.x86_64-linux;
+      pkgsToolchain = nixpkgs-toolchain.legacyPackages.x86_64-linux;
     in pkgs.mkShell {
-      buildInputs = with pkgs; [
-        cargo
-        rustc
-        rustfmt
-        clippy
-        rust-analyzer
-        # Dépendances requises par wgpu/iced sur Linux
-        pkg-config
-        vulkan-loader
-        libxkbcommon
-        wayland
+      buildInputs = [
+        pkgsToolchain.cargo
+        pkgsToolchain.rustc
+        pkgsToolchain.rustfmt
+        pkgsToolchain.clippy
+        pkgsToolchain.rust-analyzer
       ];
-      LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (with pkgs; [ vulkan-loader libxkbcommon wayland ]);
     };
   };
 }
