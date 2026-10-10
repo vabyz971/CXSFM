@@ -30,7 +30,6 @@ use crate::mods::api::{Mod, TileIcon};
 use crate::mods::common::lock;
 use crate::mods::tool::ToolChrome;
 use crate::unity::UnityCache;
-use std::collections::HashSet;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -256,10 +255,8 @@ pub struct SpeedoMod {
     /// Render-side mirror (present thread only).
     ui: Vec<UiObj>,
     ui_ver: u64,
-    /// Owner name selected in the tree (present thread only).
+    /// Owner name selected in the list (present thread only).
     selected: Option<String>,
-    /// Expanded tree nodes by owner (present thread only).
-    tree_open: HashSet<String>,
     /// Pin + opacity chrome (shared tool pattern).
     tool: ToolChrome,
 }
@@ -292,7 +289,6 @@ impl SpeedoMod {
             ui: Vec::new(),
             ui_ver: 0,
             selected: None,
-            tree_open: HashSet::new(),
             tool: ToolChrome::new(),
         }
     }
@@ -1053,11 +1049,11 @@ impl Mod for SpeedoMod {
                 if self.ui.is_empty() {
                     ui.weak(self::i18n::hint_label(code));
                 } else {
-                    // LEFT: Unity-style tree (object → components).
-                    // RIGHT: selected params.
+                    // LEFT: flat object list (dot + name + type).
+                    // RIGHT: selected object's component params.
                     // (Snapshot first: selection + draw must not share
                     // the `ui` borrow.)
-                    let nodes: Vec<(String, String, bool, bool)> = self
+                    let names: Vec<(String, String, bool)> = self
                         .ui
                         .iter()
                         .map(|o| {
@@ -1065,65 +1061,26 @@ impl Mod for SpeedoMod {
                                 o.owner.clone(),
                                 o.comp.label().to_string(),
                                 o.active,
-                                o.cg.is_some(),
                             )
                         })
                         .collect();
                     ui.horizontal_top(|ui| {
                         egui::ScrollArea::vertical()
-                            .id_salt("speedo_tree")
+                            .id_salt("speedo_list")
                             .max_width(230.0)
                             .show(ui, |ui| {
                                 ui.set_min_width(210.0);
-                                for (owner, comp, active, has_cg) in &nodes {
+                                for (owner, comp, active) in &names {
                                     let dot = if *active { "●" } else { "○" };
-                                    let open = self.tree_open.contains(owner);
-                                    ui.horizontal(|ui| {
-                                        if ui
-                                            .small_button(if open { "▾" } else { "▸" })
-                                            .clicked()
-                                        {
-                                            if open {
-                                                self.tree_open.remove(owner);
-                                            } else {
-                                                self.tree_open.insert(owner.clone());
-                                            }
-                                        }
-                                        if ui
-                                            .selectable_label(
-                                                self.selected.as_deref()
-                                                    == Some(owner.as_str()),
-                                                format!("{dot} {owner}"),
-                                            )
-                                            .clicked()
-                                        {
-                                            self.selected = Some(owner.clone());
-                                        }
-                                    });
-                                    if self.tree_open.contains(owner) {
-                                        ui.indent(
-                                            format!("speedo_tree_{owner}"),
-                                            |ui| {
-                                                let mut comps =
-                                                    vec!["Transform", comp.as_str()];
-                                                if *has_cg {
-                                                    comps.push("CanvasGroup");
-                                                }
-                                                for cname in comps {
-                                                    if ui
-                                                        .selectable_label(
-                                                            self.selected.as_deref()
-                                                                == Some(owner.as_str()),
-                                                            format!("▪ {cname}"),
-                                                        )
-                                                        .clicked()
-                                                    {
-                                                        self.selected =
-                                                            Some(owner.clone());
-                                                    }
-                                                }
-                                            },
-                                        );
+                                    if ui
+                                        .selectable_label(
+                                            self.selected.as_deref()
+                                                == Some(owner.as_str()),
+                                            format!("{dot} {owner}  [{comp}]"),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.selected = Some(owner.clone());
                                     }
                                 }
                             });
