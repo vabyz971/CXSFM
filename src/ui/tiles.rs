@@ -9,9 +9,8 @@ use crate::mods::api::TileIcon;
 /// Draw a vector icon centered at `c` with half-size `s`.
 ///
 /// Pure `Painter` strokes (no font glyphs, no assets) so icons render
-/// identically on every setup.
-pub fn draw_icon(painter: &egui::Painter, c: egui::Pos2, s: f32, icon: TileIcon) {
-    let col = ICON_COLOR;
+/// identically on every setup. Active tiles pass the yellow accent.
+pub fn draw_icon(painter: &egui::Painter, c: egui::Pos2, s: f32, icon: TileIcon, col: egui::Color32) {
     let w = egui::Stroke::new(2.5, col);
     let thin = egui::Stroke::new(2.0, col);
     match icon {
@@ -268,16 +267,17 @@ pub fn tile_at(
     painter.rect_filled(rect, ROUNDING, bg);
     if active {
         // Outline INSIDE the fill (shrink by half the 2px stroke):
-        // outer edge == fill edge, so the visible corner radius is
-        // exactly 10px like every inactive tile.
+        // outer edge == fill edge, so the visible corner radius
+        // matches inactive tiles. Yellow = CarX active state.
         let inner = rect.shrink(1.0);
         painter.rect_stroke(inner, ROUNDING - 1.0, egui::Stroke::new(2.0, ACCENT), egui::StrokeKind::Middle);
     }
 
     // Icon up top, label zone below sized for two small lines.
     // Ratios of the 125x110 reference tile, scaled to any rect.
+    // Active tiles get yellow icons like game highlights.
     let icon_c = rect.center() + egui::Vec2::new(0.0, -rect.height() * 0.145);
-    draw_icon(&painter, icon_c, rect.width() * 0.144, icon);
+    draw_icon(&painter, icon_c, rect.width() * 0.144, icon, if active { ACCENT } else { ICON_COLOR });
     let label_rect = egui::Rect::from_min_max(
         egui::Pos2::new(rect.min.x + 4.0, rect.max.y - rect.height() * 0.4),
         egui::Pos2::new(rect.max.x - 4.0, rect.max.y - 4.0),

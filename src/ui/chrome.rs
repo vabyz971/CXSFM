@@ -7,7 +7,8 @@
 //! tiles/buttons still work.
 
 use super::theme::{
-    FOOTER_BG, FOOTER_SIZE, NAV_ROUNDING, ROUNDING, TEXT_DIM, TILE_BG, TITLE_SIZE, VERSION_SIZE,
+    ACCENT, FOOTER_BG, FOOTER_EDGE, FOOTER_SIZE, KEY_FG, NAV_ROUNDING, ROUNDING, TEXT_DIM, TILE_BG,
+    TITLE_SIZE, VERSION_SIZE,
 };
 
 /// Window position (custom drag). `None` = engine default until the
@@ -88,15 +89,16 @@ pub fn nav_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// Header row, spanning the available width: version left, title
-/// center, HELP right. Version and HELP share the same size; the
-/// title is one step above. `on_help` runs on click (page switch).
+/// Header row, spanning the available width: yellow version badge
+/// (game level-badge style) left, title center, HELP right.
 pub fn header(ui: &mut egui::Ui, on_help: impl FnOnce()) {
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new(env!("CARGO_PKG_VERSION"))
                 .size(VERSION_SIZE)
-                .color(TEXT_DIM),
+                .strong()
+                .color(KEY_FG)
+                .background_color(ACCENT),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if nav_button(ui, crate::i18n::t("help")).clicked() {
@@ -107,7 +109,7 @@ pub fn header(ui: &mut egui::Ui, on_help: impl FnOnce()) {
                     egui::RichText::new("CXSFM")
                         .size(TITLE_SIZE)
                         .strong()
-                        .color(TEXT_DIM),
+                        .color(egui::Color32::WHITE),
                 );
             });
         });
@@ -131,20 +133,26 @@ pub fn centered_block(ui: &mut egui::Ui, w: f32, body: impl FnOnce(&mut egui::Ui
     });
 }
 
-/// Red footer bar at `w` (the grid block width): the warning wraps
+/// Bottom bar at `w` (the grid block width): dark strip with a thin
+/// yellow top rule (game section-divider style). The warning wraps
 /// inside instead of widening the window.
 pub fn footer(ui: &mut egui::Ui, w: f32) {
     centered_block(ui, w, |ui| {
         let (rect, _) =
             ui.allocate_exact_size(egui::Vec2::new(w, 40.0), egui::Sense::hover());
-        ui.painter_at(rect).rect_filled(rect, ROUNDING, FOOTER_BG);
+        let p = ui.painter_at(rect);
+        p.rect_filled(rect, ROUNDING, FOOTER_BG);
+        p.line_segment(
+            [rect.left_top(), rect.right_top()],
+            egui::Stroke::new(2.0, FOOTER_EDGE),
+        );
         ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink(6.0)), |ui| {
             ui.centered_and_justified(|ui| {
                 ui.add(
                     egui::Label::new(
                         egui::RichText::new(crate::i18n::t("footer_locked"))
                             .size(FOOTER_SIZE)
-                            .color(egui::Color32::WHITE),
+                            .color(TEXT_DIM),
                     )
                     .wrap()
                     .sense(egui::Sense::hover()),

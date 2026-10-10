@@ -63,6 +63,8 @@ pub fn draw_menu_ui(ctx: &egui::Context) {
     // Theme: mutate the active one (was global `set_style`).
     let theme = ctx.theme();
     ctx.style_mut_of(theme, |style| {
+        // Game overlay is always dark, whatever the ambient theme is.
+        style.visuals.dark_mode = true;
         style.visuals.window_fill = WIN_BG;
         style.visuals.window_corner_radius = ROUNDING.into();
         style.interaction.selectable_labels = false;
