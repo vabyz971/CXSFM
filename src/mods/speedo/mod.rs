@@ -1146,7 +1146,7 @@ impl Mod for SpeedoMod {
         // in the single batch. When panel values move instead, markers
         // re-anchor on those value-driven frames (`driven`); free
         // drags never fight.
-        let scr_h = ctx.screen_rect().height();
+        let scr_h = ctx.content_rect().height();
         for obj in self.ui.iter_mut() {
             let (sx_raw, sy_raw) = match obj.screen {
                 Some(s) if s[2] > 0.0 => (s[0], s[1]),

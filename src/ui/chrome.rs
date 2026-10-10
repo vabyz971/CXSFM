@@ -83,7 +83,7 @@ pub fn nav_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ui.add(
         egui::Button::new(egui::RichText::new(label).size(VERSION_SIZE))
             .fill(TILE_BG)
-            .rounding(egui::Rounding::same(NAV_ROUNDING)),
+            .corner_radius(egui::CornerRadius::same(NAV_ROUNDING as u8)),
     )
     .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -138,7 +138,7 @@ pub fn footer(ui: &mut egui::Ui, w: f32) {
         let (rect, _) =
             ui.allocate_exact_size(egui::Vec2::new(w, 40.0), egui::Sense::hover());
         ui.painter_at(rect).rect_filled(rect, ROUNDING, FOOTER_BG);
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect.shrink(6.0)), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink(6.0)), |ui| {
             ui.centered_and_justified(|ui| {
                 ui.add(
                     egui::Label::new(

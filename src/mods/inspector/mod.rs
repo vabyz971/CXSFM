@@ -687,11 +687,11 @@ impl Mod for InspectorMod {
                         ui.separator();
                         // Left: tree. Fixed strip with its own scrollbars
                         // (divider draggable).
-                        egui::SidePanel::left("inspector_tree")
+                        egui::Panel::left("inspector_tree")
                             .resizable(true)
-                            .default_width(270.0)
-                            .width_range(180.0..=450.0)
-                            .show_inside(ui, |ui| {
+                            .default_size(270.0)
+                            .size_range(180.0..=450.0)
+                            .show(ui, |ui| {
                                 egui::ScrollArea::both()
                                     .auto_shrink([false, false])
                                     .show(ui, |ui| {

@@ -21,13 +21,13 @@ pub fn draw_icon(painter: &egui::Painter, c: egui::Pos2, s: f32, icon: TileIcon)
                 c + egui::Vec2::new(0.0, s * 0.12),
                 egui::Vec2::new(s * 1.5, s * 0.95),
             );
-            painter.rect_stroke(body, 4.0, w);
+            painter.rect_stroke(body, 4.0, w, egui::StrokeKind::Middle);
             // Viewfinder bump.
             let bump = egui::Rect::from_center_size(
                 c + egui::Vec2::new(-s * 0.42, -s * 0.48),
                 egui::Vec2::new(s * 0.4, s * 0.25),
             );
-            painter.rect_stroke(bump, 2.0, thin);
+            painter.rect_stroke(bump, 2.0, thin, egui::StrokeKind::Middle);
             // Lens.
             painter.circle_stroke(c + egui::Vec2::new(0.0, s * 0.12), s * 0.3, w);
         }
@@ -151,7 +151,7 @@ pub fn draw_icon(painter: &egui::Painter, c: egui::Pos2, s: f32, icon: TileIcon)
             let wdt = s * 0.7;
             let hgt = s * 0.9;
             let r = egui::Rect::from_center_size(c, egui::Vec2::new(wdt, hgt));
-            painter.rect_stroke(r, 2.0, w);
+            painter.rect_stroke(r, 2.0, w, egui::StrokeKind::Middle);
             for (i, dy) in [-0.22, 0.02, 0.26].iter().enumerate() {
                 let y = c.y + s * dy;
                 let x1 = c.x + s * (0.22 - 0.06 * (i as f32));
@@ -171,7 +171,7 @@ pub fn draw_icon(painter: &egui::Painter, c: egui::Pos2, s: f32, icon: TileIcon)
                     egui::Vec2::new(s * 0.62, s * 0.26),
                 );
                 let stroke = if i == 0 { thin } else { w };
-                painter.rect_stroke(body, 4.0, stroke);
+                painter.rect_stroke(body, 4.0, stroke, egui::StrokeKind::Middle);
                 for wx in [-0.18, 0.18] {
                     painter.circle_filled(
                         bc + egui::Vec2::new(s * wx, s * 0.18),
@@ -187,7 +187,7 @@ pub fn draw_icon(painter: &egui::Painter, c: egui::Pos2, s: f32, icon: TileIcon)
                 c,
                 egui::Vec2::new(s * 1.0, s * 0.62),
             );
-            painter.rect_stroke(body, 8.0, w);
+            painter.rect_stroke(body, 8.0, w, egui::StrokeKind::Middle);
             let l = c + egui::Vec2::new(-s * 0.28, 0.0);
             painter.line_segment(
                 [
@@ -271,7 +271,7 @@ pub fn tile_at(
         // outer edge == fill edge, so the visible corner radius is
         // exactly 10px like every inactive tile.
         let inner = rect.shrink(1.0);
-        painter.rect_stroke(inner, ROUNDING - 1.0, egui::Stroke::new(2.0, ACCENT));
+        painter.rect_stroke(inner, ROUNDING - 1.0, egui::Stroke::new(2.0, ACCENT), egui::StrokeKind::Middle);
     }
 
     // Icon up top, label zone below sized for two small lines.
@@ -282,7 +282,7 @@ pub fn tile_at(
         egui::Pos2::new(rect.min.x + 4.0, rect.max.y - rect.height() * 0.4),
         egui::Pos2::new(rect.max.x - 4.0, rect.max.y - 4.0),
     );
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(label_rect), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(label_rect), |ui| {
         ui.centered_and_justified(|ui| {
             // Hover-only: clicks fall through to the tile below, and
             // the text can never start a selection drag.

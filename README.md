@@ -4,7 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Rust Edition](https://img.shields.io/badge/Rust-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/editions/2024.html)
-[![egui](https://img.shields.io/badge/egui-0.29-FF0000)](https://github.com/emilk/egui)
+[![egui](https://img.shields.io/badge/egui-0.36-FF0000)](https://github.com/emilk/egui)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)](https://github.com/CXSFM/cxsfm)
 
 ## What is CXSFM?
@@ -244,8 +244,8 @@ cxsfm/
 
 | Crate | Version | Purpose |
 |-------|---------|---------|
-| egui | 0.29 (+`default_fonts`) | In-game UI rendering |
-| egui-ash-renderer | 0.6 | egui → Vulkan pipeline (last line for egui 0.29) |
+| egui | 0.36 (+`default_fonts`) | In-game UI rendering |
+| egui-ash-renderer | 0.13 | egui → Vulkan pipeline (egui 0.36 line) |
 | ash | 0.38 | Vulkan calls through layer-resolved pointers |
 | glam | 0.29 | 3D math vectors/matrices |
 | ctor | 0.2 | Library constructor (auto-init) |
