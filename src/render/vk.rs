@@ -679,7 +679,7 @@ fn install_inline_hook(entry: usize) -> Result<&'static str, RenderError> {
                     return Err(fail("dispatch pointer is null".into()));
                 }
                 with_writable_pages(ptr, 8, || unsafe {
-                    std::ptr::write(ptr as *mut usize, present_hook as usize);
+                    std::ptr::write(ptr as *mut usize, present_hook as *const () as usize);
                 })?;
                 INLINE_TARGET.store(ptr, Ordering::SeqCst);
                 INLINE_ORIG.store(orig, Ordering::SeqCst);
@@ -785,7 +785,7 @@ fn steal_and_patch(target: usize) -> Result<&'static str, RenderError> {
         guard.1[..stolen].copy_from_slice(&bytes[..stolen]);
     }
     with_writable_pages(target, JMP_ABS_SIZE, || unsafe {
-        emit_abs_jump(target, present_hook as usize);
+        emit_abs_jump(target, present_hook as *const () as usize);
     })?;
     INLINE_TARGET.store(target, Ordering::SeqCst);
     INLINE_ORIG.store(tramp, Ordering::SeqCst);
@@ -899,7 +899,7 @@ fn patch_slots(
             continue; // changed under us; skip, don't corrupt
         }
         with_writable_pages(*slot, 8, || unsafe {
-            std::ptr::write(*slot as *mut usize, present_hook as usize);
+            std::ptr::write(*slot as *mut usize, present_hook as *const () as usize);
         })?;
         patched.push((*slot, *expected));
     }
@@ -1022,7 +1022,7 @@ impl super::RenderHook for VulkanHook {
         // Layer (a): direct present slot.
         match find_got_slot(&info, "vkQueuePresentKHR") {
             Ok(slot) => {
-                let orig = swap_got_slot(slot, present_hook as usize)?;
+                let orig = swap_got_slot(slot, present_hook as *const () as usize)?;
                 ORIGINAL_PRESENT.store(orig, Ordering::SeqCst);
                 PRESENT_SLOT.store(slot, Ordering::SeqCst);
                 PRESENT_ORIG.store(orig, Ordering::SeqCst);
@@ -1032,7 +1032,7 @@ impl super::RenderHook for VulkanHook {
                 // Layer (b): wrap the proc-address lookup instead.
                 match find_got_slot(&info, "vkGetDeviceProcAddr") {
                     Ok(slot) => {
-                        let orig = swap_got_slot(slot, getproc_wrapper as usize)?;
+                        let orig = swap_got_slot(slot, getproc_wrapper as *const () as usize)?;
                         ORIGINAL_GETPROC.store(orig, Ordering::SeqCst);
                         GETPROC_SLOT.store(slot, Ordering::SeqCst);
                         GETPROC_ORIG.store(orig, Ordering::SeqCst);

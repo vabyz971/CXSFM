@@ -336,12 +336,12 @@ fn in_ranges(ranges: &[(usize, usize)], addr: usize) -> bool {
 /// Hook trampoline address per slot index.
 fn hook_addr(i: usize) -> usize {
     match i {
-        0 => hook::<0> as usize,
-        1 => hook::<1> as usize,
-        2 => hook::<2> as usize,
-        3 => hook::<3> as usize,
-        4 => hook::<4> as usize,
-        5 => hook::<5> as usize,
+        0 => hook::<0> as *const () as usize,
+        1 => hook::<1> as *const () as usize,
+        2 => hook::<2> as *const () as usize,
+        3 => hook::<3> as *const () as usize,
+        4 => hook::<4> as *const () as usize,
+        5 => hook::<5> as *const () as usize,
         _ => 0,
     }
 }

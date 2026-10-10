@@ -309,7 +309,7 @@ fn own_module_dir() -> Option<std::path::PathBuf> {
     // valid out-pointer; read-only query, no side effects.
     unsafe {
         let mut info: libc::Dl_info = std::mem::zeroed();
-        let addr = is_initialized as usize as *const libc::c_void;
+        let addr = is_initialized as *const () as usize as *const libc::c_void;
         if libc::dladdr(addr, &mut info) == 0 || info.dli_fname.is_null() {
             return None;
         }
