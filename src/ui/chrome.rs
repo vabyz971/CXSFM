@@ -7,8 +7,8 @@
 //! tiles/buttons still work.
 
 use super::theme::{
-    ACCENT, FOOTER_BG, FOOTER_EDGE, FOOTER_SIZE, KEY_FG, NAV_ROUNDING, ROUNDING, TEXT_DIM, TILE_BG,
-    TITLE_SIZE, VERSION_SIZE,
+    ACCENT, FOOTER_BG, FOOTER_EDGE, FOOTER_SIZE, ICON_COLOR, KEY_FG, NAV_ROUNDING, ROUNDING,
+    TEXT_DIM, TILE_BG, TITLE_SIZE, VERSION_SIZE,
 };
 
 /// Window position (custom drag). `None` = engine default until the
@@ -76,6 +76,37 @@ pub fn forward_drag(resp: &egui::Response) {
     if resp.dragged() {
         shift_window(resp.drag_delta());
     }
+}
+
+/// Tree expander chevron: painted triangle (right = closed, down =
+/// open), zero font dependency — text glyphs like `▾`/`▸` render as
+/// tofu boxes when the active font lacks them, which is exactly what
+/// happened in-game. Same look everywhere (inspector, speedo).
+pub fn expander(ui: &mut egui::Ui, open: bool) -> egui::Response {
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::Vec2::splat(16.0), egui::Sense::click());
+    let c = rect.center();
+    let s = 4.5;
+    let (p0, p1, p2) = if open {
+        (
+            c + egui::Vec2::new(-s, -s * 0.6),
+            c + egui::Vec2::new(s, -s * 0.6),
+            c + egui::Vec2::new(0.0, s * 0.8),
+        )
+    } else {
+        (
+            c + egui::Vec2::new(-s * 0.6, -s),
+            c + egui::Vec2::new(s * 0.8, 0.0),
+            c + egui::Vec2::new(-s * 0.6, s),
+        )
+    };
+    let col = if resp.hovered() { ACCENT } else { ICON_COLOR };
+    ui.painter().add(egui::Shape::convex_polygon(
+        vec![p0, p1, p2],
+        col,
+        egui::Stroke::NONE,
+    ));
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Nav button (HELP / BACK): tile background with a tighter radius

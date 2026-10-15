@@ -541,7 +541,9 @@ fn draw_node(
             ui.label("•");
         } else {
             let is_open = open.contains(path);
-            if ui.small_button(if is_open { "▾" } else { "▸" }).clicked() {
+            // Painted chevron (see `chrome::expander`): text glyphs
+            // (`▾`/`▸`) came out as tofu boxes in-game.
+            if crate::ui::chrome::expander(ui, is_open).clicked() {
                 if is_open {
                     open.remove(path);
                 } else {

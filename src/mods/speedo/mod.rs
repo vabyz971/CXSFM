@@ -31,7 +31,9 @@ pub mod i18n;
 use crate::mods::api::{Mod, TileIcon};
 use crate::mods::common::lock;
 use crate::mods::tool::ToolChrome;
+use crate::ui::theme::{STATE_WARN as OFF_ORANGE, TEXT_BRIGHT as BRIGHT, TEXT_DIM as DIM};
 use crate::unity::UnityCache;
+use std::collections::HashSet;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -267,8 +269,10 @@ pub struct SpeedoMod {
     /// Render-side mirror (present thread only).
     ui: Vec<UiObj>,
     ui_ver: u64,
-    /// Owner name selected in the list (present thread only).
+    /// Owner path selected in the tree (present thread only).
     selected: Option<String>,
+    /// Collapsed section names (present thread only; absent = open).
+    collapsed: HashSet<String>,
     /// Pin + opacity chrome (shared tool pattern).
     tool: ToolChrome,
 }
@@ -301,6 +305,7 @@ impl SpeedoMod {
             ui: Vec::new(),
             ui_ver: 0,
             selected: None,
+            collapsed: HashSet::new(),
             tool: ToolChrome::new(),
         }
     }
@@ -1176,21 +1181,25 @@ impl Mod for SpeedoMod {
                 if self.ui.is_empty() {
                     ui.weak(self::i18n::hint_label(code));
                 } else {
-                    // LEFT: flat object list (dot + name + type).
+                    // LEFT: section tree (mirrors the inspector).
                     // RIGHT: selected object's component params.
                     // (Snapshot first: selection + draw must not share
                     // the `ui` borrow.)
-                    let names: Vec<(String, String, bool)> = self
+                    let rows: Vec<(String, bool)> = self
                         .ui
                         .iter()
-                        .map(|o| {
-                            (
-                                o.owner.clone(),
-                                o.comp.label().to_string(),
-                                o.active,
-                            )
-                        })
+                        .map(|o| (o.owner.clone(), o.active))
                         .collect();
+                    // Group by section (first path segment),
+                    // first-appearance order (stable across refreshes).
+                    let mut sections: Vec<(String, Vec<usize>)> = Vec::new();
+                    for (i, (owner, _)) in rows.iter().enumerate() {
+                        let sec = owner.split('/').next().unwrap_or("").to_string();
+                        match sections.iter_mut().find(|(s, _)| *s == sec) {
+                            Some((_, v)) => v.push(i),
+                            None => sections.push((sec, vec![i])),
+                        }
+                    }
                     // Two explicit columns (NOT bare `horizontal_top`): a
                     // ScrollArea inherits its parent layout, so inside a
                     // horizontal row both panes flowed sideways and blew
@@ -1205,21 +1214,114 @@ impl Mod for SpeedoMod {
                         egui::ScrollArea::vertical()
                             .id_salt("speedo_list")
                             .show(ui, |ui| {
-                                for (owner, comp, active) in &names {
-                                    let dot = if *active { "●" } else { "○" };
-                                    // `Section/Leaf` — never the raw path:
-                                    // full paths would bleed into the params
-                                    // pane (see layout test).
-                                    let shown = display_name(owner);
-                                    if ui
-                                        .selectable_label(
-                                            self.selected.as_deref()
-                                                == Some(owner.as_str()),
-                                            format!("{dot} {shown}  [{comp}]"),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.selected = Some(owner.clone());
+                                for (sec, idxs) in &sections {
+                                    let sec_name =
+                                        if sec.is_empty() { "?" } else { sec };
+                                    let open = !self.collapsed.contains(sec);
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing =
+                                            egui::Vec2::new(4.0, 0.0);
+                                        if crate::ui::chrome::expander(ui, open)
+                                            .clicked()
+                                        {
+                                            if open {
+                                                self.collapsed.insert(sec.clone());
+                                            } else {
+                                                self.collapsed.remove(sec);
+                                            }
+                                        }
+                                        let header = format!(
+                                            "{} ({})",
+                                            sec_name,
+                                            idxs.len()
+                                        );
+                                        if ui
+                                            .selectable_label(
+                                                false,
+                                                egui::RichText::new(header)
+                                                    .color(BRIGHT),
+                                            )
+                                            .clicked()
+                                        {
+                                            // Header click toggles too:
+                                            // sections aren't selectable.
+                                            if open {
+                                                self.collapsed.insert(sec.clone());
+                                            } else {
+                                                self.collapsed.remove(sec);
+                                            }
+                                        }
+                                    });
+                                    if open {
+                                        ui.indent(
+                                            format!("speedo_sec_{sec}"),
+                                            |ui| {
+                                                for &i in idxs {
+                                                    let (owner, active) = &rows[i];
+                                                    let leaf = owner
+                                                        .split('/')
+                                                        .next_back()
+                                                        .unwrap_or(owner);
+                                                    // Truncated leaf: rows
+                                                    // never wrap, so a long
+                                                    // name must not widen
+                                                    // the pane (see layout
+                                                    // test); the full path
+                                                    // shows in the params.
+                                                    let short: String = leaf
+                                                        .chars()
+                                                        .take(24)
+                                                        .collect();
+                                                    let short = if short.len()
+                                                        < leaf.len()
+                                                    {
+                                                        format!("{short}…")
+                                                    } else {
+                                                        short
+                                                    };
+                                                    let text = if *active {
+                                                        egui::RichText::new(short)
+                                                            .color(BRIGHT)
+                                                    } else {
+                                                        egui::RichText::new(short)
+                                                            .color(DIM)
+                                                            .strikethrough()
+                                                    };
+                                                    ui.horizontal(|ui| {
+                                                        ui.spacing_mut()
+                                                            .item_spacing =
+                                                            egui::Vec2::new(
+                                                                4.0, 0.0,
+                                                            );
+                                                        if ui
+                                                            .selectable_label(
+                                                                self.selected
+                                                                    .as_deref()
+                                                                    == Some(
+                                                                        owner.as_str(),
+                                                                    ),
+                                                                text,
+                                                            )
+                                                            .clicked()
+                                                        {
+                                                            self.selected = Some(
+                                                                owner.clone(),
+                                                            );
+                                                        }
+                                                        if !active {
+                                                            ui.label(
+                                                                egui::RichText::new(
+                                                                    "OFF",
+                                                                )
+                                                                .small()
+                                                                .strong()
+                                                                .color(OFF_ORANGE),
+                                                            );
+                                                        }
+                                                    });
+                                                }
+                                            },
+                                        );
                                     }
                                 }
                             });
