@@ -349,7 +349,7 @@ fn advance_link(node: *const std::ffi::c_void) {
     // mutate exactly this pointer. Null-checked by callers.
     unsafe {
         // SAFETY: same node, layout documented on `find_link_info`.
-        let link = unsafe { link_of(node) };
+        let link = link_of(node);
         if link.is_null() {
             return;
         }

@@ -557,6 +557,21 @@ Diagnostic line (zero keypresses needed):
 
 ## Tick main-thread (échange de MethodInfo.methodPointer, PHASE 1)
 
+- PARKED 2026-10-15 (auto-install OFF, `AUTO_INSTALL = false`) :
+  `MethodInfo` offset 0 (`methodPointer`) est le pointeur NATIF
+  compilé, invoqué avec l'ABI native de la méthode (`(this, args…,
+  MethodInfo*)`) — vérifié sur deux sources indépendantes : le C++
+  généré par IL2CPP (`methodPointer` déréférencé comme `(...)(args…,
+  method)`, article Jackson Dunstan sur IL2CPP/Burst) et le guide ABI
+  du modding (`methodPtr` appelé comme `(Object*, MethodInfo*)`).
+  L'invoker est le champ SÉPARÉ `invoker_method` (offset 8, ABI
+  4 args `(methodPtr, method, obj, args)`). Notre hook 5-arg ne
+  correspond à AUCUN des deux : il ne survivait que par chance sur
+  les `Update()` void sans args (registres surnuméraires ignorés).
+  Le module reste compilé (sondes unit-testées) ; les compteurs
+  `calls=` passés restent valides (l'interception tirait, seule la
+  forme du hook était fausse). Retour possible : hooks natifs par
+  signature.
 - Fond : nos écritures Unity partent du thread `cxsfm-tick` (≠ main
   thread) — courses résiduelles (freezes, SIGSEGV). minhud tourne
   chaque frame via des hooks (main thread). `src/mainthread.rs`

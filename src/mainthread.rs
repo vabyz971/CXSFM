@@ -20,12 +20,16 @@
 //! build; that is information, not an error, and approach B (code hook
 //! with iced-x86 relocation) is out of scope for this task.
 //!
-//! # ABI note (deliberate deviation from the first sketch)
-//! `methodPointer` is the INVOKER (`InvokerMethod`), not the raw
-//! method: `ret = f(method_ptr, method_info, this, params, ret)`. The
-//! hook below implements exactly that 5-argument shape and relays the
-//! return value; a 2-argument `(this, mi)` hook would corrupt the
-//! register contract on x86-64 System V.
+//! # ABI note (corrected 2026-10-15 — hook shape under review)
+//! `methodPointer` (offset 0) is the COMPILED method, invoked by the
+//! engine with the method's NATIVE ABI (`(this, args…, MethodInfo*)` —
+//! verified on IL2CPP codegen output and the modding ABI guide). The
+//! invoker is the SEPARATE `invoker_method` field (offset 8, 4-arg
+//! ABI). The 5-argument shape below matches NEITHER contract: it only
+//! survives on void no-arg methods by register luck, so auto-install
+//! is parked (`AUTO_INSTALL`) until per-signature native-ABI hooks
+//! land. Call-count probes remain valid — they only need the
+//! interception to fire, not the ABI to be right.
 //!
 //! # Threading
 //! - Install runs on the tick thread (never present), throttled.
@@ -50,8 +54,7 @@ type InvokerFn = unsafe extern "C" fn(
 ) -> *mut c_void;
 
 /// Max hooked methods (one slot each, own original pointer).
-const MAX_SLOTS: usize = 6;
-/// Max repeated callbacks.
+const MAX_SLOTS: usize = 6;/// Max repeated callbacks.
 const MAX_EVERY: usize = 8;
 /// `post()` queue bound (oldest kept; push fails past it, never grows).
 const POST_CAP: usize = 256;
@@ -64,6 +67,18 @@ const ELECT_WINDOWS: u32 = 3;
 /// Install attempts: at most this many, ~3 s apart.
 const INSTALL_TRIES: u32 = 20;
 const INSTALL_EVERY_MS: u64 = 3000;
+/// Automatic install DISABLED (2026-10-15 review): `MethodInfo`
+/// offset 0 is the NATIVE method pointer (called with the method's
+/// own ABI), not a 5-arg invoker — verified against IL2CPP codegen
+/// output (methodPointer invoked as `(args…, method)`) and the
+/// modding ABI guide (`methodPtr` called as `(Object*, MethodInfo*)`).
+/// The separate field is `invoker_method` (offset 8, 4-arg ABI).
+/// Our 5-arg hook shape matches NEITHER: it survives only by accident
+/// on void no-arg `Update()`s (extra registers ignored, return
+/// ignored) and would corrupt data relayed to any other signature.
+/// Probes below stay compiled (unit-tested); nothing installs at
+/// runtime until a per-signature native-ABI hook lands.
+const AUTO_INSTALL: bool = false;
 /// Probe log cadence.
 const PROBE_EVERY_MS: u64 = 5000;
 /// Over-budget log throttle.
@@ -532,10 +547,12 @@ fn frame_count(api: &crate::il2cpp::Il2cppApi) -> Option<i32> {
 /// One monomorphization per slot so each keeps its own original.
 ///
 /// # Safety
-/// Called by the engine as an invoker (5-arg ABI — see module docs).
-/// `mi`/`this`/`params`/`ret` are engine-owned for this call only.
-/// Never panics: the dispatcher runs under `catch_unwind` and a panic
-/// disables callbacks while still relaying to the original.
+/// PARKED (see `AUTO_INSTALL`): the 5-arg shape below does NOT match
+/// the native method ABI at `methodPointer` — it is only ever entered
+/// while parked in tests/manual experiments, never by the engine in
+/// production. `mi`/`this`/`params`/`ret` are engine-owned for this
+/// call only. Never panics: the dispatcher runs under `catch_unwind`
+/// and a panic disables callbacks while still relaying to the original.
 unsafe extern "C" fn hook<const I: usize>(
     method_ptr: *mut c_void,
     mi: *const c_void,
@@ -839,6 +856,9 @@ fn probe_and_select() {
 
 /// Tick entry: discovery once, install retries (~3 s, ≤20), probes
 /// (~5 s). Cheap atomics when idle; never blocks.
+///
+/// NOTE: installation is currently parked (`AUTO_INSTALL = false`,
+/// see above) — this only resolves API/domain and reports probes.
 pub fn poll() {
     let api = match crate::il2cpp_api() {
         Some(a) => a,
@@ -849,6 +869,15 @@ pub fn poll() {
         Some(d) => d,
         None => return,
     };
+    static ANNOUNCED_PARKED: AtomicBool = AtomicBool::new(false);
+    if !AUTO_INSTALL {
+        if !ANNOUNCED_PARKED.swap(true, Ordering::SeqCst) {
+            crate::log_line(
+                "mainthread: auto-install parked (methodPointer ABI review) — probes only",
+            );
+        }
+        return;
+    }
     let now = now_ms();
     if !DISCOVERY_DONE.swap(true, Ordering::SeqCst) {
         // SAFETY: attached tick thread; metadata reads, capped.
