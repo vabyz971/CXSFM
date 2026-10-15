@@ -470,8 +470,14 @@ fn spawn_tick_thread() {
                         render::overlay_skipped()
                     ));
                 }
-                if tick % 6 == 0 {
-                    // F8 is the ONLY hotkey: UI visibility + input
+                // F8 poll runs EVERY tick (~60 Hz, not throttled): edge
+                // detectors sample levels, so a faster poll only
+                // shortens press-to-toggle latency (a tap shorter than
+                // the old ~100 ms window could fall through). All three
+                // sources are level reads (SDL state, X11 keymap,
+                // Unity stub) — no per-poll cost concern.
+                //
+                // F8 is the ONLY hotkey: UI visibility + input
                     // capture, aligned in one direction (shown/captured
                     // or hidden/released) across three independent input
                     // sources (SDL, Unity Input, X11 — first edge wins).
@@ -518,7 +524,6 @@ fn spawn_tick_thread() {
                     if hotkey::is_captured() != want_capture {
                         hotkey::set_captured(want_capture);
                     }
-                }
                 // Mod updates touch IL2CPP: skip them entirely during
                 // teardown (see above). The tick itself (heartbeat,
                 // SDL/X11 polls) keeps running. `domain_gone` covers the

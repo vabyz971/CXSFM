@@ -419,8 +419,14 @@ type XSetErrorHandlerFn = unsafe extern "C" fn(
 ///
 /// Xlib's default error handler prints and calls `exit(1)` — inside an
 /// injected game library that means instant death for a mismatched
-/// visual, a raced window id, anything. Installed on our own display
-/// connections; the game's own X usage is untouched.
+/// visual, a raced window id, anything.
+///
+/// HONEST SCOPE WARNING: `XSetErrorHandler` installs a PROCESS-GLOBAL
+/// handler (Xlib offers no per-`Display` scoping) — it also swallows
+/// the GAME's own X errors, not just ours. That is accepted: a
+/// silenced game X error beats an `exit(1)` blamed on us. Pass
+/// `CXSF_NO_XERROR_GUARD=1` to skip the install (game default handler
+/// back in force) if silent swallowing ever hides a real bug.
 unsafe extern "C" fn ignore_xerror(
     _disp: *mut std::ffi::c_void,
     _event: *mut std::ffi::c_void,
@@ -480,18 +486,9 @@ fn resolve_capture() -> Option<&'static CaptureFns> {
                     h = libc::RTLD_DEFAULT as *mut std::ffi::c_void;
                 }
                 // XInitThreads once: the tick and event threads both
-                // touch Xlib on their own displays.
-                {
-                    let n = CString::new("XInitThreads").ok()?;
-                    let p = libc::dlsym(h, n.as_ptr());
-                    if !p.is_null() {
-                        let f = std::mem::transmute::<
-                            *mut libc::c_void,
-                            XInitThreadsFn,
-                        >(p);
-                        f();
-                    }
-                }
+                // touch Xlib on their own displays. (XInitThreads is
+                // idempotent, but calling it twice reads as two
+                // independent inits — keep exactly one.)
                 {
                     let n = CString::new("XInitThreads").ok()?;
                     let p = libc::dlsym(h, n.as_ptr());
@@ -793,10 +790,18 @@ fn spawn_event_thread() {
             if disp.is_null() {
                 return;
             }
-            // SAFETY: our own connection; swallows protocol errors that
-            // would otherwise exit(1) the game process.
-            unsafe {
-                (fns.set_handler)(Some(ignore_xerror));
+            // Explicit guard: `CXSF_NO_XERROR_GUARD=1` skips the install
+            // (see `ignore_xerror` scope warning). Default stays
+            // installed — our grab/window races must never exit(1) the
+            // game. SAFETY: swallows protocol errors that would
+            // otherwise exit(1) the game process.
+            let guarded = std::env::var_os("CXSF_NO_XERROR_GUARD").is_none();
+            if guarded {
+                unsafe {
+                    (fns.set_handler)(Some(ignore_xerror));
+                }
+            } else {
+                crate::log_line("input: X error guard disabled by env (game default handler active)");
             }
             // SAFETY: valid display; 1x1 invisible InputOnly child of
             // root (class 2). Never shown, never receives anything
