@@ -751,11 +751,15 @@ pub fn draw_frame(
         let frame = st.frame;
         // Previous frame must be done (renderer buffers are reused
         // across frames with in_flight_frames = 1; replayed submits
-        // included — the fence tracks every submit).
+        // included — the fence tracks every submit). Bounded wait: an
+        // unbounded wait here can hang quit behind stuck queue work
+        // (same lesson as drop_swapchain/drop_device). The reset moves
+        // to just before queue_submit: any `?` between here and the
+        // submit must leave the fence SIGNALED, or the next frame's
+        // wait blocks forever on a fence that will never fire.
         st.device
-            .wait_for_fences(&[st.fence], true, u64::MAX)
+            .wait_for_fences(&[st.fence], true, 1_000_000_000)
             .map_err(|_| ())?;
-        st.device.reset_fences(&[st.fence]).map_err(|_| ())?;
         if let Some(u) = &fresh {
             // Free textures egui abandoned — EXCEPT ids (re-)set at
             // their free's emission frame or later (see field docs).
@@ -915,6 +919,9 @@ pub fn draw_frame(
             p_signal_semaphores: &st.signal,
             ..Default::default()
         };
+        st.device
+            .reset_fences(&[st.fence])
+            .map_err(|_| ())?;
         st.device
             .queue_submit(q, &[submit], st.fence)
             .map_err(|_| ())?;
