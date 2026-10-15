@@ -7,11 +7,12 @@
 //! future mods need (object names for `search_target`-style mods,
 //! ids for log correlation).
 //!
-//! Heavy walk runs on the tick thread at ~0.5 Hz (or on Refresh); the
-//! UI only reads the snapshot. Strictly read-only: an explicit
-//! activate/deactivate toggle was tried and parked — `SetActive`
-//! fires game lifecycle callbacks from a foreign thread and crashed
-//! the game (see log).
+//! Walks run ONLY on explicit Refresh (button / arming) — never
+//! periodically, so the open tree, selection and scroll offset survive
+//! while the user browses. UI only reads the snapshot. Strictly
+//! read-only: an explicit activate/deactivate toggle was tried and
+//! parked — `SetActive` fires game lifecycle callbacks from a foreign
+//! thread and crashed the game (see log).
 
 pub mod i18n;
 
@@ -21,10 +22,8 @@ use crate::mods::common::lock;
 use crate::unity::UnityCache;
 use std::collections::HashSet;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Refresh cadence on the tick thread (~0.5 Hz at 60 Hz).
-const REFRESH_EVERY_TICKS: u64 = 120;
 /// Hard caps: a scene walk must never read the world unbounded.
 /// Children load on demand (node open in the UI), so roots stay
 /// shallow and cheap — no more 3000-node truncated walks.
@@ -80,7 +79,6 @@ struct Snapshot {
 pub struct InspectorMod {
     enabled: AtomicBool,
     unity: Mutex<Option<UnityCache>>,
-    tick: AtomicU64,
     /// Set by the Refresh button (UI thread), consumed by the tick.
     refresh_wanted: AtomicBool,
     /// Index paths whose children the UI requested (node opened).
@@ -100,7 +98,6 @@ impl InspectorMod {
         Self {
             enabled: AtomicBool::new(false),
             unity: Mutex::new(None),
-            tick: AtomicU64::new(0),
             refresh_wanted: AtomicBool::new(false),
             want_children: Mutex::new(Vec::new()),
             snapshot: Mutex::new(None),
@@ -629,12 +626,12 @@ impl Mod for InspectorMod {
         if !self.is_enabled() {
             return;
         }
-        let tick = self.tick.fetch_add(1, Ordering::SeqCst);
-        // Manual refresh (button/enable) also runs the
-        // DontDestroyOnLoad walk; the periodic pass skips it.
-        let manual = self.refresh_wanted.swap(false, Ordering::SeqCst);
-        if manual || tick % REFRESH_EVERY_TICKS == 0 {
-            self.refresh(manual);
+        // Manual refresh ONLY (Refresh button / arming): the old
+        // periodic walk replaced the snapshot under the open tree every
+        // ~2 s, yanking scroll + selection back to the top. A snapshot
+        // now lives until the user asks for a new one.
+        if self.refresh_wanted.swap(false, Ordering::SeqCst) {
+            self.refresh(true);
         }
         // Drain on-demand child loads (UI-opened nodes, Unity here).
         let want = std::mem::take(&mut *lock(&self.want_children));
@@ -697,6 +694,7 @@ impl Mod for InspectorMod {
                             .size_range(180.0..=450.0)
                             .show(ui, |ui| {
                                 egui::ScrollArea::both()
+                                    .id_salt("inspector_tree_scroll")
                                     .auto_shrink([false, false])
                                     .show(ui, |ui| {
                                         let query = self.search.to_lowercase();
@@ -746,6 +744,7 @@ impl Mod for InspectorMod {
                             });
                         // Right: values of the selected element.
                         egui::ScrollArea::vertical()
+                            .id_salt("inspector_detail_scroll")
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
                                 let path = match self.selected.clone() {

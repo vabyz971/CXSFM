@@ -11,10 +11,12 @@
 //!
 //! Rules (proven in game, do not improvise):
 //! - Unity calls only (a) on arming, (b) on Refresh / Restore clicks,
-//!   (c) to drain an explicit write queue. NEVER per tick, NEVER an
-//!   enumeration: targets bind via `GameObject.Find` + `GetComponent`
-//!   (direct lookups, no scene walk — repeated enumeration from the
-//!   tick crashed another mod).
+//!   (c) to drain an explicit write queue. NEVER per tick. Discovery
+//!   is one explicit bounded walk of `UIHUDCarDashboard` (root `Find`
+//!   + `Transform` children — the ONLY way to see INACTIVE branches
+//!   like `Numbers`/`ElectroBooster`, which `GameObject.Find` never
+//!   returns). Repeated/periodic enumeration from the tick crashed
+//!   another mod — this walk runs on demand alone.
 //! - Every handle alive-checked (`m_CachedPtr`) before every invoke;
 //!   intermediates too (a scene churn between two calls segfaults).
 //! - Originals (scale, position, color, font size) recorded on first
@@ -82,42 +84,52 @@ impl CompKind {
     }
 }
 
-/// One wanted speedometer object: bound by direct `GameObject.Find`
-/// (bare name, then `Speedometer/`-prefixed path) + `GetComponent` of
-/// its flavour — no enumeration. The "name contains speed" fallback
-/// is gone: it required a scene walk, nothing else can do it.
-#[derive(Clone, Copy)]
+/// Dashboard root every speedometer object hangs under (verified via
+/// the in-game scene inspector): `UIHUDCarDashboard` → `Turbo` /
+/// `Speedometer` / `Nitro` / `Speed` / `Indicators`.
+const DASH_ROOT: &str = "UIHUDCarDashboard";
+/// Subtree walk caps (explicit Refresh only — never periodic).
+const WALK_MAX_DEPTH: usize = 8;
+const WALK_MAX_CHILDREN: usize = 64;
+const WALK_MAX_NODES: usize = 512;
+
+/// Section (second path segment under [`DASH_ROOT`]) → target group.
+/// `Indicators` rides with Gauge (same restyle path, reachable from
+/// the same checkboxes); a `Speed` leaf mentioning Gear goes to the
+/// gear readout instead. Pure and unit-tested.
+fn section_group(section: &str, leaf: &str) -> Option<u8> {
+    match section {
+        "Speedometer" | "Turbo" | "Indicators" => Some(GROUP_GAUGE),
+        "Nitro" => Some(GROUP_NITRO),
+        "Speed" => Some(if leaf.contains("Gear") {
+            GROUP_GEAR
+        } else {
+            GROUP_SPEED
+        }),
+        _ => None,
+    }
+}
+
+/// One wanted speedometer object: slash path under [`DASH_ROOT`]
+/// (e.g. `Speedometer/Background/ImgBg`) + component flavour.
+/// Collected by walking the live subtree — never guessed names, so
+/// exact spellings (`ImgBgGlow (1)`, `Text (TMP) Gear`…) come from
+/// the game itself.
 struct Want {
     group: u8,
-    owner: &'static str,
+    path: String,
     comp: CompKind,
 }
 
-/// The GameObjects composing the stock speedometer. Names confirmed
-/// against the shipped bundle (`uihud_assets_hudspeedometer`:
-/// `HUDCarDashboard` prefab, `SpeedometerAtlas`, `ImgPointer` needle,
-/// `speedometer_bg`, `nitro_bar_new`, TMP texts, Orbitron/Digital
-/// fonts, `UITach`/`AngleRpm`/`TurboValue` driver scripts — the game
-/// keeps owning values, we only restyle).
-const WANTS: &[Want] = &[
-    Want { group: GROUP_GAUGE, owner: "Background", comp: CompKind::Image },
-    Want { group: GROUP_GAUGE, owner: "speedometer_bg", comp: CompKind::Image },
-    Want { group: GROUP_GAUGE, owner: "Tachometer", comp: CompKind::Image },
-    Want { group: GROUP_GAUGE, owner: "Arrow", comp: CompKind::Image },
-    Want { group: GROUP_GAUGE, owner: "ImgPointer", comp: CompKind::Image },
-    Want { group: GROUP_SPEED, owner: "Text (TMP) Speed", comp: CompKind::Tmp },
-    Want { group: GROUP_GEAR, owner: "Text (TMP) Gear", comp: CompKind::Tmp },
-    Want { group: GROUP_NITRO, owner: "Nitro", comp: CompKind::Image },
-    Want { group: GROUP_NITRO, owner: "nitro_bar_new", comp: CompKind::Image },
-    Want { group: GROUP_NITRO, owner: "TextN2O", comp: CompKind::Tmp },
-];
-
-/// `GameObject.Find` candidates for an owner: bare name first (root
-/// object), then the known `Speedometer/` parent path (HUD children).
-/// `Find` only sees active objects; a missing target simply stays out
-/// of this discovery (status n/m, manual Refresh — never auto-retry).
-fn find_candidates(owner: &str) -> [String; 2] {
-    [owner.to_string(), format!("Speedometer/{owner}")]
+/// Short display name for a path: `Section/Leaf` (disambiguates the
+/// three `ImgBg`s) or the bare name when there is no section.
+fn display_name(path: &str) -> String {
+    let mut parts = path.split('/');
+    let leaf = parts.next_back().unwrap_or(path);
+    match parts.next_back() {
+        Some(section) => format!("{section}/{leaf}"),
+        None => leaf.to_string(),
+    }
 }
 
 /// Linear `[r, g, b, a]` (0..1, Unity `Color`) → egui color.
@@ -342,12 +354,118 @@ impl SpeedoMod {
         true
     }
 
+    /// Walk `UIHUDCarDashboard` once, collecting every `Image` /
+    /// `TextMeshProUGUI` component under a mapped section (tick thread
+    /// only). Returns `(candidates, total)` where total counts all
+    /// collected entries (pre-group-filter — the caller filters).
+    ///
+    /// # Safety
+    /// Attached framework thread; every handle alive-checked before any
+    /// further invoke, consumed immediately, nothing stored but data.
+    unsafe fn walk_dashboard(
+        api: &crate::il2cpp::Il2cppApi,
+        cache: &UnityCache,
+    ) -> (Vec<(Want, usize, usize)>, usize) {
+        // SAFETY: see above; a dead intermediate unbinds silently.
+        unsafe {
+            let mut cands: Vec<(Want, usize, usize)> = Vec::new();
+            let pairs = [
+                (cache.image_klass, CompKind::Image),
+                (cache.tmp_klass, CompKind::Tmp),
+            ];
+            if pairs.iter().all(|(k, _)| k.is_null()) {
+                return (cands, 0);
+            }
+            let root_go = match crate::unity::go_find(api, cache, DASH_ROOT) {
+                Some(g) => g,
+                None => {
+                    crate::log_line(
+                        "speedo: racine UIHUDCarDashboard introuvable (Refresh hors course ?)",
+                    );
+                    return (cands, 0);
+                }
+            };
+            if crate::unity::object_alive(api, cache, root_go) != Some(true) {
+                return (cands, 0);
+            }
+            let root_tr = match crate::unity::go_transform(api, cache, root_go) {
+                Some(t)
+                    if !t.is_null()
+                        && crate::unity::object_alive(api, cache, t) == Some(true) =>
+                {
+                    t
+                }
+                _ => return (cands, 0),
+            };
+            // Iterative DFS: (path-prefix, transform, depth).
+            let mut stack = vec![(String::new(), root_tr, 0usize)];
+            while let Some((prefix, tr, depth)) = stack.pop() {
+                if cands.len() >= WALK_MAX_NODES || depth >= WALK_MAX_DEPTH {
+                    continue;
+                }
+                let n = crate::unity::tr_child_count(api, cache, tr).min(WALK_MAX_CHILDREN);
+                for i in 0..n {
+                    let child = match crate::unity::tr_child(api, cache, tr, i as i32) {
+                        Some(c) => c,
+                        None => continue,
+                    };
+                    if crate::unity::object_alive(api, cache, child) != Some(true) {
+                        continue;
+                    }
+                    let go = match crate::unity::component_gameobject(api, cache, child) {
+                        Some(g) => g,
+                        None => continue,
+                    };
+                    if crate::unity::object_alive(api, cache, go) != Some(true) {
+                        continue;
+                    }
+                    let name = crate::unity::object_name(api, cache, go);
+                    let path = if prefix.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{prefix}/{name}")
+                    };
+                    let section = path.split('/').next().unwrap_or("");
+                    for (klass, kind) in pairs {
+                        if klass.is_null() {
+                            continue;
+                        }
+                        let comp =
+                            match crate::unity::go_get_component(api, cache, go, klass) {
+                                Some(c) => c,
+                                None => continue,
+                            };
+                        if comp.is_null()
+                            || crate::unity::object_alive(api, cache, comp) != Some(true)
+                        {
+                            continue;
+                        }
+                        if let Some(group) = section_group(section, &name) {
+                            cands.push((
+                                Want {
+                                    group,
+                                    path: path.clone(),
+                                    comp: kind,
+                                },
+                                comp as usize,
+                                go as usize,
+                            ));
+                        }
+                    }
+                    stack.push((path, child, depth + 1));
+                }
+            }
+            let total = cands.len();
+            (cands, total)
+        }
+    }
+
     /// One-shot discovery (tick thread, explicit trigger only):
-    /// each checked target binds via `GameObject.Find` + `GetComponent`
-    /// — direct lookups, zero enumeration — then one snapshot read per
-    /// match, first-seen originals recorded, snapshot published. No
-    /// periodic work — the game owns the values afterwards. A missing
-    /// target stays missing until the next manual Refresh (status n/m).
+    /// [`walk_dashboard`] binds every dashboard component, then one
+    /// snapshot read per match, first-seen originals recorded, snapshot
+    /// published. No periodic work — the game owns the values afterwards.
+    /// A missing target stays missing until the next manual Refresh
+    /// (status n/m).
     fn discover(&self) {
         let tick = self.tick.load(Ordering::SeqCst);
         if !self.ensure_unity(tick, true) {
@@ -362,56 +480,19 @@ impl SpeedoMod {
             Some(c) => c,
             None => return,
         };
-        // Checked wants only (gear binds solely when its group is on).
-        let wants: Vec<Want> = WANTS
-            .iter()
-            .copied()
-            .filter(|w| self.group_on(w.group))
-            .collect();
         let t0 = std::time::Instant::now();
-        // Bind: Find → alive → GetComponent → alive. One `Find` chain
-        // per candidate, no walk; a dead intermediate unbinds silently.
+        // Bind: resolve DASH_ROOT once, then walk its subtree.
+        // `Transform` children enumerate INACTIVE branches too
+        // (`Numbers`, `ElectroBooster`, `CoopBooster`… are OFF in-game)
+        // — something `GameObject.Find` can never see. Bounded walk
+        // (depth / children / nodes), explicit Refresh only. A dead
+        // intermediate unbinds silently.
         // SAFETY: attached tick thread; every handle alive-checked
         // before any further invoke, consumed immediately.
-        let found: Vec<(Want, usize, usize)> = unsafe {
-            let mut out = Vec::new();
-            for want in wants.iter().copied() {
-                let klass = match want.comp {
-                    CompKind::Image => cache.image_klass,
-                    CompKind::Tmp => cache.tmp_klass,
-                };
-                if klass.is_null() {
-                    continue;
-                }
-                for name in find_candidates(want.owner) {
-                    let go = match crate::unity::go_find(api, &cache, &name) {
-                        Some(g) => g,
-                        None => continue,
-                    };
-                    if go.is_null() {
-                        continue;
-                    }
-                    match crate::unity::object_alive(api, &cache, go) {
-                        Some(true) => {}
-                        _ => continue,
-                    }
-                    let comp = match crate::unity::go_get_component(api, &cache, go, klass) {
-                        Some(c) => c,
-                        None => continue,
-                    };
-                    if comp.is_null() {
-                        continue;
-                    }
-                    match crate::unity::object_alive(api, &cache, comp) {
-                        Some(true) => {}
-                        _ => continue,
-                    }
-                    out.push((want, comp as usize, go as usize));
-                    break;
-                }
-            }
-            out
-        };
+        let (mut found, total): (Vec<(Want, usize, usize)>, usize) =
+            unsafe { Self::walk_dashboard(api, &cache) };
+        // Checked groups only (gear binds solely when its group is on).
+        found.retain(|(w, _, _)| self.group_on(w.group));
         // Read one snapshot per match. Originals accumulate locally
         // and merge under a brief lock AFTER the Unity calls — no
         // Mutex is ever held across an invoke (a slow call would
@@ -493,7 +574,7 @@ impl SpeedoMod {
                 if !seen.iter().any(|&(t, c)| t == tr_addr && c == comp) {
                     seen.push((tr_addr, comp));
                     fresh_origs.push(OrigRec {
-                        owner: want.owner.to_string(),
+                        owner: want.path.clone(),
                         kind: want.comp,
                         tr: tr_addr,
                         comp,
@@ -507,7 +588,7 @@ impl SpeedoMod {
                     });
                 }
                 snaps.push(ObjSnap {
-                    owner: want.owner.to_string(),
+                    owner: want.path.clone(),
                     comp: want.comp,
                     active,
                     tr_addr,
@@ -527,7 +608,9 @@ impl SpeedoMod {
         // brief locks with zero Unity calls in between.
         lock(&self.origs).extend(fresh_origs);
         let n = snaps.len();
-        let total = wants.len();
+        // `total` = component entries found under mapped sections
+        // (pre-group-filter); `n` = actually bound. Kept from the
+        // bind phase above — no second Unity pass.
         *lock(&self.snaps) = snaps;
         self.snap_ver.fetch_add(1, Ordering::SeqCst);
         self.status_ok.store(n as u64, Ordering::SeqCst);
@@ -536,12 +619,16 @@ impl SpeedoMod {
         crate::log_line(&format!("speedo: objets {n}/{total} ({ms} ms)"));
     }
 
-    /// Fresh re-resolve of a named HUD target (tick thread only).
+    /// Fresh re-resolve of a dashboard target (tick thread only).
     ///
     /// Stored `usize` handles go stale on scene change (menu → city
-    /// rebuilds the HUD, GC frees old wrappers). Re-find by name and
-    /// return the *live* `(transform, component, canvas_group?)`.
-    /// `None` = target gone — caller skips, never touches stale memory.
+    /// rebuilds the HUD, GC frees old wrappers). `owner` is a slash
+    /// path under [`DASH_ROOT`] (`Speedometer/Background/ImgBg`):
+    /// root `GameObject.Find` once, then chained `Transform.Find` —
+    /// which sees INACTIVE branches too. Returns the *live*
+    /// `(transform, component, canvas_group?)`. `None` = target gone —
+    /// caller skips, never touches stale memory.
+    /// Legacy bare names (no `/`) still resolve via plain `Find`.
     unsafe fn resolve_live(
         api: &crate::il2cpp::Il2cppApi,
         cache: &UnityCache,
@@ -562,33 +649,52 @@ impl SpeedoMod {
             if klass.is_null() {
                 return None;
             }
-            for name in find_candidates(owner) {
-                let go = crate::unity::go_find(api, cache, &name)?;
-                if go.is_null() || crate::unity::object_alive(api, cache, go) != Some(true) {
-                    continue;
+            // Bind one GameObject: path-walk under the dashboard root,
+            // or a bare Find for legacy owners. Walk paths are relative
+            // to the root's children (`Speedometer/Background/ImgBg`),
+            // so every segment resolves from the root transform down.
+            let go = if owner.contains('/') {
+                let root = crate::unity::go_find(api, cache, DASH_ROOT)?;
+                let mut tr = crate::unity::go_transform(api, cache, root)?;
+                for seg in owner.split('/') {
+                    if tr.is_null()
+                        || crate::unity::object_alive(api, cache, tr) != Some(true)
+                    {
+                        return None;
+                    }
+                    tr = crate::unity::tr_find(api, cache, tr, seg)?;
                 }
-                let comp = crate::unity::go_get_component(api, cache, go, klass)?;
-                if comp.is_null() || crate::unity::object_alive(api, cache, comp) != Some(true) {
-                    continue;
+                if tr.is_null() || crate::unity::object_alive(api, cache, tr) != Some(true)
+                {
+                    return None;
                 }
-                let tr = crate::unity::go_transform(api, cache, go)?;
-                if tr.is_null() || crate::unity::object_alive(api, cache, tr) != Some(true) {
-                    continue;
-                }
-                let cg = match crate::unity::go_get_component(api, cache, go, cache.canvasgroup_klass) {
-                    Some(c) if !c.is_null() && crate::unity::object_alive(api, cache, c) == Some(true) => Some(c),
-                    _ => None,
-                };
-                return Some((tr, comp, cg));
+                crate::unity::component_gameobject(api, cache, tr)?
+            } else {
+                crate::unity::go_find(api, cache, owner)?
+            };
+            if go.is_null() || crate::unity::object_alive(api, cache, go) != Some(true) {
+                return None;
             }
-            None
+            let comp = crate::unity::go_get_component(api, cache, go, klass)?;
+            if comp.is_null() || crate::unity::object_alive(api, cache, comp) != Some(true) {
+                return None;
+            }
+            let tr = crate::unity::go_transform(api, cache, go)?;
+            if tr.is_null() || crate::unity::object_alive(api, cache, tr) != Some(true) {
+                return None;
+            }
+            let cg = match crate::unity::go_get_component(api, cache, go, cache.canvasgroup_klass) {
+                Some(c) if !c.is_null() && crate::unity::object_alive(api, cache, c) == Some(true) => Some(c),
+                _ => None,
+            };
+            Some((tr, comp, cg))
         }
     }
 
     /// Drain the staged Appliquer batch (tick thread): every staged
-    /// edit lands in ONE Unity pass, then a fresh discovery
-    /// re-projects the markers (same explicit trigger, still no
-    /// polling). Each address alive-checked right before its invoke;
+    /// edit lands in ONE Unity pass, then a fresh discovery refreshes
+    /// the snapshot (same explicit trigger, still no polling). Each
+    /// target re-resolves by dashboard path right before its invoke;
     /// two log lines per Apply at most.
     fn drain_batch(&self) {
         let reqs = lock(&self.pending_batch).take();
@@ -734,7 +840,7 @@ impl SpeedoMod {
         *lock(&self.snaps) = Vec::new();
         self.snap_ver.fetch_add(1, Ordering::SeqCst);
         self.status_ok.store(0, Ordering::SeqCst);
-        self.status_total.store(WANTS.len() as u64, Ordering::SeqCst);
+        self.status_total.store(0, Ordering::SeqCst);
     }
 
     /// Rebuild the render-side mirror when the snapshot version bumped
@@ -855,8 +961,14 @@ impl SpeedoMod {
             ui.monospace("GameObject");
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Nom").weak());
-                let short: String = obj.owner.chars().take(28).collect();
-                ui.monospace(short);
+                // Leaf name; full dashboard path below (paths are long,
+                // the row must stay narrow — see layout test).
+                let leaf = obj.owner.split('/').next_back().unwrap_or(&obj.owner);
+                ui.monospace(leaf);
+            });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Chemin").weak());
+                ui.monospace(display_name(&obj.owner));
             });
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Actif").weak());
@@ -1095,21 +1207,15 @@ impl Mod for SpeedoMod {
                             .show(ui, |ui| {
                                 for (owner, comp, active) in &names {
                                     let dot = if *active { "●" } else { "○" };
-                                    // Unwrapped labels never shrink: cap the
-                                    // name so long owners can't bleed into
-                                    // the params pane.
-                                    let short: String =
-                                        owner.chars().take(24).collect();
-                                    let short = if short.len() < owner.len() {
-                                        format!("{short}…")
-                                    } else {
-                                        short
-                                    };
+                                    // `Section/Leaf` — never the raw path:
+                                    // full paths would bleed into the params
+                                    // pane (see layout test).
+                                    let shown = display_name(owner);
                                     if ui
                                         .selectable_label(
                                             self.selected.as_deref()
                                                 == Some(owner.as_str()),
-                                            format!("{dot} {short}  [{comp}]"),
+                                            format!("{dot} {shown}  [{comp}]"),
                                         )
                                         .clicked()
                                     {
@@ -1175,7 +1281,10 @@ pub fn register() {
 
 #[cfg(test)]
 mod tests {
-    use super::{WANTS, color_to_f32, f32_to_color, group_enabled, mesh_max_x};
+    use super::{
+        GROUP_GAUGE, GROUP_GEAR, GROUP_NITRO, GROUP_SPEED, color_to_f32, display_name,
+        f32_to_color, group_enabled, mesh_max_x, section_group,
+    };
 
     #[test]
     fn group_flags() {
@@ -1188,22 +1297,42 @@ mod tests {
     }
 
     #[test]
-    fn table_covers_gauge_and_texts() {
-        let owners: Vec<&str> = WANTS.iter().map(|w| w.owner).collect();
-        for need in [
-            "Background",
-            "speedometer_bg",
-            "Tachometer",
-            "Arrow",
-            "ImgPointer",
-            "Text (TMP) Speed",
-            "Text (TMP) Gear",
-            "Nitro",
-            "nitro_bar_new",
-            "TextN2O",
-        ] {
-            assert!(owners.contains(&need), "missing {need}");
-        }
+    fn section_routing_covers_dashboard() {
+        // Sections seen in the live inspector under UIHUDCarDashboard.
+        assert_eq!(section_group("Speedometer", "ImgBg"), Some(GROUP_GAUGE));
+        assert_eq!(
+            section_group("Speedometer", "ImgRpmFill"),
+            Some(GROUP_GAUGE)
+        );
+        assert_eq!(section_group("Turbo", "ImgBgLight"), Some(GROUP_GAUGE));
+        assert_eq!(
+            section_group("Indicators", "speedometer_tc"),
+            Some(GROUP_GAUGE)
+        );
+        assert_eq!(section_group("Nitro", "ImgBar"), Some(GROUP_NITRO));
+        assert_eq!(
+            section_group("Nitro", "Text (TMP)"),
+            Some(GROUP_NITRO)
+        );
+        assert_eq!(
+            section_group("Speed", "Text (TMP) Speed"),
+            Some(GROUP_SPEED)
+        );
+        assert_eq!(
+            section_group("Speed", "Text (TMP) Gear"),
+            Some(GROUP_GEAR)
+        );
+        assert_eq!(section_group("Speed", "Odometer"), Some(GROUP_SPEED));
+        assert_eq!(section_group("SomethingElse", "X"), None);
+    }
+
+    #[test]
+    fn display_name_shortens_paths() {
+        assert_eq!(
+            display_name("Speedometer/Background/ImgBg"),
+            "Background/ImgBg"
+        );
+        assert_eq!(display_name("ImgPointer"), "ImgPointer");
     }
 
     #[test]
@@ -1287,11 +1416,14 @@ mod tests {
 
         let mut m = SpeedoMod::new();
         m.ui = vec![
-            obj("Background", CompKind::Image),
-            obj("Text (TMP) Speed", CompKind::Tmp),
-            obj("Text (TMP) Gear With A Very Long Name", CompKind::Tmp),
+            obj("Speedometer/Background/ImgBg", CompKind::Image),
+            obj("Speed/Text (TMP) Speed", CompKind::Tmp),
+            obj(
+                "Speed/Text (TMP) Gear With A Very Long Name",
+                CompKind::Tmp,
+            ),
         ];
-        m.selected = Some("Text (TMP) Speed".into());
+        m.selected = Some("Speed/Text (TMP) Speed".into());
         // Pin the window: placement itself is not under test.
         m.tool.pos = Some(egui::pos2(100.0, 100.0));
 
