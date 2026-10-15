@@ -868,7 +868,7 @@ unsafe extern "C" fn layer_present(
     }
     // Resolve device + family (family needed for the overlay pool).
     let resolved: Option<(usize, Option<u32>)> = {
-        let st = STATE.lock().unwrap();
+        let st = crate::mods::common::lock(&STATE);
         st.queues
             .get(&queue)
             .copied()
@@ -877,7 +877,7 @@ unsafe extern "C" fn layer_present(
     let (dev, family) = match resolved {
         Some(v) => v,
         None => {
-            let mut st = STATE.lock().unwrap();
+            let mut st = crate::mods::common::lock(&STATE);
             if !st.fallback_logged {
                 st.fallback_logged = true;
                 crate::log_line(
@@ -889,22 +889,34 @@ unsafe extern "C" fn layer_present(
     };
     // NOTE: the unknown-queue fallback log lives here (outside the
     // borrow above) to keep lock scopes tiny.
-    let real: Option<PresentFn> = {
-        let st = STATE.lock().unwrap();
-        if let Some(f) = PRESENTS.lock().unwrap().get(&dev) {
-            Some(*f)
-        } else if let Some(next) = st.devices.get(&dev).copied() {
-            // SAFETY: validated chain + static name.
-            let p = unsafe { next(dev, c"vkQueuePresentKHR".as_ptr()) };
-            if p.is_null() {
-                None
-            } else {
-                let f: PresentFn = unsafe { std::mem::transmute(p) };
-                PRESENTS.lock().unwrap().insert(dev, f);
-                Some(f)
+    // Bind-then-match (house rule, see field-notes frozen-tick
+    // incident): matching on `lock(&M).get(..)` keeps the guard alive
+    // through the else branch, so the re-lock below would self-
+    // deadlock the present thread on the first present per device
+    // (proven by isolated repro). Bound here, guard drops at the
+    // semicolon, re-lock after is safe.
+    let hit = crate::mods::common::lock(&PRESENTS).get(&dev).copied();
+    let real: Option<PresentFn> = match hit {
+        Some(f) => Some(f),
+        None => {
+            let next = crate::mods::common::lock(&STATE)
+                .devices
+                .get(&dev)
+                .copied();
+            match next {
+                Some(next) => {
+                    // SAFETY: validated chain + static name.
+                    let p = unsafe { next(dev, c"vkQueuePresentKHR".as_ptr()) };
+                    if p.is_null() {
+                        None
+                    } else {
+                        let f: PresentFn = unsafe { std::mem::transmute(p) };
+                        crate::mods::common::lock(&PRESENTS).insert(dev, f);
+                        Some(f)
+                    }
+                }
+                None => None,
             }
-        } else {
-            None
         }
     };
     let real = match real {
@@ -1007,7 +1019,10 @@ unsafe extern "C" fn layer_present(
     };
     // SAFETY: overlay draws (or fails cleanly); the real present always
     // runs exactly once below, original or re-targeted.
-    unsafe {
+    // A panic ANYWHERE in here (egui layout, mod UI code, driver
+    // calls) must never cross this `extern "C"` boundary — that is
+    // `abort`, i.e. a game crash. Caught → original present instead.
+    let drew = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
         match crate::render::overlay::draw_frame(
             dev,
             queue,
@@ -1061,6 +1076,22 @@ unsafe extern "C" fn layer_present(
                 real(queue, info)
             }
         }
+    }));
+    match drew {
+        Ok(r) => r,
+        Err(_) => {
+            // One-time: a panic above would otherwise abort the game
+            // through this `extern "C"` frame. Present untouched.
+            static PANIC_LOGGED: AtomicBool = AtomicBool::new(false);
+            if !PANIC_LOGGED.swap(true, Ordering::SeqCst) {
+                crate::log_line(
+                    "render/layer: overlay panicked (caught) — presenting untouched",
+                );
+            }
+            crate::render::note_overlay_skipped();
+            // SAFETY: original call, untouched.
+            unsafe { real(queue, info) }
+        }
     }
 }
 
@@ -1081,9 +1112,7 @@ unsafe extern "C" fn layer_get_instance_proc_addr(
         Some("vkCreateDevice") => layer_create_device as *const std::ffi::c_void,
         Some("vkDestroyInstance") => layer_destroy_instance as *const std::ffi::c_void,
         Some("vkDestroyDevice") => layer_destroy_device as *const std::ffi::c_void,
-        _ => STATE
-            .lock()
-            .unwrap()
+        _ => crate::mods::common::lock(&STATE)
             .next_instance_proc
             // SAFETY: passthrough with the caller's exact arguments.
             .map(|next| unsafe { next(instance, name) })
@@ -1103,9 +1132,7 @@ unsafe extern "C" fn layer_get_device_proc_addr(
         Some("vkGetDeviceQueue") => layer_get_device_queue as *const std::ffi::c_void,
         Some("vkGetDeviceQueue2") => layer_get_device_queue2 as *const std::ffi::c_void,
         Some("vkQueuePresentKHR") => layer_present as *const std::ffi::c_void,
-        _ => STATE
-            .lock()
-            .unwrap()
+        _ => crate::mods::common::lock(&STATE)
             .devices
             .get(&device)
             .copied()

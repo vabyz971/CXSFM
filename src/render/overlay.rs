@@ -584,7 +584,7 @@ pub fn draw_frame(
             // creation we never saw (missed CreateSwapchain routing).
             static UNKNOWN_SWAPS: LazyLock<Mutex<HashSet<usize>>> =
                 LazyLock::new(|| Mutex::new(HashSet::new()));
-            if UNKNOWN_SWAPS.lock().unwrap().insert(swap) {
+            if crate::mods::common::lock(&UNKNOWN_SWAPS).insert(swap) {
                 crate::log_line(&format!(
                     "render/overlay: unknown swapchain {swap:#x} (creation missed?) — forwarding untouched"
                 ));
@@ -592,13 +592,13 @@ pub fn draw_frame(
             return Err(());
         }
     };
-    if FAILED_SWAPS.lock().unwrap().contains(&swap) {
+    if crate::mods::common::lock(&FAILED_SWAPS).contains(&swap) {
         return Err(());
     }
     // Get-or-create state (creation logs once; failures park the swap).
     // The shared ash Instance is built once (function tables are
     // process-global; the live instance only serves the lookup).
-    let mut g = GLOBALS.lock().unwrap();
+    let mut g = crate::mods::common::lock(&GLOBALS);
     if g.ash_instance.is_none() {
         let (next_inst, live_inst) =
             match (crate::layer::instance_chain(), crate::layer::first_instance()) {
@@ -628,7 +628,7 @@ pub fn draw_frame(
                 crate::log_line(&format!(
                     "render/overlay: state creation failed for swapchain {swap:#x} (parking)"
                 ));
-                FAILED_SWAPS.lock().unwrap().insert(swap);
+                crate::mods::common::lock(&FAILED_SWAPS).insert(swap);
                 return Err(());
             }
         }
@@ -669,7 +669,7 @@ pub fn draw_frame(
         let pinned_beat = !menu_open
             && crate::mod_api::get_mod_manager().has_pinned_visible()
             && {
-                let mut last = LAST_PIN_RUN.lock().unwrap();
+                let mut last = crate::mods::common::lock(&LAST_PIN_RUN);
                 let due = last
                     .map(|t| t.elapsed() >= std::time::Duration::from_millis(100))
                     .unwrap_or(true);
