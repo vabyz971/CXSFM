@@ -275,9 +275,10 @@ fn read_name(ptr: *const libc::c_char) -> Option<String> {
     }
 }
 
-/// Read a chained loader-info node: `(function, pLayerInfo)` for the
-/// first LINK node matching `want_type` in the `pNext` chain (max 8 hops).
-/// Layouts (both instance and device variants):
+/// Read a chained loader-info node: the first LINK node matching
+/// `want_type` in the `pNext` chain (max 8 hops). Returns the CHAIN
+/// NODE (not its link) — callers read the link via [`link_of`] and pop
+/// via [`advance_link`]. Layouts (both instance and device variants):
 /// `{ sType u32, pNext ptr, function u32, pLayerInfo ptr }`.
 ///
 /// NOTE: the loader inserts SEVERAL nodes with the same `sType` but
@@ -303,7 +304,7 @@ fn find_link_info(
             if s_type == want_type {
                 let function = *(node.add(16) as *const u32);
                 if function == LAYER_LINK_INFO {
-                    return Some(*(node.add(24) as *const *const std::ffi::c_void));
+                    return Some(node as *const std::ffi::c_void);
                 }
                 // Same struct, different role (data callback, ...) —
                 // keep walking.
@@ -314,7 +315,18 @@ fn find_link_info(
     }
 }
 
-/// Advance a consumed link node: `pLayerInfo = pLayerInfo->pNext`.
+/// The loader link (`VkLayerInstanceLink` / `VkLayerDeviceLink`,
+/// `{ pNext, ... }`) behind a chain node: `pLayerInfo` at node+24.
+///
+/// # Safety
+/// `node` must come from [`find_link_info`] (or be an equivalent
+/// caller-owned node with the same layout).
+unsafe fn link_of(node: *const std::ffi::c_void) -> *const std::ffi::c_void {
+    // SAFETY: layout documented above; caller guarantees the node.
+    unsafe { *(node.add(24) as *const *const std::ffi::c_void) }
+}
+
+/// Advance a consumed link node: `node->pLayerInfo = link->pNext`.
 ///
 /// MANDATORY before forwarding `vkCreateInstance`/`vkCreateDevice` down
 /// the chain. The loader threads one link node per layer; each layer
@@ -323,14 +335,26 @@ fn find_link_info(
 /// leaves our already-consumed node in place → the terminator walks a
 /// stale chain and fails the whole call (`ERROR_INITIALIZATION_FAILED`
 /// with zero further explanation — seen live against vulkaninfo).
+///
+/// (A prior revision wrote `link->pNext` back onto the link itself —
+/// a textual no-op that popped nothing. It worked only because the
+/// terminator re-scanned from the head and re-used our intact link;
+/// with a second implicit layer in the chain that luck runs out.)
 /// Both link flavors start with `pNext` at +0, so one function serves.
-fn advance_link(layer_info: *const std::ffi::c_void) {
-    // SAFETY: loader-built link node; the loader REQUIRES layers to
+///
+/// # Safety
+/// `node` must come from [`find_link_info`]. Null-checked by callers.
+fn advance_link(node: *const std::ffi::c_void) {
+    // SAFETY: loader-built chain node; the loader REQUIRES layers to
     // mutate exactly this pointer. Null-checked by callers.
     unsafe {
-        let base = layer_info as *const u8 as *mut usize;
-        let next = *base;
-        *base = next;
+        // SAFETY: same node, layout documented on `find_link_info`.
+        let link = unsafe { link_of(node) };
+        if link.is_null() {
+            return;
+        }
+        let next = *(link as *const *const std::ffi::c_void);
+        *(node.add(24) as *mut *const std::ffi::c_void) = next;
     }
 }
 
@@ -395,7 +419,7 @@ unsafe extern "C" fn layer_create_instance(
         "render/layer: CreateInstance entry (create_sType={create_stype}, info={p_create_info:p})"
     ));
     let link = chain.and_then(|c| find_link_info(c, LOADER_INSTANCE_CREATE_INFO));
-    let Some(li) = link else {
+    let Some(node) = link else {
         // Diagnostic dump: what did the loader actually pass? Walk the
         // chain and log every (sType, function) so a layout mismatch
         // shows up as data instead of a bare failure.
@@ -422,9 +446,15 @@ unsafe extern "C" fn layer_create_instance(
         crate::log_line("render/layer: CreateInstance without link info, failing");
         return -3; // VK_ERROR_INITIALIZATION_FAILED
     };
+    // SAFETY: node from `find_link_info` (null-checked above).
+    let li = unsafe { link_of(node) };
+    if li.is_null() {
+        crate::log_line("render/layer: CreateInstance with null link, failing");
+        return -3;
+    }
     let (next_inst, _) = next_procs(li, false);
     // Pop our node BEFORE forwarding (see `advance_link`).
-    advance_link(li);
+    advance_link(node);
     let next = match next_inst {
         Some(f) => f,
         None => {
@@ -477,7 +507,7 @@ unsafe extern "C" fn layer_create_device(
         unsafe { Some(*(p_create_info.add(8) as *const *const std::ffi::c_void)) }
     };
     let link = chain.and_then(|c| find_link_info(c, LOADER_DEVICE_CREATE_INFO));
-    let Some(li) = link else {
+    let Some(node) = link else {
         crate::log_line("render/layer: CreateDevice without link info, failing");
         return -3;
     };
@@ -494,9 +524,15 @@ unsafe extern "C" fn layer_create_device(
     // pfnNextGetDeviceProcAddr. Storing the instance chain there turns
     // every device call into a NULL dispatch (crashed vulkaninfo on
     // the first device function).
+    // SAFETY: node from `find_link_info` (null-checked above).
+    let li = unsafe { link_of(node) };
+    if li.is_null() {
+        crate::log_line("render/layer: CreateDevice with null link, failing");
+        return -3;
+    }
     let (next_inst, next_dev) = next_procs(li, true);
     // Pop our node BEFORE forwarding (see `advance_link`).
-    advance_link(li);
+    advance_link(node);
     let next = match next_inst {
         Some(f) => f,
         None => {
@@ -1131,4 +1167,76 @@ pub extern "C" fn vkNegotiateLoaderLayerInterfaceVersion(
     }
     LAYER_ACTIVE.store(true, Ordering::SeqCst);
     VK_SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LAYER_LINK_INFO, LOADER_DEVICE_CREATE_INFO, advance_link, find_link_info, link_of};
+
+    /// One fake chain node: `{ sType u32, _pad, pNext, function u32,
+    /// _pad, pLayerInfo }` as four `usize` slots (matches the +0/+8/
+    /// +16/+24 reads on 64-bit).
+    struct FakeNode([usize; 4]);
+
+    impl FakeNode {
+        fn new(s_type: u32, next: *const std::ffi::c_void, function: u32, link: *const std::ffi::c_void) -> Self {
+            Self([
+                s_type as usize,
+                next as usize,
+                function as usize,
+                link as usize,
+            ])
+        }
+        fn as_ptr(&self) -> *const std::ffi::c_void {
+            self.0.as_ptr() as *const std::ffi::c_void
+        }
+        fn player_info(&self) -> *const std::ffi::c_void {
+            self.0[3] as *const std::ffi::c_void
+        }
+    }
+
+    #[test]
+    fn link_walk_skips_data_callback_and_advance_pops() {
+        // Fake link structs: `{ pNext, ... }` — only slot 0 matters.
+        let after_us: [usize; 2] = [0xBEEF, 0];
+        let our_link: [usize; 2] = [after_us.as_ptr() as usize, 0];
+        // Chain head: a DATA_CALLBACK node (same sType, other
+        // function), then our LINK node — mirrors the live loader
+        // ordering that the skip logic exists for.
+        let ours = FakeNode::new(
+            LOADER_DEVICE_CREATE_INFO,
+            std::ptr::null(),
+            LAYER_LINK_INFO,
+            our_link.as_ptr() as *const std::ffi::c_void,
+        );
+        let head = FakeNode::new(
+            LOADER_DEVICE_CREATE_INFO,
+            ours.as_ptr(),
+            1, // VK_LOADER_DATA_CALLBACK != LAYER_LINK_INFO
+            std::ptr::null(),
+        );
+        // SAFETY: fully owned fakes, correct layout, no loader involved.
+        unsafe {
+            let node = find_link_info(head.as_ptr(), LOADER_DEVICE_CREATE_INFO)
+                .expect("link node found past the data-callback node");
+            assert_eq!(node, ours.as_ptr());
+            let link = link_of(node);
+            assert_eq!(link, our_link.as_ptr() as *const std::ffi::c_void);
+            advance_link(node);
+            // The NODE now points past our link (what the terminator
+            // sees); the link itself is untouched.
+            assert_eq!(ours.player_info(), after_us.as_ptr() as *const std::ffi::c_void);
+            assert_eq!(our_link[0], after_us.as_ptr() as usize);
+        }
+    }
+
+    #[test]
+    fn link_walk_misses_without_link_node() {
+        let head = FakeNode::new(LOADER_DEVICE_CREATE_INFO, std::ptr::null(), 1, std::ptr::null());
+        // SAFETY: owned fake, see above.
+        unsafe {
+            assert!(find_link_info(head.as_ptr(), LOADER_DEVICE_CREATE_INFO).is_none());
+            assert!(find_link_info(std::ptr::null(), LOADER_DEVICE_CREATE_INFO).is_none());
+        }
+    }
 }
