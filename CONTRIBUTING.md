@@ -77,7 +77,9 @@ fn init() {
 
 - Use **modern Rust** features (lazy locks, pattern matching, enums)
 - Prefer `Option` and `Result` over `unwrap()`
-- Keep unsafe code isolated in `memory.rs` with clear documentation
+- Keep `unsafe` inside the FFI/bridge modules (`memory.rs`,
+  `il2cpp.rs`, `layer.rs`, `unity/`, `hotkey.rs`, `render/`) behind
+  safe APIs with documented `SAFETY` contracts — none in mods
 - Add comprehensive doc comments for public APIs
 - Follow the existing code style (snake_case, descriptive names)
 

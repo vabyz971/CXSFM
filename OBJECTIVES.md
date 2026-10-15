@@ -65,7 +65,10 @@ Future development beyond the MVP.
 
 ## Constraints
 
-- **100% Safe Rust** in mod implementations - unsafe only in memory.rs
+- **100% Safe Rust** in mod implementations - `unsafe` lives only in
+  the FFI/bridge modules (`memory.rs`, `il2cpp.rs`, `layer.rs`,
+  `unity/`, `hotkey.rs`, `render/`) behind safe APIs with documented
+  `SAFETY` contracts; mods themselves contain no `unsafe`
 - **No gameplay modification** - strictly cosmetic/UI/HUD/camera changes
 - **Minimal performance overhead** - async mod loading
 - **Cross-platform compatibility** - consistent behavior across Windows/Linux/macOS

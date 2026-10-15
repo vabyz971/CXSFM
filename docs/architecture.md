@@ -139,7 +139,9 @@ The `Mod` trait requires `Send + Sync` to allow concurrent access from multiple 
 
 ## Memory Safety
 
-- All unsafe code is encapsulated in `memory.rs`
+- `unsafe` is fenced in the FFI/bridge modules (`memory.rs`,
+  `il2cpp.rs`, `layer.rs`, `unity/`, `hotkey.rs`, `render/`) behind
+  safe APIs with documented `SAFETY` contracts — mods contain none
 - `read_value`/`write_value` return `Option<T>`/`bool` (no panics)
 - AOB scanner validates buffer bounds before pattern matching
 - Platform differences are abstracted behind common interfaces

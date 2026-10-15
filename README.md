@@ -15,7 +15,9 @@ CXSFM is a **framework for creating in-game mods** for CarX Street. It provides:
 - 📷 **Camera Manipulation** - Modify camera perspective (FPV, drone, etc.)
 - 🛡️ **Anti-Cheat Compliant** - Focuses on visual modifications only
 - 🔌 **Modular Architecture** - Easy-to-implement trait-based mod system
-- 🚀 **Cross-Platform** - Supports Windows (.dll), Linux (.so), macOS (.dylib)
+- 🚀 **Cross-Platform layout** - Builds as `.dll` / `.so` / `.dylib`;
+  only **Linux is proven in-game** (Windows/macOS paths below are
+  unvalidated scaffolds — see Injection Guide).
 
 ![CXSFM overlay in CarX Street: egui windows, software cursor, and the
 HUD version tag applied to the game's own nickname label](docs/overlay-proof.png)
@@ -92,7 +94,12 @@ After building, you'll find:
 
 ## Injection Guide
 
-### Windows (DLL Injection)
+> Proven path: **Linux implicit Vulkan layer**. The Windows/macOS
+> routes below are documented intent, **never validated in-game**
+> (Windows target std isn't even installed in this dev env; DXGI is a
+> scaffold, Metal is a stub).
+
+### Windows (DLL Injection — unvalidated)
 
 1. Use a DLL injector tool (e.g., Process Hacker, or manual `CreateRemoteThread`)
 2. Target: CarXStreet.exe
@@ -159,7 +166,7 @@ Check `CXSF_LOG` (default `/tmp/cxsfm.log`) for the init sequence.
    env LD_PRELOAD="/abs/path/libcxsfm.so" CXSF_LOG="$HOME/cxsfm.log" %command%
    ```
 
-### macOS (dynamic loading)
+### macOS (dynamic loading — unvalidated, Metal stub)
 
 1. Use `DYLD_INSERT_LIBRARIES`:
    ```bash
