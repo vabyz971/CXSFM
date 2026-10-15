@@ -71,16 +71,22 @@ impl ToolChrome {
     }
 
     /// Custom title bar (windows run `title_bar(false)`): title left,
-    /// pin + gear right, draggable from the row. Gear opens the
+    /// pin + settings right, draggable from the row. Settings opens the
     /// display row (background/content opacity, hide-bar toggle).
     /// Hidden mode keeps a slim restore strip so the window can
     /// always get its bar back — and the strip drags too.
+    ///
+    /// All glyphs are Material Symbols (font registered on every ctx
+    /// via `egui_material_icons::initialize`) — never text glyphs
+    /// like `⚙`/`▤`/`▸`, which render as tofu when the active font
+    /// lacks them (seen in-game).
     pub fn header(&mut self, ui: &mut egui::Ui, title: &str) {
+        use egui_material_icons::icons::{ICON_EXPAND_LESS, ICON_EXPAND_MORE, ICON_SETTINGS, ICON_TITLE};
         if self.no_titlebar {
             let r = ui
                 .horizontal(|ui| {
                     if ui
-                        .small_button("▤")
+                        .small_button(ICON_TITLE.rich_text())
                         .on_hover_text("afficher la barre de titre")
                         .clicked()
                     {
@@ -103,7 +109,7 @@ impl ToolChrome {
                     egui::Layout::right_to_left(egui::Align::Center),
                     |ui| {
                         if ui
-                            .small_button("⚙")
+                            .small_button(ICON_SETTINGS.rich_text())
                             .on_hover_text("affichage")
                             .clicked()
                         {
@@ -112,12 +118,12 @@ impl ToolChrome {
                         self.pin_toggle(ui);
                         // Show/hide the window's top control rows
                         // (buttons, search, groups) — compact overlay.
-                        let (glyph, tip) = if self.hide_controls {
-                            ("▸", "afficher les contrôles")
+                        let (icon, tip) = if self.hide_controls {
+                            (ICON_EXPAND_MORE, "afficher les contrôles")
                         } else {
-                            ("▾", "masquer les contrôles")
+                            (ICON_EXPAND_LESS, "masquer les contrôles")
                         };
-                        if ui.small_button(glyph).on_hover_text(tip).clicked() {
+                        if ui.small_button(icon.rich_text()).on_hover_text(tip).clicked() {
                             self.hide_controls = !self.hide_controls;
                         }
                     },

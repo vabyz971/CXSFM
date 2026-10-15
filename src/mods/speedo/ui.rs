@@ -517,6 +517,10 @@ mod tests {
     #[test]
     fn layout_fixed_window_sanity() {
         let ctx = egui::Context::default();
+        // Same contract as production ctx creation (overlay state +
+        // headless check): tool windows use Material Symbols, and an
+        // unbound font family panics at tessellation.
+        egui_material_icons::initialize(&ctx);
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -588,6 +592,8 @@ mod tests {
         m.tool.pos = Some(egui::pos2(100.0, 100.0));
 
         let ctx = egui::Context::default();
+        // See layout_fixed_window_sanity: material font must be bound.
+        egui_material_icons::initialize(&ctx);
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
