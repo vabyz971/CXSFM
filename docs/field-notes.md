@@ -212,6 +212,25 @@ Diagnostic line (zero keypresses needed):
   `nitro_bar_new`, TMP texts, Orbitron/Digital fonts, driver scripts
   `UITach`/`AngleRpm`/`TurboValue` (game keeps owning values).
 - MINIHUD 2026-10-09 (`/home/vabyz971/MODS/wyr`, wyr's C mod + cfg):
+- WYR-MENU v0.2 strings (binary read 2026-10-15, `strings minhud.so` —
+  static evidence, not runtime-proven): search roots `Speedometer`,
+  `Odometer`, `Tachometer`, `Nitro`, `Turbo`, `TractionControl`,
+  `Light`, `Background`, `Arrow`, `UIHUDMinimap`; path-form targets
+  (`Map/Mask/Base/RoadImage`, `.../NetworkCarsRoot`,
+  `.../DuelCarsRoot`, `.../IconsRoot`); hide via `SetActive`
+  (confirms our OP_ACTIVE choice — same lifecycle-callback risk);
+  `m_CachedPtr` aliveness probe logged when missing (same doctrine
+  as our `object_alive`); opacity through `CanvasGroup`
+  ("opacity: CanvasGroup missing" when absent — they AddComponent,
+  we use-existing-only); `scale: '%s/%s'` = parent/child path writes
+  (confirms path-shaped ops); hotkey via `Input.GetKey` with a
+  missing-API degrade path like ours. Camera names for the parked
+  FPV future: `RaceFirstRearCamera`, `RaceSecondRearCamera`,
+  `RaceTestRearCamera`, `RaceDriverCockpitCamera`, `StaticRaceCamera`,
+  `RearRaceCamera`, `StaticRaceBumperCamera`, `CockpitRaceCamera`
+  (+ `Cinemachine`, `RaceCameraRecomposerExtension`).
+  Adopted from this: speedo fallback roots when `UIHUDCarDashboard`
+  is unmounted (same names), two-candidate path resolve.
   element names confirmed (`Tacho`, `Tachometer`, `Nitro`, `TextN2O`,
   `Odometer`, `Text (TMP) Speed/Gear`, `Speedometer`) + per-element
   opacity keys (`gear/speed/kmh/map_*_opacity`) and `gear_scale`.

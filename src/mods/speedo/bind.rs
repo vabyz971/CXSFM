@@ -21,6 +21,17 @@ const RESOLVE_EVERY_TICKS: u64 = 300;
 /// the in-game scene inspector): `UIHUDCarDashboard` → `Turbo` /
 /// `Speedometer` / `Nitro` / `Speed` / `Indicators`.
 const DASH_ROOT: &str = "UIHUDCarDashboard";
+/// Fallback roots when the dashboard itself is missing (other scenes
+/// may mount sections directly). Same names wyr's minhud searches —
+/// confirmed present in its binary strings alongside ours.
+const FALLBACK_ROOTS: &[&str] = &[
+    "Speedometer",
+    "Tachometer",
+    "Odometer",
+    "Nitro",
+    "Turbo",
+    "Speed",
+];
 /// Subtree walk caps (explicit Refresh only — never periodic).
 const WALK_MAX_DEPTH: usize = 8;
 const WALK_MAX_CHILDREN: usize = 64;
@@ -70,9 +81,43 @@ impl SpeedoMod {
         true
     }
 
-    /// Walk `UIHUDCarDashboard` once, collecting EVERY descendant node —
+    /// First graphic component on a GameObject (HUD leaves carry
+    /// one); containers get `(None, 0)`.
+    ///
+    /// # Safety
+    /// Attached tick thread; alive-checked before use, consumed
+    /// immediately — same contract as [`walk_dashboard`].
+    unsafe fn probe_components(
+        api: &crate::il2cpp::Il2cppApi,
+        cache: &UnityCache,
+        go: *mut std::ffi::c_void,
+        pairs: &[(*mut std::ffi::c_void, CompKind); 2],
+    ) -> (Option<CompKind>, usize) {
+        // SAFETY: see above; a dead component unbinds silently.
+        unsafe {
+            for (klass, kind) in pairs {
+                if klass.is_null() {
+                    continue;
+                }
+                let comp = match crate::unity::go_get_component(api, cache, go, *klass) {
+                    Some(c) => c,
+                    None => continue,
+                };
+                if comp.is_null() || crate::unity::object_alive(api, cache, comp) != Some(true)
+                {
+                    continue;
+                }
+                return (Some(*kind), comp as usize);
+            }
+            (None, 0)
+        }
+    }
+
+    /// Walk the dashboard once, collecting EVERY descendant node —
     /// containers (`Turbo`, `Speedometer/Background`…) as well as graphic
     /// leaves. Containers get `comp: None` (transform + active only).
+    /// Roots tried in order: [`DASH_ROOT`], then [`FALLBACK_ROOTS`]
+    /// (authoritative first — no double walk when the dashboard mounts).
     /// Returns `(candidates, total)`.
     ///
     /// # Safety
@@ -92,29 +137,66 @@ impl SpeedoMod {
             if pairs.iter().all(|(k, _)| k.is_null()) {
                 return (cands, 0);
             }
-            let root_go = match crate::unity::go_find(api, cache, DASH_ROOT) {
-                Some(g) => g,
-                None => {
-                    crate::log_line(
-                        "speedo: racine UIHUDCarDashboard introuvable (Refresh hors course ?)",
-                    );
-                    return (cands, 0);
+            // Bind one root object by name (dashboard, else fallbacks).
+            // Returns its transform, or logs once and gives up.
+            let mut roots: Vec<(String, *mut std::ffi::c_void)> = Vec::new();
+            // Local helper body inlined per candidate (no closures over
+            // the unsafe walk — keeps the SAFETY story auditable).
+            for name in std::iter::once(DASH_ROOT).chain(FALLBACK_ROOTS.iter().copied()) {
+                let go = match crate::unity::go_find(api, cache, name) {
+                    Some(g) => g,
+                    None => continue,
+                };
+                if go.is_null() || crate::unity::object_alive(api, cache, go) != Some(true) {
+                    continue;
                 }
-            };
-            if crate::unity::object_alive(api, cache, root_go) != Some(true) {
+                let tr = match crate::unity::go_transform(api, cache, go) {
+                    Some(t)
+                        if !t.is_null()
+                            && crate::unity::object_alive(api, cache, t) == Some(true) =>
+                    {
+                        t
+                    }
+                    _ => continue,
+                };
+                // The root node itself is an entry (ultimate parent,
+                // selectable like any container).
+                let (kind, addr) = Self::probe_components(api, cache, go, &pairs);
+                cands.push((
+                    Want {
+                        path: name.to_string(),
+                        comp: kind,
+                    },
+                    addr,
+                    go as usize,
+                ));
+                roots.push((name.to_string(), tr));
+                if name == DASH_ROOT {
+                    // Authoritative — sections below cover the rest.
+                    break;
+                }
+            }
+            if roots.is_empty() {
+                crate::log_line(
+                    "speedo: ni UIHUDCarDashboard ni sections trouvées (Refresh hors course ?)",
+                );
                 return (cands, 0);
             }
-            let root_tr = match crate::unity::go_transform(api, cache, root_go) {
-                Some(t)
-                    if !t.is_null()
-                        && crate::unity::object_alive(api, cache, t) == Some(true) =>
-                {
-                    t
-                }
-                _ => return (cands, 0),
-            };
-            // Iterative DFS: (path-prefix, transform, depth).
-            let mut stack = vec![(String::new(), root_tr, 0usize)];
+            if roots.len() > 1 || roots[0].0 != DASH_ROOT {
+                let names: Vec<&str> = roots.iter().map(|(n, _)| n.as_str()).collect();
+                crate::log_line(&format!("speedo: racines fallback [{}]", names.join(", ")));
+            }
+            // Iterative DFS per root: (path-prefix, transform, depth).
+            // Dashboard children stay relative (`Speedometer/...`);
+            // fallback roots carry their own name (same shape, so one
+            // resolver serves both).
+            for (root_name, root_tr) in roots {
+                let prefix = if root_name == DASH_ROOT {
+                    String::new()
+                } else {
+                    root_name.clone()
+                };
+                let mut stack = vec![(prefix, root_tr, 0usize)];
             while let Some((prefix, tr, depth)) = stack.pop() {
                 if cands.len() >= WALK_MAX_NODES || depth >= WALK_MAX_DEPTH {
                     continue;
@@ -141,30 +223,10 @@ impl SpeedoMod {
                     } else {
                         format!("{prefix}/{name}")
                     };
-                    let section = path.split('/').next().unwrap_or("");
-                    let _ = section;
                     // First graphic component wins (HUD leaves carry one);
                     // containers keep `comp: None`.
-                    let mut comp_kind: Option<CompKind> = None;
-                    let mut comp_addr = 0usize;
-                    for (klass, kind) in pairs {
-                        if klass.is_null() {
-                            continue;
-                        }
-                        let comp =
-                            match crate::unity::go_get_component(api, cache, go, klass) {
-                                Some(c) => c,
-                                None => continue,
-                            };
-                        if comp.is_null()
-                            || crate::unity::object_alive(api, cache, comp) != Some(true)
-                        {
-                            continue;
-                        }
-                        comp_kind = Some(kind);
-                        comp_addr = comp as usize;
-                        break;
-                    }
+                    let (comp_kind, comp_addr) =
+                        Self::probe_components(api, cache, go, &pairs);
                     cands.push((
                         Want {
                             path: path.clone(),
@@ -175,6 +237,7 @@ impl SpeedoMod {
                     ));
                     stack.push((path, child, depth + 1));
                 }
+            }
             }
             let total = cands.len();
             (cands, total)
@@ -356,12 +419,15 @@ impl SpeedoMod {
     ///
     /// Stored `usize` handles go stale on scene change (menu → city
     /// rebuilds the HUD, GC frees old wrappers). `owner` is a slash
-    /// path under [`DASH_ROOT`] (`Speedometer/Background/ImgBg`):
-    /// root `GameObject.Find` once, then chained `Transform.Find` —
-    /// which sees INACTIVE branches too. Returns the *live*
-    /// `(gameobject, transform, component?, canvas_group?)`.
-    /// `None` = target gone — caller skips, never touches stale memory.
-    /// Legacy bare names (no `/`) still resolve via plain `Find`.
+    /// path (`Speedometer/Background/ImgBg`): tried under [`DASH_ROOT`]
+    /// first, then with its first segment as root (fallback scenes
+    /// mount sections directly — same shape the walk produces, so one
+    /// format serves both). Each leg is root `GameObject.Find` +
+    /// chained `Transform.Find`, which sees INACTIVE branches too.
+    /// Returns the *live* `(gameobject, transform, component?,
+    /// canvas_group?)`. `None` = target gone — caller skips, never
+    /// touches stale memory. Legacy bare names (no `/`) still resolve
+    /// via plain `Find`; `UIHUDCarDashboard` itself resolves directly.
     unsafe fn resolve_live(
         api: &crate::il2cpp::Il2cppApi,
         cache: &UnityCache,
@@ -376,29 +442,72 @@ impl SpeedoMod {
         // SAFETY: attached tick thread; every handle alive-checked
         // before return, consumed immediately by the caller.
         unsafe {
-            // Bind one GameObject: path-walk under the dashboard root,
-            // or a bare Find for legacy owners. Walk paths are relative
-            // to the root's children (`Speedometer/Background/ImgBg`),
-            // so every segment resolves from the root transform down.
-            let go = if owner.contains('/') {
-                let root = crate::unity::go_find(api, cache, DASH_ROOT)?;
-                let mut tr = crate::unity::go_transform(api, cache, root)?;
-                for seg in owner.split('/') {
-                    if tr.is_null()
+            // Bind one GameObject: (root, rest-segments) candidates in
+            // order — dashboard first, then first-segment-as-root for
+            // fallback scenes. Walk paths are relative to the root's
+            // children (`Speedometer/Background/ImgBg`), so every
+            // segment resolves from the root transform down.
+            let stripped = owner
+                .strip_prefix(DASH_ROOT)
+                .and_then(|s| s.strip_prefix('/'))
+                .unwrap_or(owner);
+            let mut go: *mut std::ffi::c_void = std::ptr::null_mut();
+            if !stripped.contains('/') {
+                // Dashboard root itself or a legacy bare name.
+                go = crate::unity::go_find(api, cache, stripped)?;
+            } else {
+                let segs: Vec<&str> = stripped.split('/').collect();
+                // (root name, segments below it)
+                let mut cands: Vec<(&str, &[&str])> = vec![(DASH_ROOT, &segs)];
+                if segs.len() > 1 {
+                    cands.push((segs[0], &segs[1..]));
+                }
+                for (root_name, rest) in cands {
+                    let r = match crate::unity::go_find(api, cache, root_name) {
+                        Some(g) => g,
+                        None => continue,
+                    };
+                    if r.is_null() || crate::unity::object_alive(api, cache, r) != Some(true) {
+                        continue;
+                    }
+                    let mut tr = match crate::unity::go_transform(api, cache, r) {
+                        Some(t) => t,
+                        None => continue,
+                    };
+                    let mut ok = true;
+                    for seg in rest {
+                        if tr.is_null()
+                            || crate::unity::object_alive(api, cache, tr) != Some(true)
+                        {
+                            ok = false;
+                            break;
+                        }
+                        tr = match crate::unity::tr_find(api, cache, tr, seg) {
+                            Some(t) => t,
+                            None => {
+                                ok = false;
+                                break;
+                            }
+                        };
+                    }
+                    if !ok
+                        || tr.is_null()
                         || crate::unity::object_alive(api, cache, tr) != Some(true)
                     {
-                        return None;
+                        continue;
                     }
-                    tr = crate::unity::tr_find(api, cache, tr, seg)?;
+                    match crate::unity::component_gameobject(api, cache, tr) {
+                        Some(g)
+                            if !g.is_null()
+                                && crate::unity::object_alive(api, cache, g) == Some(true) =>
+                        {
+                            go = g;
+                            break;
+                        }
+                        _ => continue,
+                    }
                 }
-                if tr.is_null() || crate::unity::object_alive(api, cache, tr) != Some(true)
-                {
-                    return None;
-                }
-                crate::unity::component_gameobject(api, cache, tr)?
-            } else {
-                crate::unity::go_find(api, cache, owner)?
-            };
+            }
             if go.is_null() || crate::unity::object_alive(api, cache, go) != Some(true) {
                 return None;
             }
