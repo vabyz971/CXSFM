@@ -1,5 +1,12 @@
 //! Linux backend: intercept `vkQueuePresentKHR`.
 //!
+//! LEGACY FALLBACK (option A, confirmed): the implicit layer
+//! (`layer.rs`) is the retained path. This module only runs when the
+//! layer did NOT negotiate — i.e. ptrace/watchdog injection into an
+//! already-running game, where instances predate us and no loader
+//! handshake will ever happen. Do not extend without need; do not
+//! delete without replacing the watchdog flow (see render.rs docs).
+//!
 //! # Method: GOT patching (no disassembler needed)
 //!
 //! Unity links the Vulkan loader dynamically, so its present calls go
