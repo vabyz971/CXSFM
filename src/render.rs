@@ -8,9 +8,17 @@
 //!
 //! | Platform | Game API (CarX Street) | Hook point (this layer)        |
 //! |----------|------------------------|--------------------------------|
-//! | Linux    | Vulkan                 | `vkQueuePresentKHR` (GOT patch) |
+//! | Linux    | Vulkan                 | implicit layer (`layer.rs`) —  |
+//! |          |                        | retained path                  |
 //! | Windows  | DirectX 11 **and** 12  | `IDXGISwapChain::Present`      |
 //! | macOS    | Metal                  | (stub — not implemented)       |
+//!
+//! Linux fallback: `render/vk.rs` (GOT/inline patching) is LEGACY —
+//! used only when the layer did NOT negotiate (e.g. ptrace injection
+//! into an already-running game, where instances predate us). See the
+//! point-8 proposal (feature flag vs. status quo) before touching it:
+//! the watchdog flow has no layer alternative, so deletion needs an
+//! explicit decision.
 //!
 //! Note for Windows: DX11 and DX12 both present through DXGI, so **one**
 //! `Present` hook covers both renderers. There is deliberately no
@@ -20,10 +28,10 @@
 //!
 //! This layer proves *interception*: hooks reroute the present call,
 //! bump [`frame_count`], and forward to the original — the game renders
-//! exactly as before. Actually *drawing* egui into the frame (command
-//! buffers / swapchain image management) is Phase 1b and plugs into
-//! [`on_frame`]; until then the headless UI check in `lib.rs` keeps the
-//! draw code validated.
+//! exactly as before. egui is drawn into the frame by
+//! `render/overlay.rs` (Linux layer path, `loadOp=LOAD` + per-image
+//! replay); the headless UI check in `lib.rs` keeps the draw code
+//! validated without a renderer.
 //!
 //! # Safety model
 //!
