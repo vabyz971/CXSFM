@@ -8,9 +8,11 @@
 //! record UI commands (via `egui-ash-renderer`) into our own command
 //! buffer wrapped in a `loadOp = LOAD` render pass (the game image is
 //! preserved underneath), submit waiting on the present's own
-//! semaphores, and hand a fresh semaphore back so the real present
-//! waits on US instead. Binary semaphores allow a single wait each,
-//! so the game's wait list is REPLACED, never duplicated.
+//! semaphores, and hand back that image's OWN semaphore so the real
+//! present waits on US instead. Binary semaphores allow a single wait
+//! each, so the game's wait list is REPLACED, never duplicated (one
+//! semaphore per image — a shared one could be recycled while a prior
+//! present still holds it).
 //!
 //! # Failure contract (the game never breaks for the UI)
 //!
@@ -63,7 +65,11 @@ struct SwapchainState {
     /// always submits `cmd[image_index]`.
     cmd: Vec<vk::CommandBuffer>,
     fence: vk::Fence,
-    signal: vk::Semaphore,
+    /// One signal semaphore PER swapchain image (parallel to `cmd`):
+    /// a binary semaphore is consumed by exactly one wait, and the
+    /// present for image N may still be holding its signal when image
+    /// M submits — sharing one would recycle a live semaphore.
+    signals: Vec<vk::Semaphore>,
     extent: vk::Extent2D,
     images: Vec<usize>,
     ctx: egui::Context,
@@ -137,9 +143,11 @@ pub fn drop_swapchain(swap: usize) {
             for fb in &st.framebuffers {
                 st.device.destroy_framebuffer(*fb, None);
             }
+            for s in &st.signals {
+                st.device.destroy_semaphore(*s, None);
+            }
             st.device.destroy_command_pool(st.pool, None);
             st.device.destroy_fence(st.fence, None);
-            st.device.destroy_semaphore(st.signal, None);
             st.device.destroy_render_pass(st.render_pass, None);
             drop(st.renderer);
             drop(st.device);
@@ -174,9 +182,11 @@ pub fn drop_device(dev: usize) {
                 for fb in &st.framebuffers {
                     let _ = st.device.destroy_framebuffer(*fb, None);
                 }
+                for s in &st.signals {
+                    let _ = st.device.destroy_semaphore(*s, None);
+                }
                 let _ = st.device.destroy_command_pool(st.pool, None);
                 let _ = st.device.destroy_fence(st.fence, None);
-                let _ = st.device.destroy_semaphore(st.signal, None);
                 let _ = st.device.destroy_render_pass(st.render_pass, None);
                 drop(st.renderer);
                 drop(st.device);
@@ -431,7 +441,20 @@ fn create_state(
             flags: vk::SemaphoreCreateFlags::empty(),
             ..Default::default()
         };
-        let signal = device.create_semaphore(&sem_info, None).map_err(|_| ())?;
+        let mut signals = Vec::with_capacity(info.images.len());
+        for _ in &info.images {
+            match device.create_semaphore(&sem_info, None) {
+                Ok(s) => signals.push(s),
+                Err(_) => {
+                    // Best-effort cleanup (see teardown rule below),
+                    // then degrade to no overlay.
+                    for s in signals {
+                        device.destroy_semaphore(s, None);
+                    }
+                    return Err(());
+                }
+            }
+        }
         let options = egui_ash_renderer::Options {            in_flight_frames: IN_FLIGHT_FRAMES,
             srgb_framebuffer: is_srgb(info.format),
             ..Default::default()
@@ -458,7 +481,7 @@ fn create_state(
             pool,
             cmd,
             fence,
-            signal,
+            signals,
             extent,
             images: info.images.clone(),
             ctx: egui_ctx,
@@ -799,6 +822,7 @@ pub fn draw_frame(
         let img_raw = *st.images.get(idx).ok_or(())?;
         let img = vk::Image::from_raw(img_raw as u64);
         let cmd = *st.cmd.get(idx).ok_or(())?;
+        let signal = *st.signals.get(idx).ok_or(())?;
         if let Some(u) = fresh.as_ref() {
         // 4. Record: barrier into COLOR_ATTACHMENT, render pass with
         // loadOp=LOAD (game image preserved), UI draws, barrier back
@@ -916,7 +940,7 @@ pub fn draw_frame(
             command_buffer_count: 1,
             p_command_buffers: &cmd,
             signal_semaphore_count: 1,
-            p_signal_semaphores: &st.signal,
+            p_signal_semaphores: &signal,
             ..Default::default()
         };
         st.device
@@ -929,6 +953,6 @@ pub fn draw_frame(
             st.recorded[idx] = true;
             st.pending_frees = u.textures.free.iter().copied().map(|id| (id, frame)).collect();
         }
-        Ok(st.signal.as_raw() as usize)
+        Ok(signal.as_raw() as usize)
     }
 }
