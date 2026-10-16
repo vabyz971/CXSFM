@@ -59,7 +59,9 @@ nix develop --command bash -c 'cargo test --lib'
   2.36) — vérifier après chaque bump toolchain :
   `objdump -T target/release/libcxsfm.so | grep -oP "GLIBC_[0-9.]+"`.
 - **Jamais** de modification gameplay/économie/physique/réseau.
-- Mods **désarmés au boot**, restore à la désactivation.
+- Mods **désarmés au boot**, restore à la désactivation — sauf
+  speedo/map : leurs modifs restent à la désactivation (demande
+  utilisateur), retour aux originaux via le bouton Restaurer.
 - Un changement = un commit, message clair, un seul sujet.
 - Pas de nouvelle dépendance sans accord (pure Rust uniquement).
 - `cargo test` ne prouve rien en jeu : indiquer ce qui reste à valider.

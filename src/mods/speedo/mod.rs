@@ -28,7 +28,8 @@
 //!   intermediates too (a scene churn between two calls segfaults).
 //! - Originals recorded on first discovery per owner PATH (session
 //!   backup, never overwritten — address keys recorded our own edits
-//!   after a scene rebuild), written back on disable / Restore.
+//!   after a scene rebuild), written back on Restore only: disabling
+//!   the mod keeps the edits on screen.
 //! - No Mutex held across a Unity call; the present thread only
 //!   swaps/clones small data and pushes write requests.
 //! - All mutexes go through `common::lock` (poison-recovering): a
@@ -256,9 +257,16 @@ impl Mod for SpeedoMod {
 
     fn on_disable(&mut self) {
         self.enabled.store(false, Ordering::SeqCst);
-        self.restore_all();
-        *lock(&self.pending_batch) = None;
-        crate::log_line("speedo: off (originaux restaurés)");
+        // Closing the mod KEEPS the edits (user request): flush what
+        // the window staged last, honour a Restore clicked just before
+        // closing, nothing else. Originals come back via Restore only.
+        if self.restore_now.swap(false, Ordering::SeqCst) {
+            self.restore_all();
+        }
+        if self.apply_now.swap(false, Ordering::SeqCst) {
+            self.drain_batch();
+        }
+        crate::log_line("speedo: off (changements conservés)");
     }
 }
 

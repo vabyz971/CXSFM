@@ -942,7 +942,7 @@ impl MinimapMod {
         }
     }
 
-    /// Write back first-recorded originals (disable / Restore paths,
+    /// Write back first-recorded originals (Restore button path,
     /// tick thread, one shot). Dead objects are skipped; the records
     /// are KEPT (session backup, one per owner path).
     pub(crate) fn restore_all(&self) {

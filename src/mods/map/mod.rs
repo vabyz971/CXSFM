@@ -23,7 +23,7 @@
 //! (render-side window); data types are shared from
 //! [`crate::mods::speedo::model`]. Same proven rules (see speedo):
 //! explicit triggers only, alive-checks everywhere, originals on
-//! disable / Restore, no Mutex across Unity calls.
+//! Restore only (disable keeps the edits), no Mutex across Unity calls.
 
 pub mod i18n;
 
@@ -246,9 +246,16 @@ impl Mod for MinimapMod {
 
     fn on_disable(&mut self) {
         self.enabled.store(false, Ordering::SeqCst);
-        self.restore_all();
-        *lock(&self.pending_batch) = None;
-        crate::log_line("map: off (originaux restaurés)");
+        // Closing the mod KEEPS the edits (user request): flush what
+        // the window staged last, honour a Restore clicked just before
+        // closing, nothing else. Originals come back via Restore only.
+        if self.restore_now.swap(false, Ordering::SeqCst) {
+            self.restore_all();
+        }
+        if self.apply_now.swap(false, Ordering::SeqCst) {
+            self.drain_batch();
+        }
+        crate::log_line("map: off (changements conservés)");
     }
 }
 
