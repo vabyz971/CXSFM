@@ -23,6 +23,9 @@ ash = { version = "0.38", default-features = false, features = ["std"] }
 egui-ash-renderer = { version = "0.13", default-features = false }
 bitflags = "2.9"
 egui_material_icons = "0.8"
+# Save files (TOML, hand-editable with comments). Pure Rust, no system
+# deps — same policy as every other dependency here.
+toml = "0.8"
 glam = { version = "0.29", features = ["serde"] }
 ctor = "0.2"
 libc = "0.2"

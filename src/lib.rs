@@ -56,6 +56,7 @@
 pub mod memory;
 pub mod mod_api;
 pub mod mods;
+pub mod config;
 pub mod gamepad;
 pub mod il2cpp;
 pub mod hotkey;
