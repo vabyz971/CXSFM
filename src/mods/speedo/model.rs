@@ -37,6 +37,49 @@ impl CompKind {
     }
 }
 
+/// Color read routed by component kind: TMP renders its own
+/// `m_fontColor` (override), everything else the base `Graphic` color.
+/// Falls back to the `Graphic` pair when the TMP override is missing.
+///
+/// # Safety
+/// Attached tick thread, alive-checked `obj` (same as every helper).
+pub(crate) unsafe fn color_get(
+    api: &crate::il2cpp::Il2cppApi,
+    cache: &UnityCache,
+    obj: *mut std::ffi::c_void,
+    kind: Option<CompKind>,
+) -> Option<[f32; 4]> {
+    // SAFETY: forwarded caller contract.
+    unsafe {
+        if kind == Some(CompKind::Tmp) && !cache.m_tmp_get_color.is_null() {
+            crate::unity::tmp_get_color(api, cache, obj)
+        } else {
+            crate::unity::graphic_get_color(api, cache, obj)
+        }
+    }
+}
+
+/// Color write, same routing as [`color_get`].
+///
+/// # Safety
+/// Same contract as [`color_get`].
+pub(crate) unsafe fn color_set(
+    api: &crate::il2cpp::Il2cppApi,
+    cache: &UnityCache,
+    obj: *mut std::ffi::c_void,
+    kind: Option<CompKind>,
+    color: [f32; 4],
+) -> bool {
+    // SAFETY: forwarded caller contract.
+    unsafe {
+        if kind == Some(CompKind::Tmp) && !cache.m_tmp_set_color.is_null() {
+            crate::unity::tmp_set_color(api, cache, obj, color)
+        } else {
+            crate::unity::graphic_set_color(api, cache, obj, color)
+        }
+    }
+}
+
 /// Write-request opcodes (plain `u8`, `Copy` across threads).
 pub(crate) const OP_SCALE: u8 = 0;
 pub(crate) const OP_POS: u8 = 1;
