@@ -250,9 +250,10 @@ cxsfm/
         ├── api.rs         # Mod trait + tile types
         ├── loader.rs      # Isolated registry (quarantine on panic)
         ├── fpv_camera.rs  # FPV camera mod (parked)
-        ├── inspector/     # Scene Inspector (read-only)
-        ├── gamelog/       # Game Player.log viewer
-        └── speedo/        # Speedometer restyle (restore-on-disable)
+        ├── inspector/     # Scene Inspector (model/bind/ui + i18n)
+        ├── gamelog/       # Game Player.log viewer (model/bind/ui + i18n)
+        ├── speedo/        # Speedometer restyle (model/bind/ui + i18n)
+        └── map/           # Minimap restyle (model/bind/ui + i18n)
 ```
 
 ## Dependencies

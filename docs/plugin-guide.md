@@ -15,6 +15,16 @@ Un mod = **un dossier** sous `src/mods/`, compilé dans le framework
 cp -r src/mods/inspector src/mods/mon_mod
 ```
 
+Structure uniforme (tous les mods la suivent) :
+
+| Fichier | Contenu |
+|---|---|
+| `mod.rs` | struct + `new` + `impl Mod` (délègue à `bind`/`ui`) + `register()` |
+| `model.rs` | données + helpers purs (+ tests) — aucun appel Unity |
+| `bind.rs` | Unity côté tick (`ensure`, walk, drain, restore) |
+| `ui.rs` | fenêtre côté present (`draw_window`, staging) |
+| `i18n.rs` | 7 langues, fallback EN |
+
 ## 2. Implémenter le trait `Mod` (`mod.rs`)
 
 ```rust
