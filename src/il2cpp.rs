@@ -1182,6 +1182,32 @@ fn c_name(p: *const libc::c_char) -> Option<String> {
     Some(unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned())
 }
 
+/// Describe one `FieldInfo*` (from [`find_field`] or iteration).
+///
+/// # Safety
+/// Same contract as [`find_class`].
+pub unsafe fn field_info(api: &Il2cppApi, f: *mut std::ffi::c_void) -> Option<FieldDesc> {
+    let (get_name, get_type, type_get_type) = (api.field_get_name?, api.field_get_type?, api.type_get_type?);
+    if f.is_null() {
+        return None;
+    }
+    // SAFETY: live field; metadata reads only.
+    unsafe {
+        let ty = get_type(f);
+        if ty.is_null() {
+            return None;
+        }
+        let flags = api.field_get_flags.map(|ff| ff(f)).unwrap_or(0);
+        Some(FieldDesc {
+            field: f,
+            name: c_name(get_name(f)).unwrap_or_default(),
+            type_enum: type_get_type(ty),
+            type_class: api.class_from_type.map(|cf| cf(ty)).unwrap_or(std::ptr::null_mut()),
+            is_static: flags & FIELD_ATTRIBUTE_STATIC != 0,
+        })
+    }
+}
+
 /// Own fields of a class (parents NOT included). Capped at 1024.
 ///
 /// # Safety
