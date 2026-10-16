@@ -46,7 +46,7 @@ use crate::mods::api::{Mod, TileIcon};
 use crate::mods::common::lock;
 use crate::mods::tool::ToolChrome;
 use crate::unity::UnityCache;
-use model::{ObjSnap, OrigRec, UiObj, WriteReq};
+use model::{ObjSnap, OrigRec, SavedObj, UiObj, WriteReq};
 use std::collections::HashSet;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -73,9 +73,10 @@ pub struct SpeedoMod {
     pub(crate) apply_now: AtomicBool,
     /// Write the staged save text to disk on next tick (Save button).
     pub(crate) save_now: AtomicBool,
-    /// Save text + object count, staged by the render thread (tick
-    /// performs the file IO — never on the present thread).
-    pub(crate) save_data: Mutex<Option<(String, usize)>>,
+    /// Save entries staged by the render thread (tick merges them
+    /// into the shared file + performs the file IO — never on the
+    /// present thread).
+    pub(crate) save_data: Mutex<Option<Vec<(String, SavedObj)>>>,
     /// Load and apply the save file on next tick (Load button).
     pub(crate) load_now: AtomicBool,
     /// Re-run discovery after the next drain (load-then-refresh so
@@ -183,17 +184,40 @@ impl Mod for SpeedoMod {
         }
         if self.save_now.swap(false, Ordering::SeqCst) {
             // File IO stays on the tick: the render thread only staged
-            // the text (see draw_window Save button).
-            if let Some((text, n)) = lock(&self.save_data).take() {
+            // entries (see draw_window Save button). Merge preserves
+            // other mods' tables — per-mod Save never clobbers.
+            if let Some(entries) = lock(&self.save_data).take() {
+                let n = entries.len();
+                let code = crate::i18n::current().code();
                 match crate::config::saves_path() {
-                    Some(path) => match crate::config::save_toml(&path, &text) {
-                        Ok(()) => crate::log_line(&format!(
-                            "speedo: sauvegardé {n} objets → {}",
-                            path.display()
-                        )),
-                        Err(e) => crate::log_line(&format!("speedo: sauvegarde impossible ({e})")),
-                    },
-                    None => crate::log_line("speedo: sauvegarde impossible (HOME introuvable)"),
+                    Some(path) => {
+                        let existing = crate::config::load_toml(&path).unwrap_or_default();
+                        let (text, kept, fresh) =
+                            crate::config::merge_saves(&existing, MOD_ID, &entries);
+                        match crate::config::save_toml(&path, &text) {
+                            Ok(()) => {
+                                let scope = if fresh {
+                                    self::i18n::log_scope_fresh(code).to_string()
+                                } else {
+                                    self::i18n::log_scope_kept(code)
+                                        .replace("{kept}", &kept.to_string())
+                                };
+                                crate::log_line(
+                                    &self::i18n::log_saved_ok(code)
+                                        .replace("{tag}", MOD_ID)
+                                        .replace("{n}", &n.to_string())
+                                        .replace("{scope}", &scope)
+                                        .replace("{path}", &path.display().to_string()),
+                                );
+                            }
+                            Err(e) => crate::log_line(
+                                &self::i18n::log_save_err(code)
+                                    .replace("{tag}", MOD_ID)
+                                    .replace("{e}", &e.to_string()),
+                            ),
+                        }
+                    }
+                    None => crate::log_line(&self::i18n::log_save_no_home(code).replace("{tag}", MOD_ID)),
                 }
             }
         }

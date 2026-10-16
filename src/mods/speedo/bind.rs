@@ -178,14 +178,20 @@ impl SpeedoMod {
                 }
             }
             if roots.is_empty() {
+                let code = crate::i18n::current().code();
                 crate::log_line(
-                    "speedo: ni UIHUDCarDashboard ni sections trouvées (Refresh hors course ?)",
+                    &super::i18n::log_root_missing(code).replace("{tag}", super::MOD_ID),
                 );
                 return (cands, 0);
             }
             if roots.len() > 1 || roots[0].0 != DASH_ROOT {
+                let code = crate::i18n::current().code();
                 let names: Vec<&str> = roots.iter().map(|(n, _)| n.as_str()).collect();
-                crate::log_line(&format!("speedo: racines fallback [{}]", names.join(", ")));
+                crate::log_line(
+                    &super::i18n::log_fallback_roots(code)
+                        .replace("{tag}", super::MOD_ID)
+                        .replace("{names}", &names.join(", ")),
+                );
             }
             // Iterative DFS per root: (path-prefix, transform, depth).
             // Dashboard children stay relative (`Speedometer/...`);
@@ -562,14 +568,22 @@ impl SpeedoMod {
         let path = match crate::config::saves_path() {
             Some(p) => p,
             None => {
-                crate::log_line("speedo: chargement impossible (HOME introuvable)");
+                let code = crate::i18n::current().code();
+                crate::log_line(
+                    &super::i18n::log_load_no_home(code).replace("{tag}", super::MOD_ID),
+                );
                 return;
             }
         };
         let text = match crate::config::load_toml(&path) {
             Ok(t) => t,
             Err(e) => {
-                crate::log_line(&format!("speedo: chargement impossible ({e})"));
+                let code = crate::i18n::current().code();
+                crate::log_line(
+                    &super::i18n::log_load_err(code)
+                        .replace("{tag}", super::MOD_ID)
+                        .replace("{e}", &e.to_string()),
+                );
                 return;
             }
         };
@@ -619,9 +633,13 @@ impl SpeedoMod {
             }
         }
         if reqs.is_empty() {
-            crate::log_line(&format!(
-                "speedo: chargement — rien à appliquer ({unknown} inconnus, {skipped} ignorés)"
-            ));
+            let code = crate::i18n::current().code();
+            crate::log_line(
+                &super::i18n::log_load_empty(code)
+                    .replace("{tag}", super::MOD_ID)
+                    .replace("{unknown}", &unknown.to_string())
+                    .replace("{skipped}", &skipped.to_string()),
+            );
             return;
         }
         let mut slot = lock(&self.pending_batch);
@@ -632,9 +650,14 @@ impl SpeedoMod {
         drop(slot);
         self.apply_now.store(true, Ordering::SeqCst);
         self.discover_after_drain.store(true, Ordering::SeqCst);
-        crate::log_line(&format!(
-            "speedo: chargement {staged} objets ({unknown} inconnus, {skipped} ignorés)"
-        ));
+        let code = crate::i18n::current().code();
+        crate::log_line(
+            &super::i18n::log_load_ok(code)
+                .replace("{tag}", super::MOD_ID)
+                .replace("{staged}", &staged.to_string())
+                .replace("{unknown}", &unknown.to_string())
+                .replace("{skipped}", &skipped.to_string()),
+        );
     }
 
     /// Drain the staged batch (tick thread): every staged edit lands
@@ -751,10 +774,11 @@ impl SpeedoMod {
                             std::sync::Mutex::new(std::collections::HashSet::new())
                         });
                         if crate::mods::common::lock(&VIA_ANCESTOR).insert(r.owner.clone()) {
-                            crate::log_line(&format!(
-                                "speedo: opacité via groupe ancêtre sur {}",
-                                r.owner
-                            ));
+                            crate::log_line(
+                                    &super::i18n::log_ancestor_served(crate::i18n::current().code())
+                                        .replace("{tag}", super::MOD_ID)
+                                        .replace("{owner}", &r.owner),
+                                );
                         }
                     }
                     // Alpha read-back: proves the write stuck (a match
@@ -770,10 +794,11 @@ impl SpeedoMod {
                                 if crate::mods::common::lock(&ALPHA_IGNORED)
                                     .insert(r.owner.clone())
                                 {
-                                    crate::log_line(&format!(
-                                        "speedo: opacité non appliquée sur {} (jeu prioritaire ?)",
-                                        r.owner
-                                    ));
+                                    crate::log_line(
+                                            &super::i18n::log_alpha_ignored(crate::i18n::current().code())
+                                                .replace("{tag}", super::MOD_ID)
+                                                .replace("{owner}", &r.owner),
+                                        );
                                 }
                             }
                         }
@@ -796,10 +821,11 @@ impl SpeedoMod {
                                 if crate::mods::common::lock(&COLOR_IGNORED)
                                     .insert(r.owner.clone())
                                 {
-                                    crate::log_line(&format!(
-                                        "speedo: couleur ignorée sur {} (matériau custom ?)",
-                                        r.owner
-                                    ));
+                                    crate::log_line(
+                                            &super::i18n::log_color_ignored(crate::i18n::current().code())
+                                                .replace("{tag}", super::MOD_ID)
+                                                .replace("{owner}", &r.owner),
+                                        );
                                 }
                             }
                         }

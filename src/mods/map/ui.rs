@@ -120,20 +120,20 @@ impl MinimapMod {
         // measured unbounded here and blew the window to 3000px — see
         // layout_stays_within_window).
         egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.monospace("GameObject");
+            ui.monospace(super::i18n::card_gameobject(code));
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Nom").weak());
+                ui.label(egui::RichText::new(super::i18n::card_name(code)).weak());
                 // Leaf name; full dashboard path below (paths are long,
                 // the row must stay narrow — see layout test).
                 let leaf = obj.owner.split('/').next_back().unwrap_or(&obj.owner);
                 ui.monospace(leaf);
             });
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Chemin").weak());
+                ui.label(egui::RichText::new(super::i18n::card_path(code)).weak());
                 ui.monospace(display_name(&obj.owner));
             });
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Actif").weak());
+                ui.label(egui::RichText::new(super::i18n::card_active(code)).weak());
                 // Real SetActive toggle (hides the whole subtree).
                 // Staged like every edit — restore writes it back.
                 if ui.checkbox(&mut obj.active, "").changed() {
@@ -141,7 +141,7 @@ impl MinimapMod {
                 }
             });
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Visible").weak());
+                ui.label(egui::RichText::new(super::i18n::card_visible(code)).weak());
                 // Scale-zero hide (staged; object stays active so texts
                 // keep updating, restore writes the original back).
                 if ui.checkbox(&mut obj.visible, "").changed() {
@@ -151,10 +151,10 @@ impl MinimapMod {
         });
         // — Transform card: one full-width row per axis.
         egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.monospace("Transform");
-            edited |= Self::axis_rows(ui, "Position", &mut obj.pos);
-            edited |= Self::axis_rows(ui, "Rotation", &mut obj.euler);
-            edited |= Self::axis_rows(ui, "Échelle", &mut obj.scale);
+            ui.monospace(super::i18n::card_transform(code));
+            edited |= Self::axis_rows(ui, super::i18n::axis_position(code), &mut obj.pos);
+            edited |= Self::axis_rows(ui, super::i18n::axis_rotation(code), &mut obj.euler);
+            edited |= Self::axis_rows(ui, super::i18n::axis_scale(code), &mut obj.scale);
         });
         // — Image / TextMeshProUGUI / RawImage card: only with a
         // component. Pure containers skip to the opacity card below.
@@ -163,7 +163,7 @@ impl MinimapMod {
             egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.monospace(comp_label);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Couleur").weak());
+                ui.label(egui::RichText::new(super::i18n::card_color(code)).weak());
                 if ui.color_edit_button_srgba(&mut obj.color).changed() {
                     edited = true;
                 }
@@ -180,13 +180,13 @@ impl MinimapMod {
             }
             if obj.comp == Some(CompKind::Tmp) {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Texte").weak());
+                    ui.label(egui::RichText::new(super::i18n::card_text(code)).weak());
                     let preview: String =
                         obj.text.chars().take(40).collect();
                     ui.monospace(format!("“{preview}”"));
                 });
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Taille").weak());
+                    ui.label(egui::RichText::new(super::i18n::card_size(code)).weak());
                     match &mut obj.size {
                         Some(size) => {
                             if ui
@@ -213,7 +213,7 @@ impl MinimapMod {
         // drain), else a clear skip in the log — never a dead end
         // without explanation.
         egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.monospace("Opacité");
+            ui.monospace(super::i18n::card_opacity(code));
             ui.horizontal(|ui| {
                 let mut pct = obj.opacity * 100.0;
                 if ui
@@ -244,7 +244,7 @@ impl MinimapMod {
                 self.selected = None;
             }
         }
-        let mut win = egui::Window::new("Minimap")
+        let mut win = egui::Window::new(super::i18n::tile_label(code))
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
@@ -255,7 +255,7 @@ impl MinimapMod {
         }
         let win = win.show(ctx, |ui| {
                 self.tool.enter(ui);
-                self.tool.header(ui, "Minimap");
+                self.tool.header(ui, super::i18n::tile_label(code));
                 if !self.tool.hide_controls {
                 ui.horizontal(|ui| {
                     if ui.button(super::i18n::refresh_label(code)).clicked() {
@@ -275,13 +275,13 @@ impl MinimapMod {
                         for o in &self.ui {
                             let orig = origs.iter().find(|r| r.owner == o.owner);
                             if let Some(saved) = diff_object(o, orig) {
-                                entries.push((super::MOD_ID.to_string(), o.owner.clone(), saved));
+                                entries.push((o.owner.clone(), saved));
                             }
                         }
                         drop(origs);
-                        let text = crate::config::build_saves(&entries);
-                        let n = entries.len();
-                        *lock(&self.save_data) = Some((text, n));
+                        // Entries only — the tick merges them into the
+                        // shared file (other mods preserved) + writes.
+                        *lock(&self.save_data) = Some(entries);
                         self.save_now.store(true, Ordering::SeqCst);
                     }
                     if ui.button(super::i18n::load_label(code)).clicked() {

@@ -134,3 +134,195 @@ pub fn color_hint(lang_code: &str) -> &'static str {
         _ => "Color may be ignored (text material).",
     }
 }
+
+/// Tick-side log templates. `{...}` placeholders are filled by the
+/// caller — every wording (both languages) lives here, never inline.
+pub fn log_root_missing(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "{tag}: ni UIHUDCarDashboard ni sections trouvées (Refresh hors course ?)",
+        _ => "{tag}: neither UIHUDCarDashboard nor sections found (Refresh outside a race?)",
+    }
+}
+
+/// Fallback roots bound instead of the dashboard. Placeholder: `{names}`.
+pub fn log_fallback_roots(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "{tag}: racines fallback [{names}]",
+        _ => "{tag}: fallback roots [{names}]",
+    }
+}
+
+/// Save confirmation. Placeholders: `{tag} {n} {scope} {path}`.
+pub fn log_saved_ok(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "{tag}: sauvegardé {n} objets ({scope}) → {path}",
+        _ => "{tag}: saved {n} objects ({scope}) → {path}",
+    }
+}
+
+/// `{scope}` fragment when the file is new.
+pub fn log_scope_fresh(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "nouveau fichier",
+        _ => "new file",
+    }
+}
+
+/// `{scope}` fragment naming the preserved mods. Placeholder: `{kept}`.
+pub fn log_scope_kept(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "{kept} autres mods conservés",
+        _ => "{kept} other mods kept",
+    }
+}
+
+/// Save failure. Placeholders: `{tag} {e}`.
+pub fn log_save_err(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "{tag}: sauvegarde impossible ({e})",
+        _ => "{tag}: save failed ({e})",
+    }
+}
+
+/// No home directory. Placeholder: `{tag}`.
+pub fn log_save_no_home(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "{tag}: sauvegarde impossible (HOME introuvable)",
+        _ => "{tag}: cannot save (HOME missing)",
+    }
+}
+
+/// No home directory on load. Placeholder: `{tag}`.
+pub fn log_load_no_home(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "{tag}: chargement impossible (HOME introuvable)",
+        _ => "{tag}: cannot load (HOME missing)",
+    }
+}
+
+/// Load failure. Placeholders: `{tag} {e}`.
+pub fn log_load_err(lang_code: &str) -> &'static str {    match lang_code {
+        "fr" => "{tag}: chargement impossible ({e})",
+        _ => "{tag}: load failed ({e})",
+    }
+}
+
+/// Nothing to apply. Placeholders: `{tag} {unknown} {skipped}`.
+pub fn log_load_empty(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "{tag}: chargement — rien à appliquer ({unknown} inconnus, {skipped} ignorés)",
+        _ => "{tag}: load — nothing to apply ({unknown} unknown, {skipped} skipped)",
+    }
+}
+
+/// Load summary. Placeholders: `{tag} {staged} {unknown} {skipped}`.
+pub fn log_load_ok(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "{tag}: chargement {staged} objets ({unknown} inconnus, {skipped} ignorés)",
+        _ => "{tag}: loaded {staged} objects ({unknown} unknown, {skipped} skipped)",
+    }
+}
+
+/// Vertex-color write swallowed by the material. Placeholders: `{tag} {owner}`.
+pub fn log_color_ignored(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "{tag}: couleur ignorée sur {owner} (matériau custom ?)",
+        _ => "{tag}: color ignored on {owner} (custom material?)",
+    }
+}
+
+/// Opacity landed on an ancestor group. Placeholders: `{tag} {owner}`.
+pub fn log_ancestor_served(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "{tag}: opacité via groupe ancêtre sur {owner}",
+        _ => "{tag}: opacity via ancestor group on {owner}",
+    }
+}
+
+/// Alpha write did not stick. Placeholders: `{tag} {owner}`.
+pub fn log_alpha_ignored(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "{tag}: opacité non appliquée sur {owner} (jeu prioritaire ?)",
+        _ => "{tag}: opacity not applied on {owner} (game overriding?)",
+    }
+}
+
+/// Params-card labels (same shape for every row).
+pub fn card_gameobject(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "GameObject",
+        _ => "GameObject",
+    }
+}
+pub fn card_name(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Nom",
+        _ => "Name",
+    }
+}
+pub fn card_path(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Chemin",
+        _ => "Path",
+    }
+}
+pub fn card_active(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Actif",
+        _ => "Active",
+    }
+}
+pub fn card_visible(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Visible",
+        _ => "Visible",
+    }
+}
+pub fn card_transform(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Transform",
+        _ => "Transform",
+    }
+}
+pub fn axis_position(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Position",
+        _ => "Position",
+    }
+}
+pub fn axis_rotation(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Rotation",
+        _ => "Rotation",
+    }
+}
+pub fn axis_scale(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Échelle",
+        _ => "Scale",
+    }
+}
+pub fn card_color(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Couleur",
+        _ => "Color",
+    }
+}
+pub fn card_opacity(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Opacité",
+        _ => "Opacity",
+    }
+}
+pub fn card_text(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Texte",
+        _ => "Text",
+    }
+}
+pub fn card_size(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Taille",
+        _ => "Size",
+    }
+}
