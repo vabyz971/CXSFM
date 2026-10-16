@@ -11,18 +11,37 @@
 //! stage data + set flags on the render thread). Writes are atomic
 //! (tmp + rename). Parsing is tolerant: unknown mods/objects/keys and
 //! mistyped values are skipped + counted, never fatal.
+//!
+//! This module also hosts the session-wide auto-load switch (Settings
+//! checkbox, session-only like the language override — persisted
+//! settings files are a later step).
 
 use crate::mods::speedo::model::SavedObj;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Auto-apply save files a few seconds after arriving in game
+/// (Settings toggle, default off). Read by speedo/map on the tick.
+static AUTO_LOAD: AtomicBool = AtomicBool::new(false);
+
+/// Whether saves auto-apply on arrival (Settings checkbox).
+pub(crate) fn auto_load() -> bool {
+    AUTO_LOAD.load(Ordering::SeqCst)
+}
+
+/// Set by the Settings checkbox (render thread — plain atomic).
+pub(crate) fn set_auto_load(v: bool) {
+    AUTO_LOAD.store(v, Ordering::SeqCst);
+}
 
 /// Schema version written by Save and expected by Load. A mismatch
 /// logs a warning but still parses (tolerant reader).
-pub const SCHEMA_VERSION: i64 = 1;
+pub(crate) const SCHEMA_VERSION: i64 = 1;
 
 /// Save-file location: `$XDG_CONFIG_HOME/cxsfm/saves.toml`, falling
 /// back to `~/.config/cxsfm/saves.toml` (blocked when neither `HOME`
 /// nor `XDG_CONFIG_HOME` exists — tread carefully there).
-pub fn saves_path() -> Option<PathBuf> {
+pub(crate) fn saves_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| {
@@ -39,10 +58,21 @@ pub fn saves_path() -> Option<PathBuf> {
 }
 
 /// Atomic whole-file write: parent dirs created, tmp + rename (a torn
-/// write must never leave half a save behind).
-pub fn save_toml(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+/// write must never leave half a save behind). The previous file, when
+/// present, is copied to `<name>.toml.bak` first — a bad Save stays
+/// undoable by renaming the backup back (documented in the mod READMEs).
+pub(crate) fn save_toml(path: &std::path::Path, text: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
+    }
+    if path.exists() {
+        let mut bak = PathBuf::from(path);
+        bak.set_extension("toml.bak");
+        // A failed backup must not block the save itself; the caller
+        // logs it (best effort, explicit user action).
+        if let Err(e) = std::fs::copy(path, &bak) {
+            crate::log_line(&format!("config: backup impossible ({e})"));
+        }
     }
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
@@ -53,8 +83,22 @@ pub fn save_toml(path: &std::path::Path, text: &str) -> std::io::Result<()> {
 }
 
 /// Read the whole save file.
-pub fn load_toml(path: &std::path::Path) -> std::io::Result<String> {
+pub(crate) fn load_toml(path: &std::path::Path) -> std::io::Result<String> {
     std::fs::read_to_string(path)
+}
+
+/// Cheap file fingerprint (length + mtime secs) for change detection.
+/// `None` = missing/unreadable. Same-second same-size rewrites could
+/// collide in theory — manual Load always works regardless.
+pub(crate) fn file_fingerprint(path: &std::path::Path) -> Option<u64> {
+    let m = std::fs::metadata(path).ok()?;
+    let mtime = m
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    Some(m.len().wrapping_mul(31).wrapping_add(mtime))
 }
 
 fn f3(v: &toml::Value) -> Option<[f32; 3]> {
@@ -107,7 +151,7 @@ fn arr4(v: [f32; 4]) -> toml::Value {
 
 /// Build save text: `version` + one `[mod."object/path"]` table per
 /// entry, only modified params present (see `diff_object`).
-pub fn build_saves(entries: &[(String, String, SavedObj)]) -> String {
+pub(crate) fn build_saves(entries: &[(String, String, SavedObj)]) -> String {
     let mut root = toml::Table::new();
     root.insert(
         "version".to_string(),
@@ -155,11 +199,38 @@ pub fn build_saves(entries: &[(String, String, SavedObj)]) -> String {
     text
 }
 
+/// Merge new entries for one mod into an existing save file: other
+/// mods' tables are preserved bit-for-bit (re-serialized), this mod's
+/// table is replaced wholesale. Returns `(text, kept_other_mods,
+/// fresh)` — `fresh` when there was nothing usable to merge into.
+/// This is what makes per-mod Save buttons share one file instead of
+/// clobbering each other (the overwrite bug).
+pub(crate) fn merge_saves(
+    existing: &str,
+    mod_id: &str,
+    entries: &[(String, SavedObj)],
+) -> (String, usize, bool) {
+    let (mut kept, _) = parse_saves(existing);
+    let fresh = kept.is_empty() || existing.trim().is_empty();
+    kept.retain(|(m, _, _)| m != mod_id);
+    let kept_mods: usize = {
+        let mut mods: Vec<&String> = kept.iter().map(|(m, _, _)| m).collect();
+        mods.sort();
+        mods.dedup();
+        mods.len()
+    };
+    let mut all = kept;
+    for (path, saved) in entries {
+        all.push((mod_id.to_string(), path.clone(), saved.clone()));
+    }
+    (build_saves(&all), kept_mods, fresh)
+}
+
 /// Parse save text → `((mod, path, values), skipped)`. Tolerant: a bad
 /// object/table is skipped + counted, parsing continues with the rest.
 /// Unknown top-level keys (including future mods) are ignored here and
 /// filtered by the caller.
-pub fn parse_saves(text: &str) -> (Vec<(String, String, SavedObj)>, usize) {
+pub(crate) fn parse_saves(text: &str) -> (Vec<(String, String, SavedObj)>, usize) {
     let mut out = Vec::new();
     let mut skipped = 0usize;
     let root: toml::Table = match text.parse() {
@@ -235,7 +306,7 @@ pub fn parse_saves(text: &str) -> (Vec<(String, String, SavedObj)>, usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_saves, parse_saves};
+    use super::{build_saves, merge_saves, parse_saves};
     use crate::mods::speedo::model::SavedObj;
 
     fn sample() -> Vec<(String, String, SavedObj)> {
@@ -286,6 +357,36 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].1, "Z");
         assert!(skipped >= 3);
+    }
+
+    #[test]
+    fn merge_keeps_other_mods() {
+        let old = "[speedo.\"A\"]\nactive = false\n[map.\"B\"]\nopacity = 0.2\n";
+        let entries = vec![(
+            "C".to_string(),
+            crate::mods::speedo::model::SavedObj {
+                scale: Some([0.0, 0.0, 0.0]),
+                ..crate::mods::speedo::model::SavedObj::default()
+            },
+        )];
+        let (text, kept, fresh) = merge_saves(old, "speedo", &entries);
+        assert!(!fresh);
+        assert_eq!(kept, 1);
+        let (back, skipped) = parse_saves(&text);
+        assert_eq!(skipped, 0);
+        // speedo/A replaced by C, map/B preserved.
+        assert!(back.iter().any(|(m, p, _)| m == "speedo" && p == "C"));
+        assert!(!back.iter().any(|(m, p, _)| m == "speedo" && p == "A"));
+        assert!(back.iter().any(|(m, p, _)| m == "map" && p == "B"));
+    }
+
+    #[test]
+    fn merge_corrupt_starts_fresh() {
+        let (text, kept, fresh) = merge_saves("[[[broken", "map", &[]);
+        assert!(fresh);
+        assert_eq!(kept, 0);
+        let (back, _) = parse_saves(&text);
+        assert!(back.is_empty());
     }
 
     #[test]

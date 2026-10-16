@@ -167,6 +167,18 @@ pub fn page_settings(ui: &mut egui::Ui, w: f32) {
                 .sense(egui::Sense::hover()),
             );
             ui.separator();
+            ui.horizontal(|ui| {
+                let mut auto = crate::config::auto_load();
+                if ui.checkbox(&mut auto, crate::i18n::t("settings_autoload")).changed() {
+                    crate::config::set_auto_load(auto);
+                }
+            });
+            ui.add(
+                egui::Label::new(egui::RichText::new(crate::i18n::t("settings_autoload_hint")).size(SMALL_SIZE))
+                    .wrap()
+                    .sense(egui::Sense::hover()),
+            );
+            ui.separator();
             ui.label(egui::RichText::new(crate::i18n::t("settings_keys")).size(BODY_SIZE));
             for key in ["keys_f8", "keys_note"] {
                 ui.add(

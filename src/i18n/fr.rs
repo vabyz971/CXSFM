@@ -14,6 +14,8 @@ pub fn strings(key: &str) -> &'static str {
         "settings_auto" => "Auto (jeu)",
         "settings_detected" => "Détectée",
         "settings_keys" => "Touches",
+        "settings_autoload" => "Charger les saves à l'arrivée",
+        "settings_autoload_hint" => "Les valeurs Speedo/Map s'appliquent quelques secondes après l'arrivée en jeu.",
         "keys_f8" => "F8 — menu + capture souris",
         "keys_note" => "Les mods restent actifs quand le menu se ferme.",
         _ => super::en::strings(key),

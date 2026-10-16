@@ -6,7 +6,7 @@
 //! touching one is the delayed SIGSEGV this design was built to avoid).
 
 use super::model::{
-    CompKind, ObjSnap, OrigRec, write_reqs_for, OP_ACTIVE, OP_CGALPHA, OP_COLOR, OP_FONT, OP_POS, OP_ROT, OP_SCALE,
+    CompKind, ObjSnap, OrigRec, SavedObj, write_reqs_for, OP_ACTIVE, OP_CGALPHA, OP_COLOR, OP_FONT, OP_POS, OP_ROT, OP_SCALE,
 };
 use super::SpeedoMod;
 use crate::mods::common::lock;
@@ -548,46 +548,62 @@ impl SpeedoMod {
     }
 
     /// Load the save file and stage every stored value for this mod
-    /// (tick thread, Load button). Unknown objects (scene changed) are
-    /// skipped + counted; then a re-discover refreshes buffers from
-    /// the just-written game state.
-    pub(crate) fn load_saved(&self) {
-        let tick = self.tick.load(Ordering::SeqCst);
-        if !self.ensure_unity(tick, true) {
-            return;
-        }
-        let api = match crate::il2cpp_api() {
-            Some(a) => a,
-            None => return,
-        };
-        let cached = lock(&self.unity).as_ref().copied();
-        let cache = match cached {
-            Some(c) => c,
-            None => return,
-        };
+    /// (tick thread, Load button or arrival auto-apply). Unknown
+    /// objects (scene changed) are skipped + counted; then a
+    /// re-discover refreshes buffers from the just-written game state.
+    /// Returns `(staged, has_mine)` so auto-apply can tell "nothing
+    /// saved for me" (served, silent) from "resolve failed" (retry).
+    /// `quiet` suppresses every log except the apply summary.
+    pub(crate) fn load_saved(&self, quiet: bool) -> (usize, bool) {
+        // File first (no Unity yet): missing/unparseable stays cheap
+        // and silent in auto mode.
         let path = match crate::config::saves_path() {
             Some(p) => p,
             None => {
-                let code = crate::i18n::current().code();
-                crate::log_line(
-                    &super::i18n::log_load_no_home(code).replace("{tag}", super::MOD_ID),
-                );
-                return;
+                if !quiet {
+                    let code = crate::i18n::current().code();
+                    crate::log_line(
+                        &super::i18n::log_load_no_home(code).replace("{tag}", super::MOD_ID),
+                    );
+                }
+                return (0, false);
             }
         };
         let text = match crate::config::load_toml(&path) {
             Ok(t) => t,
             Err(e) => {
-                let code = crate::i18n::current().code();
-                crate::log_line(
-                    &super::i18n::log_load_err(code)
-                        .replace("{tag}", super::MOD_ID)
-                        .replace("{e}", &e.to_string()),
-                );
-                return;
+                if !quiet {
+                    let code = crate::i18n::current().code();
+                    crate::log_line(
+                        &super::i18n::log_load_err(code)
+                            .replace("{tag}", super::MOD_ID)
+                            .replace("{e}", &e.to_string()),
+                    );
+                }
+                return (0, false);
             }
         };
         let (entries, skipped) = crate::config::parse_saves(&text);
+        let mine: Vec<&(String, String, SavedObj)> = entries
+            .iter()
+            .filter(|(m, _, _)| m == super::MOD_ID)
+            .collect();
+        if mine.is_empty() {
+            return (0, false);
+        }
+        let tick = self.tick.load(Ordering::SeqCst);
+        if !self.ensure_unity(tick, true) {
+            return (0, true);
+        }
+        let api = match crate::il2cpp_api() {
+            Some(a) => a,
+            None => return (0, true),
+        };
+        let cached = lock(&self.unity).as_ref().copied();
+        let cache = match cached {
+            Some(c) => c,
+            None => return (0, true),
+        };
         let snaps = lock(&self.snaps).clone();
         let mut reqs = Vec::new();
         let mut staged = 0usize;
@@ -595,7 +611,7 @@ impl SpeedoMod {
         // SAFETY: attached tick thread; one resolve (+ one color read
         // when merging) per entry, alive-checked, consumed immediately.
         unsafe {
-            for (_mod_id, path, saved) in entries.iter().filter(|(m, _, _)| m == super::MOD_ID) {
+            for (_, path, saved) in mine {
                 let snap = match snaps.iter().find(|s| &s.owner == path) {
                     Some(s) => s,
                     None => {
@@ -633,14 +649,16 @@ impl SpeedoMod {
             }
         }
         if reqs.is_empty() {
-            let code = crate::i18n::current().code();
-            crate::log_line(
-                &super::i18n::log_load_empty(code)
-                    .replace("{tag}", super::MOD_ID)
-                    .replace("{unknown}", &unknown.to_string())
-                    .replace("{skipped}", &skipped.to_string()),
-            );
-            return;
+            if !quiet {
+                let code = crate::i18n::current().code();
+                crate::log_line(
+                    &super::i18n::log_load_empty(code)
+                        .replace("{tag}", super::MOD_ID)
+                        .replace("{unknown}", &unknown.to_string())
+                        .replace("{skipped}", &skipped.to_string()),
+                );
+            }
+            return (0, true);
         }
         let mut slot = lock(&self.pending_batch);
         match slot.as_mut() {
@@ -658,6 +676,90 @@ impl SpeedoMod {
                 .replace("{unknown}", &unknown.to_string())
                 .replace("{skipped}", &skipped.to_string()),
         );
+        (staged, true)
+    }
+
+    /// Cheap HUD-roots probe (one Find per root, alive-checked):
+    /// true when the dashboard (or a fallback section) is mounted.
+    /// Tick only; throttled by the caller (~5 s cadence).
+    fn root_present(&self) -> bool {
+        let tick = self.tick.load(Ordering::SeqCst);
+        if !self.ensure_unity(tick, false) {
+            return false;
+        }
+        let api = match crate::il2cpp_api() {
+            Some(a) => a,
+            None => return false,
+        };
+        let cached = lock(&self.unity).as_ref().copied();
+        let cache = match cached {
+            Some(c) => c,
+            None => return false,
+        };
+        // SAFETY: attached tick thread; Find + alive check only,
+        // consumed immediately, nothing stored.
+        unsafe {
+            for name in std::iter::once(DASH_ROOT).chain(FALLBACK_ROOTS.iter().copied()) {
+                match crate::unity::go_find(api, &cache, name) {
+                    Some(g)
+                        if !g.is_null()
+                            && crate::unity::object_alive(api, &cache, g) == Some(true) =>
+                    {
+                        return true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        false
+    }
+
+    /// Arrival auto-apply (tick thread, Settings toggle): serves a
+    /// fresh `(generation, file)` pair once the HUD roots hold still
+    /// past the settle delay. Roots gone (menu/loading) restarts the
+    /// window AND forces re-apply on return even with no new log
+    /// lines. Throttled by the caller; zero Unity traffic when idle.
+    pub(crate) fn maybe_auto_apply(&self) {
+        const SETTLE_MS: u64 = 5000;
+        const PROBE_EVERY_TICKS: u64 = 300;
+        let t = self.tick.load(Ordering::SeqCst);
+        if t.saturating_sub(self.last_auto_probe.load(Ordering::SeqCst)) < PROBE_EVERY_TICKS {
+            return;
+        }
+        self.last_auto_probe.store(t, Ordering::SeqCst);
+        if !crate::config::auto_load() {
+            return;
+        }
+        let (gen_n, at_ms) = crate::mods::gamelog::arrival();
+        let now = crate::mods::gamelog::now_ms();
+        if !self.root_present() {
+            self.roots_since_ms.store(0, Ordering::SeqCst);
+            self.served_gen.store(u64::MAX, Ordering::SeqCst);
+            return;
+        }
+        if self.roots_since_ms.load(Ordering::SeqCst) == 0 {
+            self.roots_since_ms.store(now, Ordering::SeqCst);
+            return;
+        }
+        if now.saturating_sub(self.roots_since_ms.load(Ordering::SeqCst)) < SETTLE_MS
+            || now.saturating_sub(at_ms) < SETTLE_MS
+        {
+            return;
+        }
+        let fp = crate::config::saves_path()
+            .and_then(|p| crate::config::file_fingerprint(&p))
+            .unwrap_or(0);
+        if self.served_gen.load(Ordering::SeqCst) == gen_n
+            && self.served_fp.load(Ordering::SeqCst) == fp
+        {
+            return;
+        }
+        let (staged, has_mine) = self.load_saved(true);
+        if staged > 0 || !has_mine {
+            self.served_gen.store(gen_n, Ordering::SeqCst);
+            self.served_fp.store(fp, Ordering::SeqCst);
+        }
+        // else: resolve failed with saves pending — retry next probe.
     }
 
     /// Drain the staged batch (tick thread): every staged edit lands

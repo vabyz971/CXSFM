@@ -32,6 +32,14 @@ pub(crate) fn player_log_path() -> Option<std::path::PathBuf> {
     Some(p)
 }
 
+/// A state-transition line: the engine logs every game-state switch
+/// as `[GameStateManager]: <Name> (...) to queue!` (menu, city,
+/// garage — names beyond MainMenuState are unobserved, so any name
+/// counts). Drives save auto-apply (see `super::note_game_state_line`).
+pub(crate) fn is_state_line(line: &str) -> bool {
+    line.contains("[GameStateManager]:")
+}
+
 /// A line is an error when it smells like one (case-insensitive).
 pub(crate) fn is_error(line: &str) -> bool {
     let l = line.to_lowercase();
@@ -43,7 +51,7 @@ pub(crate) fn is_error(line: &str) -> bool {
 }
 #[cfg(test)]
 mod tests {
-    use super::is_error;
+    use super::{is_error, is_state_line};
 
     #[test]
     fn error_sniffing() {
@@ -52,5 +60,14 @@ mod tests {
         assert!(is_error("Game crashed: out of memory"));
         assert!(!is_error("[cxsfm + 1.0s] render: first present intercepted"));
         assert!(!is_error("Unloading 1455 unused Assets to reduce memory usage."));
+    }
+
+    #[test]
+    fn state_line_sniffing() {
+        assert!(is_state_line(
+            "[GameStateManager]: MainMenuState (CarX.Street.GameModes.States.MainMenuState) to queue!"
+        ));
+        assert!(!is_state_line("render: first present intercepted, hook is live"));
+        assert!(!is_state_line(""));
     }
 }

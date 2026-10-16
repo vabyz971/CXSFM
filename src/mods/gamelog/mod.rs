@@ -24,6 +24,46 @@ use crate::mods::tool::ToolChrome;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+/// Game-state arrival tracking (drives save auto-apply in speedo/map).
+/// Bumped on every DISTINCT `[GameStateManager]` transition line the
+/// tail sees (menu, city, garage — repeats of the same line don't
+/// bump). Generation 0 + timestamp 0 = nothing seen yet this process.
+static ARRIVAL_GEN: AtomicU64 = AtomicU64::new(0);
+static ARRIVAL_MS: AtomicU64 = AtomicU64::new(0);
+static LAST_STATE: Mutex<String> = Mutex::new(String::new());
+
+/// Wall-clock millis (shared tick-time base for arrival delays).
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Feed one fresh Player.log line (tick thread, from `poll`).
+/// State transitions bump the arrival generation + timestamp.
+pub(crate) fn note_game_state_line(line: &str) {
+    if !model::is_state_line(line) {
+        return;
+    }
+    let mut last = lock(&LAST_STATE);
+    if *last != line {
+        *last = line.to_string();
+        drop(last);
+        ARRIVAL_GEN.fetch_add(1, Ordering::SeqCst);
+        ARRIVAL_MS.store(now_ms(), Ordering::SeqCst);
+    }
+}
+
+/// Current arrival `(generation, millis)`. Mods serve a generation
+/// once (after the settle delay) and ignore repeats.
+pub(crate) fn arrival() -> (u64, u64) {
+    (
+        ARRIVAL_GEN.load(Ordering::SeqCst),
+        ARRIVAL_MS.load(Ordering::SeqCst),
+    )
+}
+
 /// Game-log tool: tail on tick, filter on render.
 pub struct GameLogMod {
     pub(crate) enabled: AtomicBool,

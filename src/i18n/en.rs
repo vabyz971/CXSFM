@@ -16,6 +16,8 @@ pub fn strings(key: &str) -> &'static str {
         "settings_auto" => "Auto (game)",
         "settings_detected" => "Detected",
         "settings_keys" => "Keys",
+        "settings_autoload" => "Auto-load saves on arrival",
+        "settings_autoload_hint" => "Speedo/Map values apply a few seconds after reaching the game.",
         "keys_f8" => "F8 — menu + mouse capture",
         "keys_note" => "Mods stay on when the menu closes.",
         _ => "[?]",

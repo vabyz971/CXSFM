@@ -250,6 +250,15 @@ Diagnostic line (zero keypresses needed):
   batched pass + re-discover. Paths only — never addresses, never
   originals. TOML chosen over JSON for comments + human editing
   (`toml` crate, pure Rust).
+- AUTO-APPLY 2026-10-16 (Settings toggle, session-only like the
+  language): gamelog classifies `[GameStateManager]` transition lines
+  (menu/city/garage — only MainMenuState observed, any name bumps);
+  speedo/map serve a fresh generation once HUD roots hold still 5 s
+  past the last transition. Roots gone (menu/loading) restarts the
+  window AND forces re-apply on return (no log lines needed);
+  fingerprint (length + mtime) re-fires on file change. Throttled
+  probe (~5 s, 1–2 Finds), zero Unity traffic when idle; quiet loads
+  (only the apply summary logs).
   element names confirmed (`Tacho`, `Tachometer`, `Nitro`, `TextN2O`,
   `Odometer`, `Text (TMP) Speed/Gear`, `Speedometer`) + per-element
   opacity keys (`gear/speed/kmh/map_*_opacity`) and `gear_scale`.

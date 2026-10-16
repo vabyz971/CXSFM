@@ -54,6 +54,7 @@ impl GameLogMod {
             let line: String = pending.drain(..=pos).collect();
             let line = line.trim_end_matches(['\n', '\r']).to_string();
             if !line.is_empty() {
+                super::note_game_state_line(&line);
                 lines.push(line);
             }
         }

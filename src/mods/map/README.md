@@ -29,6 +29,10 @@ realtime drain and the safety design — this mod shares its data model
 (`speedo::model`) and behavior, only the roots (`UIHUDMinimap`,
 fallback `Map`) and the tile (globe, `mod_map`) differ.
 
+Values persist per object path in `~/.config/cxsfm/saves.toml`
+(Save button), re-applied with Load — or automatically a few
+seconds after arriving in game when the Settings toggle is on.
+
 ## Map specifics: roads, opacity, color
 
 - **Roads are `RawImage`** (dynamic textures — a sibling of `Image`

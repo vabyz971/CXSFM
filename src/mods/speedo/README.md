@@ -24,6 +24,9 @@ recolored green through the mod.
 5. **Save** writes only your modified params to
    `~/.config/cxsfm/saves.toml` (`[speedo."object/path"]` tables);
    **Load** applies them back in one pass. Hand-editable, paths only.
+6. Settings → auto-load toggle: applies your saves a few seconds
+   after arriving in game (watches Player.log transitions + HUD
+   presence, throttled).
 
 ## Interface
 

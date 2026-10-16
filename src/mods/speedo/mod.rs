@@ -71,6 +71,16 @@ pub struct SpeedoMod {
     pub(crate) pending_batch: Mutex<Option<Vec<WriteReq>>>,
     /// Drain the staged batch on next tick (set by every staged edit).
     pub(crate) apply_now: AtomicBool,
+    /// Served arrival (Player.log generation) for save auto-apply.
+    /// `u64::MAX` = never (forces first evaluation).
+    pub(crate) served_gen: AtomicU64,
+    /// Served save-file fingerprint (length + mtime).
+    pub(crate) served_fp: AtomicU64,
+    /// HUD roots continuously present since (ms, 0 = absent) — the
+    /// settle delay before auto-apply.
+    pub(crate) roots_since_ms: AtomicU64,
+    /// Last auto-apply probe tick (throttled, ~5 s).
+    pub(crate) last_auto_probe: AtomicU64,
     /// Write the staged save text to disk on next tick (Save button).
     pub(crate) save_now: AtomicBool,
     /// Save entries staged by the render thread (tick merges them
@@ -115,6 +125,10 @@ impl SpeedoMod {
             origs: Mutex::new(Vec::new()),
             pending_batch: Mutex::new(None),
             apply_now: AtomicBool::new(false),
+            served_gen: AtomicU64::new(u64::MAX),
+            served_fp: AtomicU64::new(u64::MAX),
+            roots_since_ms: AtomicU64::new(0),
+            last_auto_probe: AtomicU64::new(0),
             save_now: AtomicBool::new(false),
             save_data: Mutex::new(None),
             load_now: AtomicBool::new(false),
@@ -182,6 +196,9 @@ impl Mod for SpeedoMod {
         if self.apply_now.swap(false, Ordering::SeqCst) {
             self.drain_batch();
         }
+        // Save auto-apply on arrival (Settings toggle). Throttled and
+        // fully gated inside — zero Unity traffic when idle.
+        self.maybe_auto_apply();
         if self.save_now.swap(false, Ordering::SeqCst) {
             // File IO stays on the tick: the render thread only staged
             // entries (see draw_window Save button). Merge preserves
@@ -222,7 +239,7 @@ impl Mod for SpeedoMod {
             }
         }
         if self.load_now.swap(false, Ordering::SeqCst) {
-            self.load_saved();
+            self.load_saved(false);
         }
     }
 
