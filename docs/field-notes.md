@@ -237,6 +237,13 @@ Diagnostic line (zero keypresses needed):
   `NorthIcon`…), fallback `Map`; hide = `SetActive`, opacity =
   `CanvasGroup` (existing group else color alpha) — all straight from
   the wyr strings above. Tile globe, `mod_map` label key.
+- PERSISTENCE 2026-10-16 (`src/config.rs`, `saves.toml` under
+  `$XDG_CONFIG_HOME/cxsfm/`): Save diffs buffers vs first-seen
+  originals (modified params only) into `[mod."object/path"]` tables,
+  versioned + atomic (tmp+rename), hand-editable; Load stages one
+  batched pass + re-discover. Paths only — never addresses, never
+  originals. TOML chosen over JSON for comments + human editing
+  (`toml` crate, pure Rust).
   element names confirmed (`Tacho`, `Tachometer`, `Nitro`, `TextN2O`,
   `Odometer`, `Text (TMP) Speed/Gear`, `Speedometer`) + per-element
   opacity keys (`gear/speed/kmh/map_*_opacity`) and `gear_scale`.

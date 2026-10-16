@@ -5,8 +5,8 @@
 //! ([`super::MinimapMod::drain_batch`]). Nothing touches Unity directly.
 
 use crate::mods::speedo::model::{
-    CompKind, UiObj, WriteReq, display_name, color_to_f32, f32_to_color, is_zero_scale,
-    OP_ACTIVE, OP_CGALPHA, OP_COLOR, OP_FONT, OP_POS, OP_ROT, OP_SCALE,
+    CompKind, SavedObj, UiObj, diff_object, display_name, color_to_f32, f32_to_color, is_zero_scale,
+    write_reqs_for,
 };
 use super::MinimapMod;
 use crate::mods::common::lock;
@@ -82,43 +82,21 @@ impl MinimapMod {
 
     /// Stage one object's buffers as write requests (render pushes,
     /// tick drains once — every edit lands in a SINGLE Unity pass).
-    /// Transform + active always; color/font only with a component;
-    /// opacity rides the CanvasGroup when present, else merges into
-    /// the color alpha (graphics), skipped for pure containers.
+    /// Single code path with save/load (see `write_reqs_for`).
     fn stage_object(&self, o: &UiObj) {
-        let mk = |op: u8, v: [f32; 4]| WriteReq {
-            owner: o.owner.clone(),
-            kind: o.comp,
-            addr: o.tr_addr,
-            op,
-            v,
+        let s = SavedObj {
+            pos: Some(o.pos),
+            euler: Some(o.euler),
+            scale: Some(o.scale),
+            color: Some(color_to_f32(o.color)),
+            opacity: Some(o.opacity),
+            active: Some(o.active),
+            visible: Some(o.visible),
+            size: o.size,
         };
-        let mut reqs = Vec::new();
-        // Hidden = scale-zero (object stays active: texts keep
-        // updating, restore writes the recorded original back).
-        let sc = if o.visible { o.scale } else { [0.0, 0.0, 0.0] };
-        reqs.push(mk(OP_SCALE, [sc[0], sc[1], sc[2], 0.0]));
-        reqs.push(mk(OP_POS, [o.pos[0], o.pos[1], o.pos[2], 0.0]));
-        reqs.push(mk(OP_ROT, [o.euler[0], o.euler[1], o.euler[2], 0.0]));
-        reqs.push(mk(OP_ACTIVE, [if o.active { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0]));
-        if o.comp.is_some() {
-            let mut col = color_to_f32(o.color);
-            match o.cg {
-                Some(_) => {
-                    reqs.push(mk(OP_CGALPHA, [o.opacity, 0.0, 0.0, 0.0]));
-                }
-                None => {
-                    col[3] = o.opacity.clamp(0.0, 1.0);
-                }
-            }
-            reqs.push(mk(OP_COLOR, col));
-            if o.comp == Some(CompKind::Tmp) {
-                if let Some(size) = o.size {
-                    reqs.push(mk(OP_FONT, [size, 0.0, 0.0, 0.0]));
-                }
-            }
-        } else if o.cg.is_some() {
-            reqs.push(mk(OP_CGALPHA, [o.opacity, 0.0, 0.0, 0.0]));
+        let reqs = write_reqs_for(&o.owner, o.comp, o.cg.is_some(), &s, Some(color_to_f32(o.color)));
+        if reqs.is_empty() {
+            return;
         }
         let mut slot = lock(&self.pending_batch);
         match slot.as_mut() {
@@ -289,6 +267,29 @@ impl MinimapMod {
                     if ui.button(super::i18n::restore_label(code)).clicked() {
                         // Write back originals without disabling.
                         self.restore_now.store(true, Ordering::SeqCst);
+                    }
+                    if ui.button(super::i18n::save_label(code)).clicked() {
+                        // Diff buffers vs first-seen originals (brief
+                        // data lock — no Unity, no IO here); the tick
+                        // writes the TOML file (see on_update).
+                        let origs = lock(&self.origs);
+                        let mut entries = Vec::new();
+                        for o in &self.ui {
+                            let orig = origs.iter().find(|r| r.owner == o.owner);
+                            if let Some(saved) = diff_object(o, orig) {
+                                entries.push((super::MOD_ID.to_string(), o.owner.clone(), saved));
+                            }
+                        }
+                        drop(origs);
+                        let text = crate::config::build_saves(&entries);
+                        let n = entries.len();
+                        *lock(&self.save_data) = Some((text, n));
+                        self.save_now.store(true, Ordering::SeqCst);
+                    }
+                    if ui.button(super::i18n::load_label(code)).clicked() {
+                        // Tick reads + parses the file, then stages one
+                        // batched pass + a re-discover (see load_saved).
+                        self.load_now.store(true, Ordering::SeqCst);
                     }
                     ui.with_layout(
                         egui::Layout::right_to_left(egui::Align::Center),

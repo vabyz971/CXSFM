@@ -52,6 +52,22 @@ pub fn restore_label(lang_code: &str) -> &'static str {
     }
 }
 
+/// Save-to-file button (TOML, only modified params).
+pub fn save_label(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Sauvegarder",
+        _ => "Save",
+    }
+}
+
+/// Load-from-file button (staged as one batched pass + re-discover).
+pub fn load_label(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Charger",
+        _ => "Load",
+    }
+}
+
 /// Object counter prefix ("objets 5/6").
 pub fn objects_label(lang_code: &str) -> &'static str {
     match lang_code {

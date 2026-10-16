@@ -22,11 +22,12 @@ minimap bottom-left updates live.
 
 Identical to speedo: enable the **Map** tile, Refresh after scene
 changes, edit cards in realtime, Restore (or disable) to write all
-originals back. See [speedo's README](../speedo/README.md) for the
-card layout, the realtime drain and the safety design — this mod
-shares its data model (`speedo::model`) and behavior, only the roots
-(`UIHUDMinimap`, fallback `Map`) and the tile (globe, `mod_map`)
-differ.
+originals back. **Save** writes modified params to
+`~/.config/cxsfm/saves.toml`, **Load** applies them back in one pass.
+See [speedo's README](../speedo/README.md) for the card layout, the
+realtime drain and the safety design — this mod shares its data model
+(`speedo::model`) and behavior, only the roots (`UIHUDMinimap`,
+fallback `Map`) and the tile (globe, `mod_map`) differ.
 
 ## Map specifics: roads, opacity, color
 

@@ -30,6 +30,9 @@ pub mod i18n;
 mod bind;
 mod ui;
 
+/// This mod's key inside save files (`[map."path"]`).
+pub(crate) const MOD_ID: &str = "map";
+
 use crate::mods::api::{Mod, TileIcon};
 use crate::mods::common::lock;
 use crate::mods::tool::ToolChrome;
@@ -59,6 +62,16 @@ pub struct MinimapMod {
     pub(crate) pending_batch: Mutex<Option<Vec<WriteReq>>>,
     /// Drain the staged batch on next tick (set by every staged edit).
     pub(crate) apply_now: AtomicBool,
+    /// Write the staged save text to disk on next tick (Save button).
+    pub(crate) save_now: AtomicBool,
+    /// Save text + object count, staged by the render thread (tick
+    /// performs the file IO — never on the present thread).
+    pub(crate) save_data: Mutex<Option<(String, usize)>>,
+    /// Load and apply the save file on next tick (Load button).
+    pub(crate) load_now: AtomicBool,
+    /// Re-run discovery after the next drain (load-then-refresh so
+    /// buffers mirror the just-written game state).
+    pub(crate) discover_after_drain: AtomicBool,
     /// Discovery status for the status line.
     pub(crate) status_ok: AtomicU64,
     pub(crate) status_total: AtomicU64,
@@ -92,6 +105,10 @@ impl MinimapMod {
             origs: Mutex::new(Vec::new()),
             pending_batch: Mutex::new(None),
             apply_now: AtomicBool::new(false),
+            save_now: AtomicBool::new(false),
+            save_data: Mutex::new(None),
+            load_now: AtomicBool::new(false),
+            discover_after_drain: AtomicBool::new(false),
             status_ok: AtomicU64::new(0),
             status_total: AtomicU64::new(0),
             ui: Vec::new(),
@@ -154,6 +171,25 @@ impl Mod for MinimapMod {
         }
         if self.apply_now.swap(false, Ordering::SeqCst) {
             self.drain_batch();
+        }
+        if self.save_now.swap(false, Ordering::SeqCst) {
+            // File IO stays on the tick: the render thread only staged
+            // the text (see draw_window Save button).
+            if let Some((text, n)) = lock(&self.save_data).take() {
+                match crate::config::saves_path() {
+                    Some(path) => match crate::config::save_toml(&path, &text) {
+                        Ok(()) => crate::log_line(&format!(
+                            "map: sauvegardé {n} objets → {}",
+                            path.display()
+                        )),
+                        Err(e) => crate::log_line(&format!("map: sauvegarde impossible ({e})")),
+                    },
+                    None => crate::log_line("map: sauvegarde impossible (HOME introuvable)"),
+                }
+            }
+        }
+        if self.load_now.swap(false, Ordering::SeqCst) {
+            self.load_saved();
         }
     }
 

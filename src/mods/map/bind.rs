@@ -6,7 +6,7 @@
 //! touching one is the delayed SIGSEGV this design was built to avoid).
 
 use crate::mods::speedo::model::{
-    CompKind, ObjSnap, OrigRec, OP_ACTIVE, OP_CGALPHA, OP_COLOR, OP_FONT, OP_POS, OP_ROT, OP_SCALE,
+    CompKind, ObjSnap, OrigRec, write_reqs_for, OP_ACTIVE, OP_CGALPHA, OP_COLOR, OP_FONT, OP_POS, OP_ROT, OP_SCALE,
 };
 use super::MinimapMod;
 use crate::mods::common::lock;
@@ -533,6 +533,102 @@ impl MinimapMod {
         }
     }
 
+    /// Load the save file and stage every stored value for this mod
+    /// (tick thread, Load button). Unknown objects (scene changed) are
+    /// skipped + counted; then a re-discover refreshes buffers from
+    /// the just-written game state.
+    pub(crate) fn load_saved(&self) {
+        let tick = self.tick.load(Ordering::SeqCst);
+        if !self.ensure_unity(tick, true) {
+            return;
+        }
+        let api = match crate::il2cpp_api() {
+            Some(a) => a,
+            None => return,
+        };
+        let cached = lock(&self.unity).as_ref().copied();
+        let cache = match cached {
+            Some(c) => c,
+            None => return,
+        };
+        let path = match crate::config::saves_path() {
+            Some(p) => p,
+            None => {
+                crate::log_line("map: chargement impossible (HOME introuvable)");
+                return;
+            }
+        };
+        let text = match crate::config::load_toml(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                crate::log_line(&format!("map: chargement impossible ({e})"));
+                return;
+            }
+        };
+        let (entries, skipped) = crate::config::parse_saves(&text);
+        let snaps = lock(&self.snaps).clone();
+        let mut reqs = Vec::new();
+        let mut staged = 0usize;
+        let mut unknown = 0usize;
+        // SAFETY: attached tick thread; one resolve (+ one color read
+        // when merging) per entry, alive-checked, consumed immediately.
+        unsafe {
+            for (mod_id, path, saved) in entries.iter().filter(|(m, _, _)| m == super::MOD_ID) {
+                let snap = match snaps.iter().find(|s| &s.owner == path) {
+                    Some(s) => s,
+                    None => {
+                        unknown += 1;
+                        continue;
+                    }
+                };
+                // Live RGB base when opacity must merge into color alpha
+                // without a saved color (same rule as write_reqs_for).
+                let need_live = saved.opacity.is_some()
+                    && snap.cg.is_none()
+                    && snap.comp.is_some()
+                    && saved.color.is_none();
+                let live_color = if need_live {
+                    match Self::resolve_live(api, &cache, path, snap.comp) {
+                        Some((_, _, Some(comp), _)) => {
+                            crate::unity::graphic_get_color(api, &cache, comp)
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                if need_live && live_color.is_none() {
+                    unknown += 1;
+                    continue;
+                }
+                let r = write_reqs_for(path, snap.comp, snap.cg.is_some(), saved, live_color);
+                if r.is_empty() {
+                    unknown += 1;
+                    continue;
+                }
+                reqs.extend(r);
+                staged += 1;
+            }
+        }
+        if reqs.is_empty() {
+            crate::log_line(&format!(
+                "map: chargement — rien à appliquer ({unknown} inconnus, {skipped} ignorés)"
+            ));
+            return;
+        }
+        let mut slot = lock(&self.pending_batch);
+        match slot.as_mut() {
+            Some(v) => v.extend(reqs),
+            None => *slot = Some(reqs),
+        }
+        drop(slot);
+        self.apply_now.store(true, Ordering::SeqCst);
+        self.discover_after_drain.store(true, Ordering::SeqCst);
+        crate::log_line(&format!(
+            "map: chargement {staged} objets ({unknown} inconnus, {skipped} ignorés)"
+        ));
+    }
+
     /// Drain the staged batch (tick thread): every staged edit lands
     /// in ONE Unity pass. Realtime edits stage continuously, so the
     /// log stays quiet on clean drains — only problems surface.
@@ -708,6 +804,11 @@ impl MinimapMod {
             crate::log_line(&format!(
                 "map: application {ok}/{total} (stale ignorés: {skipped_stale})"
             ));
+        }
+        // Load-then-refresh: buffers must mirror the just-written game
+        // state (a plain drain leaves stale buffers behind).
+        if self.discover_after_drain.swap(false, Ordering::SeqCst) {
+            self.discover();
         }
     }
 
