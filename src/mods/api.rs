@@ -95,6 +95,18 @@ pub trait Mod: Send + Sync {
     /// cadence and cache classes, not objects.
     fn on_update(&mut self, delta_time: f32);
 
+    /// Optional: called each game tick while the mod is NOT enabled
+    /// (registered, not quarantined) — the counterpart of `on_update`.
+    ///
+    /// For effects that must outlive the mod's window, e.g. re-applying
+    /// persisted settings when the user opted in. Default does nothing;
+    /// same rules as `on_update` (fast, throttled, never block) — and
+    /// zero Unity traffic unless the user explicitly asked for it.
+    #[inline]
+    fn on_background_update(&mut self, _delta_time: f32) {
+        // Default implementation does nothing.
+    }
+
     /// Optional: render UI elements.
     ///
     /// Only called while the mod is enabled. Return early when there

@@ -378,7 +378,8 @@ impl ModRegistry {
     /// calls (e.g. `restore()`) are legal. A disable therefore fully
     /// executes before `enabled` flips, and an enable runs before the
     /// first `on_update` of the same tick.
-    /// Pass 2 — `on_update` on applied-enabled, non-quarantined mods.
+    /// Pass 2 — `on_update` on applied-enabled, non-quarantined mods;
+    /// `on_background_update` on the disabled ones (default no-op).
     pub fn update_all(&self, delta_time: f32) {
         // Pass 1: transitions.
         for handle in self.snapshot() {
@@ -408,17 +409,23 @@ impl ModRegistry {
                 lock(&handle.state).enabled = wants;
             }
         }
-        // Pass 2: updates.
+        // Pass 2: updates (background hook for disabled mods).
         for handle in self.snapshot() {
-            {
+            let enabled = {
                 let s = lock(&handle.state);
-                if !s.enabled || s.quarantined {
+                if s.quarantined {
                     continue;
                 }
-            }
+                s.enabled
+            };
+            let what = if enabled { "on_update" } else { "on_background_update" };
             let mut inner = lock(&handle.inner);
-            let ((), bad) = guard(&handle.name, "on_update", || {
-                inner.on_update(delta_time);
+            let ((), bad) = guard(&handle.name, what, || {
+                if enabled {
+                    inner.on_update(delta_time);
+                } else {
+                    inner.on_background_update(delta_time);
+                }
             });
             drop(inner);
             if bad {
@@ -707,6 +714,71 @@ mod tests {
         assert_eq!(reg.enabled_count(), 0);
         assert_eq!(reg.mod_count(), 1);
         assert_eq!(disables.load(Ordering::SeqCst), 0);
+    }
+
+    /// Test mod counting foreground vs background ticks.
+    struct BgMod {
+        updates: Arc<AtomicUsize>,
+        background: Arc<AtomicUsize>,
+        panic_in_background: Arc<AtomicBool>,
+    }
+
+    impl Mod for BgMod {
+        fn name(&self) -> &'static str {
+            "Bg"
+        }
+
+        fn on_update(&mut self, _dt: f32) {
+            self.updates.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn on_background_update(&mut self, _dt: f32) {
+            if self.panic_in_background.load(Ordering::SeqCst) {
+                panic!("boom-background");
+            }
+            self.background.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// Disabled mods get `on_background_update`, enabled ones
+    /// `on_update` — never both on the same tick.
+    #[test]
+    fn background_update_only_while_disabled() {
+        let reg = ModRegistry::new();
+        let updates = Arc::new(AtomicUsize::new(0));
+        let background = Arc::new(AtomicUsize::new(0));
+        reg.register(Box::new(BgMod {
+            updates: updates.clone(),
+            background: background.clone(),
+            panic_in_background: Arc::new(AtomicBool::new(false)),
+        }));
+        reg.update_all(0.016);
+        assert_eq!((updates.load(Ordering::SeqCst), background.load(Ordering::SeqCst)), (0, 1));
+        reg.set_enabled("Bg", true);
+        reg.update_all(0.016);
+        assert_eq!((updates.load(Ordering::SeqCst), background.load(Ordering::SeqCst)), (1, 1));
+        reg.set_enabled("Bg", false);
+        reg.update_all(0.016);
+        assert_eq!((updates.load(Ordering::SeqCst), background.load(Ordering::SeqCst)), (1, 2));
+    }
+
+    /// A panic in the background hook quarantines like any other
+    /// hook: never called again, even once it would behave.
+    #[test]
+    fn panic_in_background_quarantines() {
+        let reg = ModRegistry::new();
+        let background = Arc::new(AtomicUsize::new(0));
+        let panic_flag = Arc::new(AtomicBool::new(true));
+        reg.register(Box::new(BgMod {
+            updates: Arc::new(AtomicUsize::new(0)),
+            background: background.clone(),
+            panic_in_background: panic_flag.clone(),
+        }));
+        reg.update_all(0.016);
+        panic_flag.store(false, Ordering::SeqCst);
+        reg.update_all(0.016);
+        assert_eq!(background.load(Ordering::SeqCst), 0);
+        assert_eq!(reg.mod_count(), 1);
     }
 
     /// Re-enabling a quarantined mod lifts the quarantine; hooks run again.

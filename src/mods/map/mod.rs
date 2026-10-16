@@ -234,6 +234,19 @@ impl Mod for MinimapMod {
         }
     }
 
+    fn on_background_update(&mut self, _delta_time: f32) {
+        // Mod closed: only the opted-in save auto-apply (Settings
+        // toggle) runs, so saved edits come back on arrival without
+        // opening the menu. `maybe_auto_apply` returns before any
+        // Unity call when the toggle is off; the drain only serves
+        // what that auto-apply staged.
+        self.tick.fetch_add(1, Ordering::SeqCst);
+        if self.apply_now.swap(false, Ordering::SeqCst) {
+            self.drain_batch();
+        }
+        self.maybe_auto_apply();
+    }
+
     fn on_draw_ui(&mut self, ctx: &egui::Context) {
         self.draw_window(ctx);
     }

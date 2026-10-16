@@ -61,7 +61,9 @@ nix develop --command bash -c 'cargo test --lib'
 - **Jamais** de modification gameplay/économie/physique/réseau.
 - Mods **désarmés au boot**, restore à la désactivation — sauf
   speedo/map : leurs modifs restent à la désactivation (demande
-  utilisateur), retour aux originaux via le bouton Restaurer.
+  utilisateur), retour aux originaux via le bouton Restaurer ; avec
+  l'auto-load (opt-in Settings), leurs saves se ré-appliquent même
+  tuile fermée (`Mod::on_background_update`).
 - Un changement = un commit, message clair, un seul sujet.
 - Pas de nouvelle dépendance sans accord (pure Rust uniquement).
 - `cargo test` ne prouve rien en jeu : indiquer ce qui reste à valider.

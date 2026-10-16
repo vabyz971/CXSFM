@@ -18,7 +18,10 @@
 //! Layout: `model` (data + pure helpers), `bind` (tick-side Unity),
 //! `ui` (render-side window). Rules (proven in game, do not improvise):
 //! - Unity calls only (a) on arming, (b) on Refresh / Restore clicks,
-//!   (c) to drain an explicit write queue. NEVER per tick. Discovery
+//!   (c) to drain an explicit write queue, (d) save auto-apply when
+//!   the user opted in (~5 s root probe + one walk per arrival — also
+//!   while the mod is closed, via `on_background_update`). NEVER per
+//!   tick. Discovery
 //!   is one explicit bounded walk of `UIHUDCarDashboard` (root `Find`
 //!   + `Transform` children — the ONLY way to see INACTIVE branches
 //!   like `Numbers`/`ElectroBooster`, which `GameObject.Find` never
@@ -243,6 +246,19 @@ impl Mod for SpeedoMod {
         if self.load_now.swap(false, Ordering::SeqCst) {
             self.load_saved(false);
         }
+    }
+
+    fn on_background_update(&mut self, _delta_time: f32) {
+        // Mod closed: only the opted-in save auto-apply (Settings
+        // toggle) runs, so saved edits come back on arrival without
+        // opening the menu. `maybe_auto_apply` returns before any
+        // Unity call when the toggle is off; the drain only serves
+        // what that auto-apply staged.
+        self.tick.fetch_add(1, Ordering::SeqCst);
+        if self.apply_now.swap(false, Ordering::SeqCst) {
+            self.drain_batch();
+        }
+        self.maybe_auto_apply();
     }
 
     fn on_draw_ui(&mut self, ctx: &egui::Context) {

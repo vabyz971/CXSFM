@@ -755,6 +755,10 @@ impl SpeedoMod {
         {
             return;
         }
+        // Fresh one-shot walk first: the load needs bound targets
+        // (none yet when the mod was never opened this session), and
+        // it records the rebuilt HUD's originals BEFORE we write.
+        self.discover();
         let (staged, has_mine) = self.load_saved(true);
         if staged > 0 || !has_mine {
             self.served_gen.store(gen_n, Ordering::SeqCst);
