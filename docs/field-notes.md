@@ -231,6 +231,12 @@ Diagnostic line (zero keypresses needed):
   (+ `Cinemachine`, `RaceCameraRecomposerExtension`).
   Adopted from this: speedo fallback roots when `UIHUDCarDashboard`
   is unmounted (same names), two-candidate path resolve.
+- MINIMAP MOD 2026-10-15 (`src/mods/map`, same interface as speedo,
+  shared `speedo::model` types): roots `UIHUDMinimap` → `Map/...`
+  (`ImgFrame`, `Mask/Base/RoadImage`, `PlayerIconContainer`,
+  `NorthIcon`…), fallback `Map`; hide = `SetActive`, opacity =
+  `CanvasGroup` (existing group else color alpha) — all straight from
+  the wyr strings above. Tile globe, `mod_map` label key.
   element names confirmed (`Tacho`, `Tachometer`, `Nitro`, `TextN2O`,
   `Odometer`, `Text (TMP) Speed/Gear`, `Speedometer`) + per-element
   opacity keys (`gear/speed/kmh/map_*_opacity`) and `gear_scale`.

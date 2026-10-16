@@ -31,7 +31,7 @@ HUD version tag applied to the game's own nickname label](docs/overlay-proof.png
   (Unity `Input` path dropped: it segfaulted at teardown)
 - ✅ IL2CPP bridge: camera FOV, UI text read/write, scene inspection
 - ✅ Bundled mods: Scene Inspector (read-only), GameLog (Player.log),
-  Speedometer (HUD restyle, restore-on-disable)
+  Speedometer + Minimap (HUD restyle, restore-on-disable)
 - ✅ Stability: stale-handle re-resolve, `object_alive` readability
   guard, no crash on scene change (garage ↔ race) or at quit
 - ⏸️ FPV Camera mod (parked until per-frame application is possible)
