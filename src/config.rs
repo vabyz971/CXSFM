@@ -13,8 +13,7 @@
 //! mistyped values are skipped + counted, never fatal.
 //!
 //! This module also hosts the session-wide auto-load switch (Settings
-//! checkbox, session-only like the language override — persisted
-//! settings files are a later step).
+//! checkbox, persisted to `settings.toml` next to the saves).
 
 use crate::mods::speedo::model::SavedObj;
 use std::path::PathBuf;
@@ -23,15 +22,105 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Auto-apply save files a few seconds after arriving in game
 /// (Settings toggle, default off). Read by speedo/map on the tick.
 static AUTO_LOAD: AtomicBool = AtomicBool::new(false);
+/// Set when the toggle moves (render thread); the tick persists it
+/// (file IO never happens on the present thread).
+static SETTINGS_DIRTY: AtomicBool = AtomicBool::new(false);
 
 /// Whether saves auto-apply on arrival (Settings checkbox).
 pub(crate) fn auto_load() -> bool {
     AUTO_LOAD.load(Ordering::SeqCst)
 }
 
-/// Set by the Settings checkbox (render thread — plain atomic).
+/// Set by the Settings checkbox (render thread — plain atomic; the
+/// tick persists it, see `flush_settings_if_dirty`).
 pub(crate) fn set_auto_load(v: bool) {
     AUTO_LOAD.store(v, Ordering::SeqCst);
+}
+
+/// Mark settings for tick-side persistence (Settings checkbox calls
+/// this right after toggling; the boot path never does, so a fresh
+/// read is never pointlessly rewritten).
+pub(crate) fn mark_settings_dirty() {
+    SETTINGS_DIRTY.store(true, Ordering::SeqCst);
+}
+
+/// Settings file next to the saves (`settings.toml`, same dir).
+/// `None` when no config home exists at all.
+pub(crate) fn settings_path() -> Option<PathBuf> {
+    let mut dir = settings_dir()?;
+    dir.push("settings.toml");
+    Some(dir)
+}
+
+fn settings_dir() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| {
+                let mut p = PathBuf::from(h);
+                p.push(".config");
+                p
+            })
+        })?;
+    let mut p = base;
+    p.push("cxsfm");
+    Some(p)
+}
+
+/// Read persisted settings at boot (init thread — file IO is fine
+/// there, never on present). Missing/corrupt file = defaults (off),
+/// never fatal.
+pub(crate) fn load_settings() -> bool {
+    let path = match settings_path() {
+        Some(p) => p,
+        None => return false,
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(text) => parse_settings(&text),
+        Err(_) => false,
+    }
+}
+
+/// Build settings text (pure — unit-tested).
+pub(crate) fn settings_toml(auto_load: bool) -> String {
+    let mut table = toml::Table::new();
+    let mut general = toml::Table::new();
+    general.insert("auto_load".to_string(), toml::Value::Boolean(auto_load));
+    table.insert("general".to_string(), toml::Value::Table(general));
+    format!(
+        "# CXSFM settings. Hand-editable.\n{}",
+        toml::to_string(&table).unwrap_or_default()
+    )
+}
+
+/// Parse settings text (pure, tolerant — anything unreadable is off).
+pub(crate) fn parse_settings(text: &str) -> bool {
+    let table: toml::Table = match text.parse() {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    table
+        .get("general")
+        .and_then(|v| v.as_table())
+        .and_then(|g| g.get("auto_load"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// Persist the toggle if it moved (tick thread, best effort — a lost
+/// write only costs one click next session, never game state).
+pub(crate) fn flush_settings_if_dirty() {
+    if !SETTINGS_DIRTY.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    let text = settings_toml(auto_load());
+    let path = match settings_path() {
+        Some(p) => p,
+        None => return,
+    };
+    if let Err(e) = save_toml(&path, &text) {
+        crate::log_line(&format!("config: settings save failed ({e})"));
+    }
 }
 
 /// Schema version written by Save and expected by Load. A mismatch
@@ -306,7 +395,7 @@ pub(crate) fn parse_saves(text: &str) -> (Vec<(String, String, SavedObj)>, usize
 
 #[cfg(test)]
 mod tests {
-    use super::{build_saves, merge_saves, parse_saves};
+    use super::{build_saves, merge_saves, parse_saves, parse_settings, settings_toml};
     use crate::mods::speedo::model::SavedObj;
 
     fn sample() -> Vec<(String, String, SavedObj)> {
@@ -387,6 +476,15 @@ mod tests {
         assert_eq!(kept, 0);
         let (back, _) = parse_saves(&text);
         assert!(back.is_empty());
+    }
+
+    #[test]
+    fn settings_roundtrip() {
+        assert!(parse_settings(&settings_toml(true)));
+        assert!(!parse_settings(&settings_toml(false)));
+        assert!(!parse_settings("[[[broken"));
+        assert!(!parse_settings("[general]\nauto_load = \"yes\""));
+        assert!(!parse_settings(""));
     }
 
     #[test]

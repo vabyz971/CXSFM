@@ -171,6 +171,7 @@ pub fn page_settings(ui: &mut egui::Ui, w: f32) {
                 let mut auto = crate::config::auto_load();
                 if ui.checkbox(&mut auto, crate::i18n::t("settings_autoload")).changed() {
                     crate::config::set_auto_load(auto);
+                    crate::config::mark_settings_dirty();
                 }
             });
             ui.add(

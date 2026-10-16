@@ -160,6 +160,12 @@ fn deferred_init() {
 
     if wait_for_game_ready() {
         log_line("game ready, resolving IL2CPP");
+        // Persisted settings (init thread — file IO is fine here).
+        // Missing file = defaults; only worth a line when enabled.
+        if crate::config::load_settings() {
+            crate::config::set_auto_load(true);
+            log_line("config: auto-load on (settings.toml)");
+        }
         match il2cpp::resolve() {
             Ok(api) => {
                 // SAFETY: fresh domain handle on our own init thread;
@@ -461,6 +467,11 @@ fn spawn_tick_thread() {
                 // via Player.log). SDL/X11/log paths stay alive —
                 // only IL2CPP-touching work stops below.
                 let down = game_shutting_down();
+                // Persisted settings write-back (checkbox moves only;
+                // no-op otherwise — file IO stays off present).
+                if tick % 60 == 0 {
+                    crate::config::flush_settings_if_dirty();
+                }
                 // Render heartbeat: proves presents keep routing through
                 // us long after init (a stuck count with a live game
                 // means present routing died silently).
