@@ -120,6 +120,34 @@ pub type FieldSetValueFn = unsafe extern "C" fn(
     *mut std::ffi::c_void,
 );
 
+/// `FieldInfo* il2cpp_class_get_fields(Il2CppClass*, void** iter)`
+/// (own fields only — parents walked by the caller)
+pub type ClassGetFieldsFn = unsafe extern "C" fn(
+    *mut std::ffi::c_void,
+    *mut *mut std::ffi::c_void,
+) -> *mut std::ffi::c_void;
+/// `const char* il2cpp_field_get_name(FieldInfo*)`
+pub type FieldGetNameFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> *const libc::c_char;
+/// `const Il2CppType* il2cpp_field_get_type(FieldInfo*)`
+pub type FieldGetTypeFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> *mut std::ffi::c_void;
+/// `int il2cpp_field_get_flags(FieldInfo*)` (`FIELD_ATTRIBUTE_*`)
+pub type FieldGetFlagsFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
+/// `int il2cpp_type_get_type(const Il2CppType*)` (`Il2CppTypeEnum`)
+pub type TypeGetTypeFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> i32;
+/// `Il2CppClass* il2cpp_class_from_type(const Il2CppType*)`
+pub type ClassFromTypeFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> *mut std::ffi::c_void;
+/// `Il2CppClass* il2cpp_class_get_parent(Il2CppClass*)`
+pub type ClassGetParentFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> *mut std::ffi::c_void;
+/// `const char* il2cpp_class_get_namespace(Il2CppClass*)`
+pub type ClassGetNamespaceFn =
+    unsafe extern "C" fn(*mut std::ffi::c_void) -> *const libc::c_char;
+/// `Il2CppClass* il2cpp_object_get_class(Il2CppObject*)`
+pub type ObjectGetClassFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> *mut std::ffi::c_void;
+/// `int32_t il2cpp_class_value_size(Il2CppClass*, uint32_t* align)`
+pub type ClassValueSizeFn = unsafe extern "C" fn(*mut std::ffi::c_void, *mut u32) -> i32;
+/// `bool il2cpp_class_is_valuetype(const Il2CppClass*)`
+pub type ClassIsValuetypeFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> bool;
+
 /// Failure modes of IL2CPP resolution and probing.
 #[derive(Debug)]
 pub enum Il2cppError {
@@ -211,6 +239,18 @@ pub struct Il2cppApi {
     pub field_get_value: Option<FieldGetValueFn>,
     /// `il2cpp_field_set_value` — best effort.
     pub field_set_value: Option<FieldSetValueFn>,
+    /// Reflection (field explorer) — best effort, metadata reads only.
+    pub class_get_fields: Option<ClassGetFieldsFn>,
+    pub field_get_name: Option<FieldGetNameFn>,
+    pub field_get_type: Option<FieldGetTypeFn>,
+    pub field_get_flags: Option<FieldGetFlagsFn>,
+    pub type_get_type: Option<TypeGetTypeFn>,
+    pub class_from_type: Option<ClassFromTypeFn>,
+    pub class_get_parent: Option<ClassGetParentFn>,
+    pub class_get_namespace: Option<ClassGetNamespaceFn>,
+    pub object_get_class: Option<ObjectGetClassFn>,
+    pub class_value_size: Option<ClassValueSizeFn>,
+    pub class_is_valuetype: Option<ClassIsValuetypeFn>,
 }
 
 impl Il2cppApi {
@@ -510,6 +550,19 @@ pub fn resolve() -> Result<Il2cppApi, Il2cppError> {
         sym_opt!("il2cpp_field_get_value", FieldGetValueFn);
     let field_set_value: Option<FieldSetValueFn> =
         sym_opt!("il2cpp_field_set_value", FieldSetValueFn);
+    let class_get_fields: Option<ClassGetFieldsFn> = sym_opt!("il2cpp_class_get_fields", ClassGetFieldsFn);
+    let field_get_name: Option<FieldGetNameFn> = sym_opt!("il2cpp_field_get_name", FieldGetNameFn);
+    let field_get_type: Option<FieldGetTypeFn> = sym_opt!("il2cpp_field_get_type", FieldGetTypeFn);
+    let field_get_flags: Option<FieldGetFlagsFn> = sym_opt!("il2cpp_field_get_flags", FieldGetFlagsFn);
+    let type_get_type: Option<TypeGetTypeFn> = sym_opt!("il2cpp_type_get_type", TypeGetTypeFn);
+    let class_from_type: Option<ClassFromTypeFn> = sym_opt!("il2cpp_class_from_type", ClassFromTypeFn);
+    let class_get_parent: Option<ClassGetParentFn> = sym_opt!("il2cpp_class_get_parent", ClassGetParentFn);
+    let class_get_namespace: Option<ClassGetNamespaceFn> =
+        sym_opt!("il2cpp_class_get_namespace", ClassGetNamespaceFn);
+    let object_get_class: Option<ObjectGetClassFn> = sym_opt!("il2cpp_object_get_class", ObjectGetClassFn);
+    let class_value_size: Option<ClassValueSizeFn> = sym_opt!("il2cpp_class_value_size", ClassValueSizeFn);
+    let class_is_valuetype: Option<ClassIsValuetypeFn> =
+        sym_opt!("il2cpp_class_is_valuetype", ClassIsValuetypeFn);
 
     Ok(Il2cppApi {
         domain_get,
@@ -539,6 +592,17 @@ pub fn resolve() -> Result<Il2cppApi, Il2cppError> {
         class_get_field_from_name,
         field_get_value,
         field_set_value,
+        class_get_fields,
+        field_get_name,
+        field_get_type,
+        field_get_flags,
+        type_get_type,
+        class_from_type,
+        class_get_parent,
+        class_get_namespace,
+        object_get_class,
+        class_value_size,
+        class_is_valuetype,
     })
 }
 
@@ -1086,4 +1150,221 @@ pub unsafe fn field_set_f32(
         set_value(obj, field, &mut val as *mut f32 as *mut std::ffi::c_void);
     }
     true
+}
+
+// --- Reflection (field explorer) ----------------------------------------------
+//
+// Metadata reads + raw field copies only: no managed code runs, nothing
+// is allocated in the managed heap. Safe to call on demand from the
+// tick thread (still one-shot: every object pointer is re-found from a
+// root before use, never kept).
+
+/// `FIELD_ATTRIBUTE_STATIC` (static and `const` fields carry it).
+pub const FIELD_ATTRIBUTE_STATIC: i32 = 0x0010;
+
+/// One field of a class, as the runtime describes it.
+pub struct FieldDesc {
+    /// `FieldInfo*` (class-stable).
+    pub field: *mut std::ffi::c_void,
+    pub name: String,
+    /// `Il2CppTypeEnum` of the declared type.
+    pub type_enum: i32,
+    /// Class of the declared type (null for some primitives/generics).
+    pub type_class: *mut std::ffi::c_void,
+    pub is_static: bool,
+}
+
+fn c_name(p: *const libc::c_char) -> Option<String> {
+    if p.is_null() {
+        return None;
+    }
+    // SAFETY: runtime metadata strings are NUL-terminated, process-lifetime.
+    Some(unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned())
+}
+
+/// Own fields of a class (parents NOT included). Capped at 1024.
+///
+/// # Safety
+/// Same contract as [`find_class`].
+pub unsafe fn class_fields(api: &Il2cppApi, klass: *mut std::ffi::c_void) -> Vec<FieldDesc> {
+    let (Some(get_fields), Some(get_name), Some(get_type), Some(type_get_type)) = (
+        api.class_get_fields,
+        api.field_get_name,
+        api.field_get_type,
+        api.type_get_type,
+    ) else {
+        return Vec::new();
+    };
+    if klass.is_null() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut iter: *mut std::ffi::c_void = std::ptr::null_mut();
+    // SAFETY: live class; runtime-owned iterator consumed right here.
+    unsafe {
+        for _ in 0..1024 {
+            let f = get_fields(klass, &mut iter as *mut *mut std::ffi::c_void);
+            if f.is_null() {
+                break;
+            }
+            let ty = get_type(f);
+            let (type_enum, type_class) = if ty.is_null() {
+                (0, std::ptr::null_mut())
+            } else {
+                (
+                    type_get_type(ty),
+                    api.class_from_type.map(|cf| cf(ty)).unwrap_or(std::ptr::null_mut()),
+                )
+            };
+            let flags = api.field_get_flags.map(|ff| ff(f)).unwrap_or(0);
+            out.push(FieldDesc {
+                field: f,
+                name: c_name(get_name(f)).unwrap_or_default(),
+                type_enum,
+                type_class,
+                is_static: flags & FIELD_ATTRIBUTE_STATIC != 0,
+            });
+        }
+    }
+    out
+}
+
+/// Parent class (`None` at `System.Object`).
+///
+/// # Safety
+/// Same contract as [`find_class`].
+pub unsafe fn class_parent(api: &Il2cppApi, klass: *mut std::ffi::c_void) -> Option<*mut std::ffi::c_void> {
+    let f = api.class_get_parent?;
+    if klass.is_null() {
+        return None;
+    }
+    // SAFETY: live class; pure metadata read.
+    let p = unsafe { f(klass) };
+    if p.is_null() { None } else { Some(p) }
+}
+
+/// Class namespace (`""` for the global namespace).
+///
+/// # Safety
+/// Same contract as [`find_class`].
+pub unsafe fn class_namespace(api: &Il2cppApi, klass: *mut std::ffi::c_void) -> Option<String> {
+    let f = api.class_get_namespace?;
+    if klass.is_null() {
+        return None;
+    }
+    // SAFETY: live class; process-lifetime string.
+    c_name(unsafe { f(klass) })
+}
+
+/// Runtime class of a live object. The object header is checked
+/// readable first (a stale address reports `None`, never faults).
+///
+/// # Safety
+/// Same contract as [`find_class`].
+pub unsafe fn object_class(api: &Il2cppApi, obj: *mut std::ffi::c_void) -> Option<*mut std::ffi::c_void> {
+    let f = api.object_get_class?;
+    if !crate::memory::ptr_readable(obj as usize, 16) {
+        return None;
+    }
+    // SAFETY: readable object header; the class pointer is its first word.
+    let k = unsafe { f(obj) };
+    if k.is_null() { None } else { Some(k) }
+}
+
+/// Unboxed size of a value-type class (`None` when unknown).
+///
+/// # Safety
+/// Same contract as [`find_class`].
+pub unsafe fn class_value_size(api: &Il2cppApi, klass: *mut std::ffi::c_void) -> Option<usize> {
+    let f = api.class_value_size?;
+    if klass.is_null() {
+        return None;
+    }
+    let mut align = 0u32;
+    // SAFETY: live class + caller-owned out param.
+    let n = unsafe { f(klass, &mut align) };
+    usize::try_from(n).ok().filter(|&n| n > 0)
+}
+
+/// Is the class a value type (struct / enum)?
+///
+/// # Safety
+/// Same contract as [`find_class`].
+pub unsafe fn class_is_valuetype(api: &Il2cppApi, klass: *mut std::ffi::c_void) -> Option<bool> {
+    let f = api.class_is_valuetype?;
+    if klass.is_null() {
+        return None;
+    }
+    // SAFETY: live class; pure metadata read.
+    Some(unsafe { f(klass) })
+}
+
+/// Copy an instance field's payload into `buf` (zeroed first).
+/// `field_get_value` copies the FULL field size: the caller must pass
+/// a buffer at least that large (sizes come from [`class_value_size`]
+/// or the primitive table) — this is the one way to overflow here.
+///
+/// # Safety
+/// Same contract as [`find_class`]; `field` belongs to `obj`'s class
+/// chain and is not static; `buf.len()` >= the field size.
+pub unsafe fn field_get_raw(
+    api: &Il2cppApi,
+    obj: *mut std::ffi::c_void,
+    field: *mut std::ffi::c_void,
+    buf: &mut [u8],
+) -> bool {
+    let Some(get_value) = api.field_get_value else {
+        return false;
+    };
+    if field.is_null() || !crate::memory::ptr_readable(obj as usize, 16) {
+        return false;
+    }
+    buf.fill(0);
+    // SAFETY: caller guarantees the buffer covers the field size.
+    unsafe { get_value(obj, field, buf.as_mut_ptr() as *mut std::ffi::c_void) };
+    true
+}
+
+/// Every loaded assembly image (class search).
+///
+/// # Safety
+/// Same contract as [`find_class`].
+pub unsafe fn all_images(api: &Il2cppApi, domain: *mut std::ffi::c_void) -> Vec<*mut std::ffi::c_void> {
+    let Some(assembly_get_image) = api.assembly_get_image else {
+        return Vec::new();
+    };
+    let mut n: usize = 0;
+    // SAFETY: live domain; `&mut n` outlives the call.
+    let asms = unsafe { (api.domain_get_assemblies)(domain, &mut n as *mut usize) };
+    if asms.is_null() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for i in 0..n.min(4096) {
+        // SAFETY: runtime-reported bounds; live assembly handles.
+        let img = unsafe {
+            let a = *asms.add(i) as *mut std::ffi::c_void;
+            if a.is_null() {
+                continue;
+            }
+            assembly_get_image(a)
+        };
+        if !img.is_null() {
+            out.push(img);
+        }
+    }
+    out
+}
+
+/// Image short name (`Assembly-CSharp.dll`).
+///
+/// # Safety
+/// Same contract as [`find_class`].
+pub unsafe fn image_name(api: &Il2cppApi, image: *mut std::ffi::c_void) -> Option<String> {
+    let f = api.image_get_name?;
+    if image.is_null() {
+        return None;
+    }
+    // SAFETY: live image; process-lifetime string.
+    c_name(unsafe { f(image) } as *const libc::c_char)
 }
