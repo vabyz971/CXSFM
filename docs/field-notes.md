@@ -82,6 +82,17 @@ Diagnostic line (zero keypresses needed):
   → byte. Template for other value-type returns.
 - `UnityCache` also resolves `Input.GetKey`; Text pieces are optional
   (null = stripped build, degrade don't fail).
+- **NO virtual dispatch** (PROVEN IN GAME 2026-10-16):
+  `runtime_invoke` calls the exact `MethodInfo` it is given. A method
+  resolved on a base class runs the BASE body even on a subclass that
+  overrides it. Case: `Graphic.set_color` on a TMP text wrote the base
+  `m_Color`, which TMP ignores (it renders `m_fontColor`) — invisible
+  edit, and the read-back through the same base getter still
+  "matched". Fix: resolve overridden members on the concrete class
+  (`get_method` walks up from there, so it hits the override first) —
+  `m_tmp_get/set_color` on `TextMeshProUGUI`, routed by `CompKind`
+  (`speedo::model::color_get/color_set`, shared with map). TMP text
+  color now changes on screen (speedo + map).
 
 ## FPV mod — PARKED
 
@@ -190,7 +201,8 @@ Diagnostic line (zero keypresses needed):
   Unity calls; missing targets never auto-retry (manual Refresh).
   Helpers added: `GameObject.GetComponent(Type)` (managed-exception
   mismatch degrades to missing, never crashes), `Graphic.get/set_color`
-  (one pair covers `Image` + TMP via virtual dispatch), TMP
+  (`Image`/`RawImage` only — WRONG for TMP, see IL2CPP bridge
+  notes "NO virtual dispatch"), TMP
   `get/set_fontSize`. Originals recorded first-seen per address,
   restored on disable/Restore. UI mirrors the snapshot in render-side
   buffers (no present-thread locks except brief clone/queue pushes);
@@ -241,7 +253,7 @@ Diagnostic line (zero keypresses needed):
   `UnityEngine.UI.RawImage` (dynamic texture), NOT `Image` — our
   `GetComponent(Image)` probe missed it, hence no color/opacity rows
   at all. Fix: `UnityCache.rawimage_klass` + `CompKind::Raw` probed
-  alongside (Graphic color virtuals cover it); opacity card now shown
+  alongside (inherits `Graphic.color` without override); opacity card now shown
   for every entry (own group → ancestor climb → logged skip).
 - PERSISTENCE 2026-10-16 (`src/config.rs`, `saves.toml` under
   `$XDG_CONFIG_HOME/cxsfm/`): Save diffs buffers vs first-seen
