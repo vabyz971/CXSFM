@@ -125,6 +125,7 @@ pub(crate) struct ObjSnap {
 /// root): raw addresses go stale on scene change (menu → city rebuilds
 /// the HUD), so restore re-finds by path and writes to the *live*
 /// object, never the stored pointer.
+#[derive(Clone)]
 pub(crate) struct OrigRec {
     pub(crate) owner: String,
     #[allow(dead_code)]

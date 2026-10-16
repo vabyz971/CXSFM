@@ -26,8 +26,9 @@
 //!   another mod — this walk runs on demand alone.
 //! - Every handle alive-checked (`m_CachedPtr`) before every invoke;
 //!   intermediates too (a scene churn between two calls segfaults).
-//! - Originals recorded on first discovery per address, written back
-//!   on disable / Restore.
+//! - Originals recorded on first discovery per owner PATH (session
+//!   backup, never overwritten — address keys recorded our own edits
+//!   after a scene rebuild), written back on disable / Restore.
 //! - No Mutex held across a Unity call; the present thread only
 //!   swaps/clones small data and pushes write requests.
 //! - All mutexes go through `common::lock` (poison-recovering): a

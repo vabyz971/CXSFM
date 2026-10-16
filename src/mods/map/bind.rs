@@ -287,13 +287,15 @@ impl MinimapMod {
         // through the panel buffers now (LOCAL space, camera-proof).
         let mut snaps = Vec::new();
         let mut fresh_origs = Vec::new();
-        // Addresses already recorded (merge skips them). The guard
-        // ends here (last use) — well before any Unity call below.
-        // Raw addresses (0 = container without graphic component);
-        // dedupe only, never dereferenced.
+        // Owner paths already recorded (merge skips them). Keyed by
+        // PATH, not address: a scene change rebuilds the HUD at new
+        // addresses AFTER our writes landed, and an address key then
+        // recorded our own edits as "originals" (Restore/Save broken).
+        // First value seen per path in the session wins, forever. The
+        // guard ends here (last use) — well before any Unity call.
         let known = lock(&self.origs);
-        let mut seen: Vec<(usize, usize)> =
-            known.iter().map(|r| (r.tr, r.comp.unwrap_or(0))).collect();
+        let mut seen: std::collections::HashSet<String> =
+            known.iter().map(|r| r.owner.clone()).collect();
         drop(known);
             unsafe {
                 for (want, comp_addr, go_addr) in found {
@@ -364,8 +366,7 @@ impl MinimapMod {
                 };
                 let tr_addr = tr as usize;
                 let comp_opt = if comp_addr == 0 { None } else { Some(comp_addr) };
-                if !seen.iter().any(|&(t, c)| t == tr_addr && c == comp_addr) {
-                    seen.push((tr_addr, comp_addr));
+                if seen.insert(want.path.clone()) {
                     fresh_origs.push(OrigRec {
                         owner: want.path.clone(),
                         kind: want.comp,
@@ -943,7 +944,7 @@ impl MinimapMod {
 
     /// Write back first-recorded originals (disable / Restore paths,
     /// tick thread, one shot). Dead objects are skipped; the records
-    /// are consumed so the next discovery starts fresh.
+    /// are KEPT (session backup, one per owner path).
     pub(crate) fn restore_all(&self) {
         let tick = self.tick.load(Ordering::SeqCst);
         if !self.ensure_unity(tick, true) {
@@ -958,8 +959,9 @@ impl MinimapMod {
             Some(c) => c,
             None => return,
         };
-        // Take the records (brief lock, no Unity under it).
-        let recs = std::mem::take(&mut *lock(&self.origs));
+        // Copy the records (brief lock, no Unity under it). Kept: they
+        // are the session backup — Restore can run again any time.
+        let recs = lock(&self.origs).clone();
         if recs.is_empty() {
             return;
         }
