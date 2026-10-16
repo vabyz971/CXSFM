@@ -644,6 +644,43 @@ impl SpeedoMod {
                 };
                 if wrote {
                     ok += 1;
+                    // Ancestor-group proof: log once per owner that the
+                    // write landed above the target (explains shared
+                    // fades like map roads).
+                    if r.op == OP_CGALPHA && entry.3.is_none() {
+                        static VIA_ANCESTOR: std::sync::LazyLock<
+                            std::sync::Mutex<std::collections::HashSet<String>>,
+                        > = std::sync::LazyLock::new(|| {
+                            std::sync::Mutex::new(std::collections::HashSet::new())
+                        });
+                        if crate::mods::common::lock(&VIA_ANCESTOR).insert(r.owner.clone()) {
+                            crate::log_line(&format!(
+                                "speedo: opacité via groupe ancêtre sur {}",
+                                r.owner
+                            ));
+                        }
+                    }
+                    // Alpha read-back: proves the write stuck (a match
+                    // with no visual change = game/material override).
+                    if r.op == OP_CGALPHA {
+                        if let Some(back) = crate::unity::canvasgroup_get_alpha(api, &cache, obj) {
+                            if (back - r.v[0]).abs() > 0.02 {
+                                static ALPHA_IGNORED: std::sync::LazyLock<
+                                    std::sync::Mutex<std::collections::HashSet<String>>,
+                                > = std::sync::LazyLock::new(|| {
+                                    std::sync::Mutex::new(std::collections::HashSet::new())
+                                });
+                                if crate::mods::common::lock(&ALPHA_IGNORED)
+                                    .insert(r.owner.clone())
+                                {
+                                    crate::log_line(&format!(
+                                        "speedo: opacité non appliquée sur {} (jeu prioritaire ?)",
+                                        r.owner
+                                    ));
+                                }
+                            }
+                        }
+                    }
                     // Read-back on color writes: custom materials (map
                     // roads) swallow vertex color silently — prove it per
                     // object instead of theorizing. Logged once per owner
