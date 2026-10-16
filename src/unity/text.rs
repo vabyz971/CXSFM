@@ -180,3 +180,56 @@ pub unsafe fn tmp_set_text(
         il2cpp::invoke_void(api, cache.m_tmp_set_text, text_obj, &params)
     }
 }
+
+/// `TMP_Text.get_color()` as `[r, g, b, a]` — the `m_fontColor` TMP
+/// actually renders (`graphic_get_color` would read the ignored base
+/// `m_Color`: `runtime_invoke` does not dispatch virtually).
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn tmp_get_color(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    text_obj: *mut std::ffi::c_void,
+) -> Option<[f32; 4]> {
+    if cache.m_tmp_get_color.is_null() || text_obj.is_null() || api.object_unbox.is_none() {
+        return None;
+    }
+    // SAFETY: cached getter; boxed Color is 4 packed floats.
+    unsafe {
+        let boxed = il2cpp::invoke(api, cache.m_tmp_get_color, text_obj, &[])?;
+        let p = api.object_unbox.unwrap()(boxed) as *const f32;
+        if p.is_null() {
+            return None;
+        }
+        Some([
+            std::ptr::read_unaligned(p),
+            std::ptr::read_unaligned(p.add(1)),
+            std::ptr::read_unaligned(p.add(2)),
+            std::ptr::read_unaligned(p.add(3)),
+        ])
+    }
+}
+
+/// `TMP_Text.set_color(Color)`. One shot is enough: the setter flags
+/// the vertices dirty and the Canvas rebuilds the mesh by itself.
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn tmp_set_color(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    text_obj: *mut std::ffi::c_void,
+    color: [f32; 4],
+) -> bool {
+    if cache.m_tmp_set_color.is_null() || text_obj.is_null() {
+        return false;
+    }
+    // SAFETY: single Color argument passed by address, as the ABI wants.
+    // Void callee: `invoke_void`, never `invoke` (see its docs).
+    unsafe {
+        let mut v = color;
+        let params = [&mut v as *mut [f32; 4] as *mut std::ffi::c_void];
+        il2cpp::invoke_void(api, cache.m_tmp_set_color, text_obj, &params)
+    }
+}

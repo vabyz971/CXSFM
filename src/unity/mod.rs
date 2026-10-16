@@ -62,8 +62,8 @@ pub use object::{
 };
 pub use scene::{loaded_scenes, scene_root_objects, transform_scene_name};
 pub use text::{
-    find_images, find_texts, find_tmp_texts, get_text, set_text, tmp_get_font_size, tmp_get_text,
-    tmp_set_font_size, tmp_set_text,
+    find_images, find_texts, find_tmp_texts, get_text, set_text, tmp_get_color, tmp_get_font_size,
+    tmp_get_text, tmp_set_color, tmp_set_font_size, tmp_set_text,
 };
 pub use video::{
     antialiasing, quality_level, quality_names, render_ambient, render_fog, render_fog_density,
@@ -112,6 +112,13 @@ pub struct UnityCache {
     pub m_tmp_get_font_size: *mut std::ffi::c_void,
     /// `TextMeshProUGUI.set_fontSize(float)` (1 arg, optional).
     pub m_tmp_set_font_size: *mut std::ffi::c_void,
+    /// `TMP_Text.get_color()` override (0 args, optional — boxed Color).
+    /// Resolved on the TMP class: `runtime_invoke` does NOT dispatch
+    /// virtually, so `Graphic.get_color` would read the base `m_Color`
+    /// that TMP ignores (it renders `m_fontColor`).
+    pub m_tmp_get_color: *mut std::ffi::c_void,
+    /// `TMP_Text.set_color(Color)` override (1 arg, optional).
+    pub m_tmp_set_color: *mut std::ffi::c_void,
     /// `UnityEngine.UI.Graphic` class (optional — color live here for
     /// sprites (`Image`) and TMP texts alike).
     pub graphic_klass: *mut std::ffi::c_void,
@@ -374,11 +381,22 @@ pub unsafe fn init(
                 il2cpp::get_method(api, tmp_klass, "set_fontSize", 1),
             )
         };
+        // `color` is overridden by `TMP_Text`; the lookup walks up from
+        // the concrete class, so it hits the override before `Graphic`.
+        let (m_tmp_get_color, m_tmp_set_color) = if tmp_klass.is_null() {
+            (None, None)
+        } else {
+            (
+                il2cpp::get_method(api, tmp_klass, "get_color", 0),
+                il2cpp::get_method(api, tmp_klass, "set_color", 1),
+            )
+        };
 
         // UI styling is optional: `Graphic` carries `color` for sprites
         // (`Image`) and TMP texts alike; `Image` is enumerated like TMP.
-        // `get_method` finds inherited members (proven: TMP `text`
-        // resolves on the concrete class), so one pair covers both.
+        // `Image` inherits `color` as-is; TMP overrides it and needs its
+        // own pair (`m_tmp_*_color`) — `runtime_invoke` calls the exact
+        // `MethodInfo` it is given, there is no virtual dispatch.
         let graphic_klass = il2cpp::find_class(api, domain, Some("UnityEngine.UI"), "UnityEngine.UI", "Graphic")
             .unwrap_or(std::ptr::null_mut());
         let (m_graphic_get_color, m_graphic_set_color) = if graphic_klass.is_null() {
@@ -788,6 +806,8 @@ pub unsafe fn init(
             m_tmp_set_text: m_tmp_set_text.unwrap_or(std::ptr::null_mut()),
             m_tmp_get_font_size: m_tmp_get_font_size.unwrap_or(std::ptr::null_mut()),
             m_tmp_set_font_size: m_tmp_set_font_size.unwrap_or(std::ptr::null_mut()),
+            m_tmp_get_color: m_tmp_get_color.unwrap_or(std::ptr::null_mut()),
+            m_tmp_set_color: m_tmp_set_color.unwrap_or(std::ptr::null_mut()),
             graphic_klass,
             m_graphic_get_color: m_graphic_get_color.unwrap_or(std::ptr::null_mut()),
             m_graphic_set_color: m_graphic_set_color.unwrap_or(std::ptr::null_mut()),

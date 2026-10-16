@@ -13,6 +13,49 @@ use crate::mods::common::lock;
 use crate::unity::UnityCache;
 use std::sync::atomic::Ordering;
 
+/// Color read routed by component kind: TMP renders its own
+/// `m_fontColor` (override), everything else the base `Graphic` color.
+/// Falls back to the `Graphic` pair when the TMP override is missing.
+///
+/// # Safety
+/// Attached tick thread, alive-checked `obj` (same as every helper).
+unsafe fn color_get(
+    api: &crate::il2cpp::Il2cppApi,
+    cache: &UnityCache,
+    obj: *mut std::ffi::c_void,
+    kind: Option<CompKind>,
+) -> Option<[f32; 4]> {
+    // SAFETY: forwarded caller contract.
+    unsafe {
+        if kind == Some(CompKind::Tmp) && !cache.m_tmp_get_color.is_null() {
+            crate::unity::tmp_get_color(api, cache, obj)
+        } else {
+            crate::unity::graphic_get_color(api, cache, obj)
+        }
+    }
+}
+
+/// Color write, same routing as [`color_get`].
+///
+/// # Safety
+/// Same contract as [`color_get`].
+unsafe fn color_set(
+    api: &crate::il2cpp::Il2cppApi,
+    cache: &UnityCache,
+    obj: *mut std::ffi::c_void,
+    kind: Option<CompKind>,
+    color: [f32; 4],
+) -> bool {
+    // SAFETY: forwarded caller contract.
+    unsafe {
+        if kind == Some(CompKind::Tmp) && !cache.m_tmp_set_color.is_null() {
+            crate::unity::tmp_set_color(api, cache, obj, color)
+        } else {
+            crate::unity::graphic_set_color(api, cache, obj, color)
+        }
+    }
+}
+
 /// Retry cadence (ticks, >= 5 s at 60 Hz) for a failed cache init
 /// (game loading). Forced on arming / Refresh / Restore / disable.
 const RESOLVE_EVERY_TICKS: u64 = 300;
@@ -335,7 +378,7 @@ impl SpeedoMod {
                 // (containers skip straight to the snapshot push).
                 let comp_p = comp_addr as *mut std::ffi::c_void;
                 let color = if want.comp.is_some() {
-                    crate::unity::graphic_get_color(api, &cache, comp_p)
+                    color_get(api, &cache, comp_p, want.comp)
                         .unwrap_or([1.0, 1.0, 1.0, 1.0])
                 } else {
                     [1.0, 1.0, 1.0, 1.0]
@@ -628,7 +671,7 @@ impl SpeedoMod {
                 let live_color = if need_live {
                     match Self::resolve_live(api, &cache, path, snap.comp) {
                         Some((_, _, Some(comp), _)) => {
-                            crate::unity::graphic_get_color(api, &cache, comp)
+                            color_get(api, &cache, comp, snap.comp)
                         }
                         _ => None,
                     }
@@ -857,7 +900,7 @@ impl SpeedoMod {
                 let wrote = match r.op {
                     OP_SCALE => crate::unity::tr_set_scale(api, &cache, obj, [r.v[0], r.v[1], r.v[2]]),
                     OP_POS => crate::unity::tr_set_local_position(api, &cache, obj, [r.v[0], r.v[1], r.v[2]]),
-                    OP_COLOR => crate::unity::graphic_set_color(api, &cache, obj, r.v),
+                    OP_COLOR => color_set(api, &cache, obj, r.kind, r.v),
                     OP_FONT => crate::unity::tmp_set_font_size(api, &cache, obj, r.v[0]),
                     OP_ROT => crate::unity::tr_set_local_euler(api, &cache, obj, [r.v[0], r.v[1], r.v[2]]),
                     OP_CGALPHA => crate::unity::canvasgroup_set_alpha(api, &cache, obj, r.v[0]),
@@ -910,7 +953,7 @@ impl SpeedoMod {
                     // object instead of theorizing. Logged once per owner
                     // (color drags would spam otherwise).
                     if r.op == OP_COLOR {
-                        if let Some(back) = crate::unity::graphic_get_color(api, &cache, obj) {
+                        if let Some(back) = color_get(api, &cache, obj, r.kind) {
                             let drift = (0..3)
                                 .map(|i| (back[i] - r.v[i]).abs())
                                 .fold(0.0f32, f32::max);
@@ -991,7 +1034,7 @@ impl SpeedoMod {
                 restored |= crate::unity::tr_set_local_position(api, &cache, tr, r.pos);
                 restored |= crate::unity::tr_set_local_euler(api, &cache, tr, r.euler);
                 if let (Some(comp), Some(color)) = (comp_live, r.color) {
-                    restored |= crate::unity::graphic_set_color(api, &cache, comp, color);
+                    restored |= color_set(api, &cache, comp, r.kind, color);
                     if r.kind == Some(CompKind::Tmp) {
                         if let Some(size) = r.font_size {
                             restored |= crate::unity::tmp_set_font_size(api, &cache, comp, size);

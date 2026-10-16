@@ -594,8 +594,9 @@ pub unsafe fn go_get_component(
 }
 
 /// `Graphic.get_color()` as `[r, g, b, a]` (UnityEngine.Color, 4 packed
-/// floats). Works on any `Graphic` subclass instance (`Image` sprites,
-/// TMP texts — virtual dispatch reaches the override).
+/// floats). Base `Graphic.m_Color`: right for `Image` / `RawImage`,
+/// WRONG for TMP (no virtual dispatch through `runtime_invoke`; TMP
+/// overrides `color`) — use `tmp_get_color` there.
 ///
 /// # Safety
 /// Same contract as `super::init`.
