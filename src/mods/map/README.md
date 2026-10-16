@@ -31,10 +31,14 @@ fallback `Map`) and the tile (globe, `mod_map`) differ.
 
 ## Map specifics: roads, opacity, color
 
-- **Opacity** (wyr's `map_*_opacity`): written to the object's own
-  `CanvasGroup`, else to the nearest ancestor group (climb bounded so
-  it never leaves the walked subtree) — whole-subtree fade like wyr,
-  no `AddComponent` (we use existing groups only).
+- **Roads are `RawImage`** (dynamic textures — a sibling of `Image`
+  that `GetComponent(Image)` never matches, confirmed in wyr's
+  binary too). The mod probes `Image`, `RawImage`, TMP in order.
+- **Opacity** (wyr's `map_*_opacity`): every entry shows the slider —
+  own `CanvasGroup` first, else the nearest ancestor group (climb
+  bounded so it never leaves the walked subtree), else a clear skip
+  in the log. Whole-subtree fade like wyr, no `AddComponent` (we use
+  existing groups only).
 - **Color**: honest limitation — road traces use a custom material
   that ignores vertex color (wyr itself only ships opacity keys for
   map layers, no color). A write that the game swallows is logged

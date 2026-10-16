@@ -84,7 +84,7 @@ impl MinimapMod {
         api: &crate::il2cpp::Il2cppApi,
         cache: &UnityCache,
         go: *mut std::ffi::c_void,
-        pairs: &[(*mut std::ffi::c_void, CompKind); 2],
+        pairs: &[( *mut std::ffi::c_void, CompKind)],
     ) -> (Option<CompKind>, usize) {
         // SAFETY: see above; a dead component unbinds silently.
         unsafe {
@@ -125,6 +125,7 @@ impl MinimapMod {
             let mut cands: Vec<(Want, usize, usize)> = Vec::new();
             let pairs = [
                 (cache.image_klass, CompKind::Image),
+                (cache.rawimage_klass, CompKind::Raw),
                 (cache.tmp_klass, CompKind::Tmp),
             ];
             if pairs.iter().all(|(k, _)| k.is_null()) {
@@ -573,7 +574,7 @@ impl MinimapMod {
         // SAFETY: attached tick thread; one resolve (+ one color read
         // when merging) per entry, alive-checked, consumed immediately.
         unsafe {
-            for (mod_id, path, saved) in entries.iter().filter(|(m, _, _)| m == super::MOD_ID) {
+            for (_mod_id, path, saved) in entries.iter().filter(|(m, _, _)| m == super::MOD_ID) {
                 let snap = match snaps.iter().find(|s| &s.owner == path) {
                     Some(s) => s,
                     None => {

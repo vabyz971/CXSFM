@@ -12,6 +12,9 @@ use crate::unity::UnityCache;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CompKind {
     Image,
+    /// Dynamic textures (minimap roads): sibling of `Image`, probed
+    /// separately — `GetComponent(Image)` never matches it.
+    Raw,
     Tmp,
 }
 
@@ -19,6 +22,7 @@ impl CompKind {
     pub(crate) fn label(self) -> &'static str {
         match self {
             CompKind::Image => "Image",
+            CompKind::Raw => "RawImage",
             CompKind::Tmp => "TextMeshProUGUI",
         }
     }
@@ -27,6 +31,7 @@ impl CompKind {
     pub(crate) fn klass(self, cache: &UnityCache) -> *mut std::ffi::c_void {
         match self {
             CompKind::Image => cache.image_klass,
+            CompKind::Raw => cache.rawimage_klass,
             CompKind::Tmp => cache.tmp_klass,
         }
     }
@@ -219,12 +224,19 @@ pub(crate) fn diff_object(obj: &UiObj, orig: Option<&OrigRec>) -> Option<SavedOb
                 }
             }
             // Baseline: group alpha when present, else the color alpha.
+            // No baseline (container without either) but moved off the
+            // 1.0 default: still worth saving — drain climbs ancestors.
             let orig_opacity = r.alpha.or_else(|| r.color.map(|c| c[3]));
-            if let Some(o) = orig_opacity {
-                if (obj.opacity - o).abs() > f32::EPSILON {
+            match orig_opacity {
+                Some(o) if (obj.opacity - o).abs() > f32::EPSILON => {
                     s.opacity = Some(obj.opacity);
                     any = true;
                 }
+                None if obj.opacity != 1.0 => {
+                    s.opacity = Some(obj.opacity);
+                    any = true;
+                }
+                _ => {}
             }
             if obj.active != r.active {
                 s.active = Some(obj.active);
@@ -312,10 +324,10 @@ pub(crate) fn write_reqs_for(
                 reqs.push(mk(OP_FONT, [size, 0.0, 0.0, 0.0]));
             }
         }
-    } else if has_cg {
-        if let Some(o) = s.opacity {
-            reqs.push(mk(OP_CGALPHA, [o, 0.0, 0.0, 0.0]));
-        }
+    } else if let Some(o) = s.opacity {
+        // Container without own group: drain climbs to the nearest
+        // ancestor group (or skips with a clear log line).
+        reqs.push(mk(OP_CGALPHA, [o, 0.0, 0.0, 0.0]));
     }
     reqs
 }
@@ -447,5 +459,39 @@ mod tests {
         // Without group nor live base: opacity alone cannot land.
         let reqs = write_reqs_for("Map/X", Some(CompKind::Image), false, &s, None);
         assert!(reqs.is_empty());
+    }
+
+    #[test]
+    fn raw_label() {
+        assert_eq!(CompKind::Raw.label(), "RawImage");
+    }
+
+    #[test]
+    fn container_opacity_emits_group_write() {
+        // Pure container (no comp): opacity stages a CGALPHA the
+        // drain resolves by ancestor climb.
+        let s = super::SavedObj {
+            opacity: Some(0.3),
+            ..super::SavedObj::default()
+        };
+        let reqs = write_reqs_for("Map/Mask", None, false, &s, None);
+        let ops: Vec<u8> = reqs.iter().map(|r| r.op).collect();
+        assert_eq!(ops, vec![OP_CGALPHA]);
+    }
+
+    #[test]
+    fn diff_saves_moved_opacity_without_baseline() {
+        let (mut ui, _) = test_obj();
+        ui.comp = None;
+        ui.opacity = 0.4;
+        let s = diff_object(&ui, None).expect("diff");
+        assert_eq!(s.opacity, Some(0.4));
+        // No baseline: full live buffer saved (opacity included even
+        // at its 1.0 default — nothing to compare against).
+        let (ui2, _) = test_obj();
+        let mut ui2 = ui2;
+        ui2.comp = None;
+        let s = diff_object(&ui2, None).expect("diff");
+        assert_eq!(s.opacity, Some(1.0));
     }
 }

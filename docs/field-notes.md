@@ -237,6 +237,12 @@ Diagnostic line (zero keypresses needed):
   `NorthIcon`…), fallback `Map`; hide = `SetActive`, opacity =
   `CanvasGroup` (existing group else color alpha) — all straight from
   the wyr strings above. Tile globe, `mod_map` label key.
+- ROADS ARE RAWIMAGE 2026-10-16: `RoadImage` carries
+  `UnityEngine.UI.RawImage` (dynamic texture), NOT `Image` — our
+  `GetComponent(Image)` probe missed it, hence no color/opacity rows
+  at all. Fix: `UnityCache.rawimage_klass` + `CompKind::Raw` probed
+  alongside (Graphic color virtuals cover it); opacity card now shown
+  for every entry (own group → ancestor climb → logged skip).
 - PERSISTENCE 2026-10-16 (`src/config.rs`, `saves.toml` under
   `$XDG_CONFIG_HOME/cxsfm/`): Save diffs buffers vs first-seen
   originals (modified params only) into `[mod."object/path"]` tables,

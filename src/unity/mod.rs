@@ -117,6 +117,10 @@ pub struct UnityCache {
     pub graphic_klass: *mut std::ffi::c_void,
     /// `UnityEngine.UI.Image` class (optional — sprite enumeration).
     pub image_klass: *mut std::ffi::c_void,
+    /// `UnityEngine.UI.RawImage` class (optional — dynamic textures
+    /// like minimap roads; a sibling of `Image`, NOT an `Image`, so
+    /// `GetComponent(Image)` misses it entirely).
+    pub rawimage_klass: *mut std::ffi::c_void,
     /// `Graphic.get_color()` (0 args, optional — boxed Color).
     pub m_graphic_get_color: *mut std::ffi::c_void,
     /// `Graphic.set_color(Color)` (1 arg, optional).
@@ -386,6 +390,8 @@ pub unsafe fn init(
             )
         };
         let image_klass = il2cpp::find_class(api, domain, Some("UnityEngine.UI"), "UnityEngine.UI", "Image")
+            .unwrap_or(std::ptr::null_mut());
+        let rawimage_klass = il2cpp::find_class(api, domain, Some("UnityEngine.UI"), "UnityEngine.UI", "RawImage")
             .unwrap_or(std::ptr::null_mut());
 
         // Component/GameObject state: optional visibility diagnosis
@@ -786,6 +792,7 @@ pub unsafe fn init(
             m_graphic_get_color: m_graphic_get_color.unwrap_or(std::ptr::null_mut()),
             m_graphic_set_color: m_graphic_set_color.unwrap_or(std::ptr::null_mut()),
             image_klass,
+            rawimage_klass,
             m_comp_get_gameobject: m_comp_get_gameobject.unwrap_or(std::ptr::null_mut()),
             m_go_get_active: m_go_get_active.unwrap_or(std::ptr::null_mut()),
             m_go_get_scene: m_go_get_scene.unwrap_or(std::ptr::null_mut()),

@@ -156,13 +156,11 @@ impl SpeedoMod {
             edited |= Self::axis_rows(ui, "Rotation", &mut obj.euler);
             edited |= Self::axis_rows(ui, "Échelle", &mut obj.scale);
         });
-        // — Image / TextMeshProUGUI card: only with a component.
-        // Pure containers (Turbo, Speedometer…) stop here.
-        if obj.comp.is_none() {
-            return edited;
-        }
-        let comp_label = obj.comp.map(|c| c.label()).unwrap_or("?");
-        egui::Frame::group(ui.style()).show(ui, |ui| {
+        // — Image / TextMeshProUGUI / RawImage card: only with a
+        // component. Pure containers skip to the opacity card below.
+        if obj.comp.is_some() {
+            let comp_label = obj.comp.map(|c| c.label()).unwrap_or("?");
+            egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.monospace(comp_label);
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Couleur").weak());
@@ -179,27 +177,6 @@ impl SpeedoMod {
                     )
                     .wrap(),
                 );
-            }
-            // Opacity row when there is somewhere to write it
-            // (CanvasGroup, else the color alpha).
-            if obj.cg.is_some() || obj.comp.is_some() {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Opacité").weak());
-                    // Dedicated buffer: CanvasGroup path when present,
-                    // merged into color alpha on drain otherwise.
-                    // Initialized from whichever source was read.
-                    let mut pct = obj.opacity * 100.0;
-                    if ui
-                        .add_sized(
-                            [160.0, ui.spacing().interact_size.y],
-                            egui::Slider::new(&mut pct, 0.0..=100.0).suffix("%"),
-                        )
-                        .changed()
-                    {
-                        obj.opacity = (pct / 100.0).clamp(0.0, 1.0);
-                        edited = true;
-                    }
-                });
             }
             if obj.comp == Some(CompKind::Tmp) {
                 ui.horizontal(|ui| {
@@ -229,6 +206,27 @@ impl SpeedoMod {
                     }
                 });
             }
+        });
+        }
+        // — Opacité card: ALWAYS shown (containers included). Own group
+        // first, else the nearest ancestor group (bounded climb at
+        // drain), else a clear skip in the log — never a dead end
+        // without explanation.
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.monospace("Opacité");
+            ui.horizontal(|ui| {
+                let mut pct = obj.opacity * 100.0;
+                if ui
+                    .add_sized(
+                        [160.0, ui.spacing().interact_size.y],
+                        egui::Slider::new(&mut pct, 0.0..=100.0).suffix("%"),
+                    )
+                    .changed()
+                {
+                    obj.opacity = (pct / 100.0).clamp(0.0, 1.0);
+                    edited = true;
+                }
+            });
         });
         edited
     }}
