@@ -28,5 +28,17 @@ shares its data model (`speedo::model`) and behavior, only the roots
 (`UIHUDMinimap`, fallback `Map`) and the tile (globe, `mod_map`)
 differ.
 
+## Map specifics: roads, opacity, color
+
+- **Opacity** (wyr's `map_*_opacity`): written to the object's own
+  `CanvasGroup`, else to the nearest ancestor group (climb bounded so
+  it never leaves the walked subtree) — whole-subtree fade like wyr,
+  no `AddComponent` (we use existing groups only).
+- **Color**: honest limitation — road traces use a custom material
+  that ignores vertex color (wyr itself only ships opacity keys for
+  map layers, no color). A write that the game swallows is logged
+  once per object (`couleur ignorée sur …`), proven by immediate
+  read-back rather than assumed.
+
 See `docs/field-notes.md` (WYR-MENU + MINIMAP sections) for roots,
 hide/opacity mechanisms and camera names reserved for the FPV future.

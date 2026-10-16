@@ -795,3 +795,47 @@ pub unsafe fn canvasgroup_set_alpha(
         il2cpp::invoke_void(api, cache.m_canvasgroup_set_alpha, obj, &params)
     }
 }
+
+/// Nearest `CanvasGroup` at or above `tr` (whole-subtree opacity, the
+/// wyr `map_*_opacity` path): own object first, then up to
+/// `max_climb` parents. Custom materials (map roads) ignore vertex
+/// color, so without this fallback opacity has nowhere to land.
+/// Every level alive-checked; `None` = nothing to write (caller
+/// skips and counts stale, never touches a dead handle).
+///
+/// # Safety
+/// Same contract as `super::init`.
+pub unsafe fn ancestor_canvasgroup(
+    api: &Il2cppApi,
+    cache: &UnityCache,
+    tr: *mut std::ffi::c_void,
+    max_climb: usize,
+) -> Option<*mut std::ffi::c_void> {
+    // SAFETY: attached tick thread; reads only, consumed immediately.
+    unsafe {
+        let mut t = tr;
+        // Level 0 = own object, then parents.
+        for _ in 0..=max_climb {
+            if t.is_null() || object_alive(api, cache, t) != Some(true) {
+                return None;
+            }
+            let go = match component_gameobject(api, cache, t) {
+                Some(g) => g,
+                None => return None,
+            };
+            if object_alive(api, cache, go) != Some(true) {
+                return None;
+            }
+            if let Some(cg) = go_get_component(api, cache, go, cache.canvasgroup_klass) {
+                if !cg.is_null() && object_alive(api, cache, cg) == Some(true) {
+                    return Some(cg);
+                }
+            }
+            t = match tr_parent(api, cache, t) {
+                Some(p) => p,
+                None => return None,
+            };
+        }
+        None
+    }
+}

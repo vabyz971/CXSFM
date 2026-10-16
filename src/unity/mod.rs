@@ -53,7 +53,7 @@ pub use camera::{
     cm_vcam_priority, get_fov, main_camera, set_fov, world_to_screen,
 };
 pub use object::{
-    all_transforms, beh_get_enabled, beh_set_enabled, canvasgroup_get_alpha, canvasgroup_set_alpha,
+    all_transforms, ancestor_canvasgroup, beh_get_enabled, beh_set_enabled, canvasgroup_get_alpha, canvasgroup_set_alpha,
     collider_list, component_active, component_gameobject, get_instance_id, go_active, go_find,
     go_get_component, go_set_active, go_transform, graphic_get_color, graphic_set_color,
     object_alive, object_name, tr_child, tr_child_count, tr_find, tr_get_local_euler,

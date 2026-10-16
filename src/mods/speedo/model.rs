@@ -171,9 +171,23 @@ pub(crate) fn is_zero_scale(s: [f32; 3]) -> bool {
     s[0].abs() < SCALE_EPS && s[1].abs() < SCALE_EPS && s[2].abs() < SCALE_EPS
 }
 
+/// Ancestor-CanvasGroup climb budget for a dashboard path: climbing
+/// must never escape above the walked root (`Map/Mask/Base/RoadImage`
+/// = 4 segments → 3 climbs max, landing on `Map` at most).
+pub(crate) fn ancestor_climb_limit(owner: &str) -> usize {
+    owner.split('/').count().saturating_sub(1)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{color_to_f32, display_name, f32_to_color};
+    use super::{ancestor_climb_limit, color_to_f32, display_name, f32_to_color};
+
+    #[test]
+    fn climb_limit_never_escapes_root() {
+        assert_eq!(ancestor_climb_limit("Map/Mask/Base/RoadImage"), 3);
+        assert_eq!(ancestor_climb_limit("Map"), 0);
+        assert_eq!(ancestor_climb_limit("ImgPointer"), 0);
+    }
 
     #[test]
     fn display_name_shortens_paths() {

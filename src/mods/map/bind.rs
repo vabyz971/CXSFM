@@ -601,7 +601,18 @@ impl MinimapMod {
                     },
                     OP_CGALPHA => match entry.3 {
                         Some(a) => a as *mut std::ffi::c_void,
-                        None => continue,
+                        // No own group (map roads…): nearest ancestor
+                        // group, bounded so the climb cannot leave the
+                        // walked subtree (see ancestor_climb_limit).
+                        None => {
+                            let tr = entry.1 as *mut std::ffi::c_void;
+                            let limit =
+                                crate::mods::speedo::model::ancestor_climb_limit(&r.owner);
+                            match crate::unity::ancestor_canvasgroup(api, &cache, tr, limit) {
+                                Some(cg) => cg,
+                                None => continue,
+                            }
+                        }
                     },
                     OP_ACTIVE => entry.0 as *mut std::ffi::c_void,
                     _ => continue,
@@ -626,6 +637,32 @@ impl MinimapMod {
                 };
                 if wrote {
                     ok += 1;
+                    // Read-back on color writes: custom materials (map
+                    // roads) swallow vertex color silently — prove it per
+                    // object instead of theorizing. Logged once per owner
+                    // (color drags would spam otherwise).
+                    if r.op == OP_COLOR {
+                        if let Some(back) = crate::unity::graphic_get_color(api, &cache, obj) {
+                            let drift = (0..3)
+                                .map(|i| (back[i] - r.v[i]).abs())
+                                .fold(0.0f32, f32::max);
+                            if drift > 0.05 {
+                                static COLOR_IGNORED: std::sync::LazyLock<
+                                    std::sync::Mutex<std::collections::HashSet<String>>,
+                                > = std::sync::LazyLock::new(|| {
+                                    std::sync::Mutex::new(std::collections::HashSet::new())
+                                });
+                                if crate::mods::common::lock(&COLOR_IGNORED)
+                                    .insert(r.owner.clone())
+                                {
+                                    crate::log_line(&format!(
+                                        "map: couleur ignorée sur {} (matériau custom ?)",
+                                        r.owner
+                                    ));
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
