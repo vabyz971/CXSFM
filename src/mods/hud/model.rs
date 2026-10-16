@@ -488,6 +488,192 @@ background = "#000000A0"
   align = "center"
 "##;
 
+// --- Field explorer (phase 2): pure decoding + view data ---------------------
+
+/// `Il2CppTypeEnum` values the explorer understands.
+pub(crate) mod te {
+    pub(crate) const BOOLEAN: i32 = 0x02;
+    pub(crate) const CHAR: i32 = 0x03;
+    pub(crate) const I1: i32 = 0x04;
+    pub(crate) const U1: i32 = 0x05;
+    pub(crate) const I2: i32 = 0x06;
+    pub(crate) const U2: i32 = 0x07;
+    pub(crate) const I4: i32 = 0x08;
+    pub(crate) const U4: i32 = 0x09;
+    pub(crate) const I8: i32 = 0x0a;
+    pub(crate) const U8: i32 = 0x0b;
+    pub(crate) const R4: i32 = 0x0c;
+    pub(crate) const R8: i32 = 0x0d;
+    pub(crate) const STRING: i32 = 0x0e;
+    pub(crate) const PTR: i32 = 0x0f;
+    pub(crate) const VALUETYPE: i32 = 0x11;
+    pub(crate) const CLASS: i32 = 0x12;
+    pub(crate) const ARRAY: i32 = 0x14;
+    pub(crate) const GENERICINST: i32 = 0x15;
+    pub(crate) const I: i32 = 0x18;
+    pub(crate) const U: i32 = 0x19;
+    pub(crate) const OBJECT: i32 = 0x1c;
+    pub(crate) const SZARRAY: i32 = 0x1d;
+}
+
+/// Payload size of a primitive / pointer-sized type (`None` = not a
+/// fixed-size primitive: value types ask the runtime instead).
+pub(crate) fn primitive_size(t: i32) -> Option<usize> {
+    Some(match t {
+        te::BOOLEAN | te::I1 | te::U1 => 1,
+        te::CHAR | te::I2 | te::U2 => 2,
+        te::I4 | te::U4 | te::R4 => 4,
+        te::I8 | te::U8 | te::R8 | te::I | te::U | te::PTR => 8,
+        te::STRING | te::CLASS | te::OBJECT | te::SZARRAY | te::ARRAY => 8,
+        _ => return None,
+    })
+}
+
+/// C#-style name of a primitive (`None` = use the class name).
+pub(crate) fn primitive_name(t: i32) -> Option<&'static str> {
+    Some(match t {
+        te::BOOLEAN => "bool",
+        te::CHAR => "char",
+        te::I1 => "sbyte",
+        te::U1 => "byte",
+        te::I2 => "short",
+        te::U2 => "ushort",
+        te::I4 => "int",
+        te::U4 => "uint",
+        te::I8 => "long",
+        te::U8 => "ulong",
+        te::R4 => "float",
+        te::R8 => "double",
+        te::STRING => "string",
+        te::I => "nint",
+        te::U => "nuint",
+        te::PTR => "ptr",
+        _ => return None,
+    })
+}
+
+/// Reference-typed payload (a pointer to another managed object).
+pub(crate) fn is_reference(t: i32) -> bool {
+    matches!(t, te::STRING | te::CLASS | te::OBJECT | te::SZARRAY | te::ARRAY)
+}
+
+fn le<const N: usize>(b: &[u8]) -> Option<[u8; N]> {
+    b.get(..N)?.try_into().ok()
+}
+
+/// Display a numeric primitive payload (`None` = not numeric).
+pub(crate) fn decode_primitive(t: i32, b: &[u8]) -> Option<String> {
+    Some(match t {
+        te::BOOLEAN => (b.first()? != &0).to_string(),
+        te::CHAR => char::from_u32(u16::from_le_bytes(le(b)?) as u32)
+            .map(|c| format!("'{c}'"))
+            .unwrap_or_else(|| "?".into()),
+        te::I1 => (b.first()?.cast_signed()).to_string(),
+        te::U1 => b.first()?.to_string(),
+        te::I2 => i16::from_le_bytes(le(b)?).to_string(),
+        te::U2 => u16::from_le_bytes(le(b)?).to_string(),
+        te::I4 => i32::from_le_bytes(le(b)?).to_string(),
+        te::U4 => u32::from_le_bytes(le(b)?).to_string(),
+        te::I8 | te::I => i64::from_le_bytes(le(b)?).to_string(),
+        te::U8 | te::U => u64::from_le_bytes(le(b)?).to_string(),
+        te::R4 => format!("{:.3}", f32::from_le_bytes(le(b)?)),
+        te::R8 => format!("{:.3}", f64::from_le_bytes(le(b)?)),
+        te::PTR => format!("{:#x}", u64::from_le_bytes(le(b)?)),
+        _ => return None,
+    })
+}
+
+/// Display a value-type payload: known Unity structs as floats, small
+/// payloads (enums, packed ints) as an integer, else leading hex.
+pub(crate) fn decode_struct(class_name: &str, b: &[u8]) -> String {
+    let floats = |n: usize| -> Option<String> {
+        let v: Option<Vec<String>> = (0..n)
+            .map(|i| le::<4>(b.get(i * 4..)?).map(|x| format!("{:.3}", f32::from_le_bytes(x))))
+            .collect();
+        v.map(|v| format!("({})", v.join(", ")))
+    };
+    let known = match class_name {
+        "Vector2" => floats(2),
+        "Vector3" => floats(3),
+        "Vector4" | "Quaternion" | "Color" => floats(4),
+        _ => None,
+    };
+    if let Some(s) = known {
+        return s;
+    }
+    match b.len() {
+        1 => b[0].to_string(),
+        2 => i16::from_le_bytes([b[0], b[1]]).to_string(),
+        4 => i32::from_le_bytes([b[0], b[1], b[2], b[3]]).to_string(),
+        8 => le::<8>(b).map(|x| i64::from_le_bytes(x).to_string()).unwrap_or_default(),
+        _ => {
+            let hex: Vec<String> = b.iter().take(16).map(|x| format!("{x:02x}")).collect();
+            format!("[{}{}]", hex.join(" "), if b.len() > 16 { " …" } else { "" })
+        }
+    }
+}
+
+/// Binding path of a field, the syntax phase 3 will accept in
+/// `hud.toml`: `Root/ref/ref/field`.
+pub(crate) fn binding_path(root: &str, path: &[String], field: &str) -> String {
+    let mut s = root.to_string();
+    for seg in path.iter().map(String::as_str).chain(std::iter::once(field)) {
+        s.push('/');
+        s.push_str(seg);
+    }
+    s
+}
+
+/// One class-search hit (class pointer is process-stable metadata).
+#[derive(Clone, Debug)]
+pub(crate) struct ClassHit {
+    pub(crate) klass: usize,
+    pub(crate) full: String,
+    pub(crate) image: String,
+}
+
+/// One displayed field of the opened object.
+#[derive(Clone, Debug)]
+pub(crate) struct FieldRow {
+    pub(crate) name: String,
+    pub(crate) type_name: String,
+    pub(crate) value: String,
+    /// Non-null object reference: the UI offers to step into it.
+    pub(crate) follow: bool,
+}
+
+/// Opened object: root class instance, then a chain of reference
+/// fields re-walked from that root on every (re)read.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OpenView {
+    pub(crate) klass: usize,
+    pub(crate) root: String,
+    pub(crate) path: Vec<String>,
+    pub(crate) instance: usize,
+    pub(crate) instances: usize,
+    /// Runtime class of the object reached at the end of `path`.
+    pub(crate) at_class: String,
+    pub(crate) fields: Vec<FieldRow>,
+    pub(crate) error: Option<String>,
+}
+
+/// Render → tick explorer request (one pending at a time).
+#[derive(Clone, Debug)]
+pub(crate) enum ExploreReq {
+    Search(String),
+    Open { klass: usize, root: String, path: Vec<String>, instance: usize },
+}
+
+/// Tick → render explorer state.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ExploreView {
+    pub(crate) hits: Vec<ClassHit>,
+    pub(crate) truncated: bool,
+    pub(crate) searched: Option<String>,
+    pub(crate) open: Option<OpenView>,
+    pub(crate) error: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,6 +757,42 @@ anchor = "nowhere"
         assert_eq!(bar_fraction(-5.0, 0.0, 8000.0), 0.0);
         assert_eq!(bar_fraction(5.0, 10.0, 10.0), 0.0);
         assert_eq!(bar_fraction(f32::NAN, 0.0, 1.0), 0.0);
+    }
+
+    #[test]
+    fn primitives_decode() {
+        assert_eq!(decode_primitive(te::R4, &1.5f32.to_le_bytes()).unwrap(), "1.500");
+        assert_eq!(decode_primitive(te::I4, &(-3i32).to_le_bytes()).unwrap(), "-3");
+        assert_eq!(decode_primitive(te::BOOLEAN, &[1]).unwrap(), "true");
+        assert_eq!(decode_primitive(te::I1, &[0xff]).unwrap(), "-1");
+        assert_eq!(decode_primitive(te::R8, &[0; 2]), None);
+        assert_eq!(decode_primitive(te::CLASS, &[0; 8]), None);
+        assert_eq!(primitive_size(te::R4), Some(4));
+        assert_eq!(primitive_size(te::VALUETYPE), None);
+        assert!(is_reference(te::STRING) && !is_reference(te::R4));
+    }
+
+    #[test]
+    fn structs_decode() {
+        let mut b = Vec::new();
+        for f in [1.0f32, 2.0, 3.0] {
+            b.extend_from_slice(&f.to_le_bytes());
+        }
+        assert_eq!(decode_struct("Vector3", &b), "(1.000, 2.000, 3.000)");
+        assert_eq!(decode_struct("Gear", &4i32.to_le_bytes()), "4");
+        let big = decode_struct("Big", &[0xab; 20]);
+        assert!(big.starts_with("[ab ab") && big.ends_with(" …]"), "{big}");
+        assert_eq!(big.matches("ab").count(), 16);
+        assert_eq!(decode_struct("Vector3", &[0; 4]), "0");
+    }
+
+    #[test]
+    fn binding_paths() {
+        assert_eq!(binding_path("UITach", &[], "rpm"), "UITach/rpm");
+        assert_eq!(
+            binding_path("UITach", &["car".into(), "engine".into()], "rpm"),
+            "UITach/car/engine/rpm"
+        );
     }
 
     #[test]

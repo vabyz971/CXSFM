@@ -11,13 +11,19 @@
 //! the getter-polling path crashed the game before (see field-notes,
 //! speedometer REDESIGN), so they will come from plain field reads.
 //!
-//! Layout: `model` (config, values, pure helpers + tests), `ui`
-//! (present-thread rendering + control window). No `bind`: nothing
-//! touches Unity yet. Disabling only hides the HUDs (nothing in the
-//! game was changed).
+//! PHASE 2: the "Explorer" tab finds where the game keeps those
+//! values — class search (metadata only) + on-demand field dumps of a
+//! live instance, following reference fields from a re-found root.
+//! Read-only: nothing in the game is ever written.
+//!
+//! Layout: `model` (config, values, explorer decoding, pure helpers +
+//! tests), `bind` (explorer, tick side, on demand only), `ui`
+//! (present-thread rendering + control window). Disabling only hides
+//! the HUDs (nothing in the game was changed).
 
 pub mod i18n;
 
+mod bind;
 pub(crate) mod model;
 mod ui;
 
@@ -27,7 +33,8 @@ pub(crate) const MOD_ID: &str = "hud";
 use crate::mods::api::{Mod, TileIcon};
 use crate::mods::common::lock;
 use crate::mods::tool::ToolChrome;
-use model::HudConfig;
+use crate::unity::UnityCache;
+use model::{ExploreReq, ExploreView, HudConfig};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -54,7 +61,20 @@ pub struct HudMod {
     pub(crate) status: Mutex<Status>,
     /// Control-window chrome (present thread only).
     pub(crate) tool: ToolChrome,
+    /// Explorer: Unity cache (resolved on first Open), pending request
+    /// (render → tick, one at a time), published view (tick → render).
+    pub(crate) unity: Mutex<Option<UnityCache>>,
+    pub(crate) explore_req: Mutex<Option<ExploreReq>>,
+    pub(crate) explore: Mutex<ExploreView>,
+    /// Present thread only: active tab, search box text.
+    pub(crate) tab_explore: bool,
+    pub(crate) query: String,
 }
+
+// SAFETY: shared state is atomics or mutex-guarded plain data; the
+// Unity cache holds process-stable class/method pointers only.
+unsafe impl Send for HudMod {}
+unsafe impl Sync for HudMod {}
 
 impl HudMod {
     pub fn new() -> Self {
@@ -66,6 +86,11 @@ impl HudMod {
             config: Mutex::new(None),
             status: Mutex::new(Status::default()),
             tool: ToolChrome::new(),
+            unity: Mutex::new(None),
+            explore_req: Mutex::new(None),
+            explore: Mutex::new(ExploreView::default()),
+            tab_explore: false,
+            query: String::new(),
         }
     }
 
@@ -163,6 +188,8 @@ impl Mod for HudMod {
         if force || t % RELOAD_EVERY_TICKS == 0 {
             self.reload(force);
         }
+        // Explorer: on-demand only (no request = no Unity traffic).
+        self.explore_tick();
     }
 
     fn on_draw_ui(&mut self, ctx: &egui::Context) {

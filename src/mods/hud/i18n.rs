@@ -107,3 +107,63 @@ pub fn log_no_home(lang_code: &str) -> &'static str {
         _ => "{tag}: no config directory (HOME/XDG_CONFIG_HOME missing)",
     }
 }
+
+/// Tabs.
+pub fn tab_hud(_lang_code: &str) -> &'static str {
+    "HUD"
+}
+pub fn tab_explore(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Explorateur",
+        _ => "Explorer",
+    }
+}
+
+/// Explorer search box.
+pub fn search_hint(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "nom de classe (ex. Tach, Rpm, Engine)",
+        _ => "class name (e.g. Tach, Rpm, Engine)",
+    }
+}
+pub fn search_label(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Chercher",
+        _ => "Search",
+    }
+}
+
+/// Explorer usage line.
+pub fn explore_hint(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Lecture seule. Clique une classe pour lire ses champs, → pour suivre une référence, Relire après avoir roulé. Survole un champ pour son chemin de liaison.",
+        _ => "Read-only. Click a class to read its fields, → to follow a reference, Reread after driving. Hover a field for its binding path.",
+    }
+}
+
+/// Search results line. Placeholders: `{n} {q}`.
+pub fn results_label(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "{n} classes pour « {q} »",
+        _ => "{n} classes for \"{q}\"",
+    }
+}
+
+pub fn back_label(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "← Résultats",
+        _ => "← Results",
+    }
+}
+pub fn reread_label(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Relire",
+        _ => "Reread",
+    }
+}
+pub fn follow_hint(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Suivre cette référence",
+        _ => "Follow this reference",
+    }
+}
