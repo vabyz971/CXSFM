@@ -1,17 +1,19 @@
 //! HUD layouts (TOML) + live values + pure helpers. No Unity, no IO:
 //! everything here is unit-tested.
 //!
-//! A config holds any number of `[[hud]]` blocks; each HUD is a box
-//! anchored on the screen and drawn from `[[hud.widget]]` entries
-//! (`bar` bound to a value, `text` with `{placeholders}`). Parsing is
-//! tolerant like the save files: a bad widget/key is skipped with a
-//! warning, only a TOML syntax error rejects the whole file (the last
-//! good layout then stays on screen).
+//! A config holds named `[sources]` (game values, bound by field path
+//! as found with the Explorer tab) and any number of `[[hud]]` blocks;
+//! each HUD is a box anchored on the screen and drawn from
+//! `[[hud.widget]]` entries (`bar` bound to a source, with bounds that
+//! are numbers or sources; `text` with `{source}` placeholders).
+//! Parsing is tolerant like the save files: a bad widget/key is
+//! skipped with a warning, only a TOML syntax error rejects the whole
+//! file (the last good layout then stays on screen).
 
 use egui::Color32;
 
 /// Schema version written in the example file.
-pub(crate) const SCHEMA_VERSION: i64 = 1;
+pub(crate) const SCHEMA_VERSION: i64 = 2;
 
 /// Default repaint rate while a HUD is visible (frames per second).
 pub(crate) const DEFAULT_FPS: u32 = 30;
@@ -63,24 +65,19 @@ impl Anchor {
     }
 }
 
-/// A game value a widget can bind to.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Source {
-    Speed,
-    SpeedMph,
-    Rpm,
-    Gear,
+/// A bar bound: a constant or a named source (per-car ranges).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Bound {
+    Num(f32),
+    Src(String),
 }
 
-impl Source {
-    fn parse(s: &str) -> Option<Self> {
-        Some(match s {
-            "speed" => Source::Speed,
-            "speed_mph" => Source::SpeedMph,
-            "rpm" => Source::Rpm,
-            "gear" => Source::Gear,
-            _ => return None,
-        })
+impl Bound {
+    pub(crate) fn eval(&self, v: &Values) -> Option<f32> {
+        match self {
+            Bound::Num(x) => Some(*x),
+            Bound::Src(name) => v.get(name),
+        }
     }
 }
 
@@ -94,13 +91,14 @@ pub(crate) enum Align {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Widget {
-    /// Horizontal fill bar (RPM sweep, speed…). `segments = 0` is a
-    /// continuous fill; the fill turns `redline_color` past `redline`.
+    /// Horizontal fill bar. `segments = 0` is a continuous fill; the
+    /// fill turns `redline_color` past `redline`. Not drawn while its
+    /// source or a bound is unavailable.
     Bar {
-        source: Source,
-        min: f32,
-        max: f32,
-        redline: Option<f32>,
+        source: String,
+        min: Bound,
+        max: Bound,
+        redline: Option<Bound>,
         pos: [f32; 2],
         size: [f32; 2],
         segments: u32,
@@ -108,7 +106,7 @@ pub(crate) enum Widget {
         redline_color: Color32,
         track_color: Color32,
     },
-    /// Text with `{speed}` `{speed_mph}` `{rpm}` `{gear}` placeholders.
+    /// Text with `{source}` / `{source:N}` placeholders.
     Text {
         text: String,
         pos: [f32; 2],
@@ -130,31 +128,84 @@ pub(crate) struct Hud {
     pub(crate) scale: f32,
     pub(crate) opacity: f32,
     pub(crate) background: Color32,
+    /// Hide while no game value is available (menus, loading).
+    pub(crate) hide_when_missing: bool,
     pub(crate) widgets: Vec<Widget>,
+}
+
+/// Where values come from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Mode {
+    /// Read the game through `[sources]` (phase 3).
+    Live,
+    /// Synthetic loop (layout work without driving).
+    Demo,
+}
+
+/// One named game value: `Root/ref/…/field`, then `raw * scale + offset`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SourceDef {
+    pub(crate) name: String,
+    /// Root class short name (found with `FindObjectsOfType`).
+    pub(crate) root: String,
+    /// Reference fields walked from the root, then the value field.
+    pub(crate) refs: Vec<String>,
+    pub(crate) field: String,
+    pub(crate) scale: f32,
+    pub(crate) offset: f32,
+}
+
+impl SourceDef {
+    /// `"Root/a/b/field"` → root + refs + field (at least root/field).
+    pub(crate) fn from_path(name: &str, path: &str, scale: f32, offset: f32) -> Option<Self> {
+        let parts: Vec<&str> = path.split('/').map(str::trim).collect();
+        if parts.len() < 2 || parts.iter().any(|p| p.is_empty()) {
+            return None;
+        }
+        Some(SourceDef {
+            name: name.to_string(),
+            root: parts[0].to_string(),
+            refs: parts[1..parts.len() - 1].iter().map(|s| s.to_string()).collect(),
+            field: parts[parts.len() - 1].to_string(),
+            scale,
+            offset,
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct HudConfig {
     pub(crate) fps: u32,
+    pub(crate) mode: Mode,
+    pub(crate) sources: Vec<SourceDef>,
     pub(crate) huds: Vec<Hud>,
 }
 
-/// One frame of game values (km/h, rev/min, gear: -1 = R, 0 = N).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct Values {
-    pub(crate) speed_kmh: f32,
-    pub(crate) rpm: f32,
-    pub(crate) gear: i32,
-}
+/// One frame of named values. Small (a handful of entries): a linear
+/// scan beats a map here. `speed_mph` derives from `speed` (km/h).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Values(pub(crate) Vec<(String, f32)>);
 
 impl Values {
-    pub(crate) fn get(self, s: Source) -> f32 {
-        match s {
-            Source::Speed => self.speed_kmh,
-            Source::SpeedMph => self.speed_kmh * 0.621_371,
-            Source::Rpm => self.rpm,
-            Source::Gear => self.gear as f32,
+    pub(crate) fn get(&self, name: &str) -> Option<f32> {
+        if let Some((_, v)) = self.0.iter().find(|(n, _)| n == name) {
+            return Some(*v);
         }
+        if name == "speed_mph" {
+            return self.get("speed").map(|kmh| kmh * 0.621_371);
+        }
+        None
+    }
+
+    pub(crate) fn set(&mut self, name: &str, v: f32) {
+        match self.0.iter_mut().find(|(n, _)| n == name) {
+            Some(slot) => slot.1 = v,
+            None => self.0.push((name.to_string(), v)),
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 
@@ -167,15 +218,40 @@ pub(crate) fn gear_label(gear: i32) -> String {
     }
 }
 
-/// Fill placeholders; unknown `{…}` stays literal (visible typo).
+/// Fill `{name}` (0 decimals; `gear` as R/N/1…) and `{name:N}`
+/// (N decimals, max 6). Unknown or unavailable names stay literal
+/// (a typo stays visible on screen).
 pub(crate) fn format_template(t: &str, v: &Values) -> String {
     if !t.contains('{') {
         return t.to_string();
     }
-    t.replace("{speed_mph}", &format!("{:.0}", v.get(Source::SpeedMph).max(0.0)))
-        .replace("{speed}", &format!("{:.0}", v.speed_kmh.max(0.0)))
-        .replace("{rpm}", &format!("{:.0}", v.rpm.max(0.0)))
-        .replace("{gear}", &gear_label(v.gear))
+    let mut out = String::with_capacity(t.len());
+    let mut rest = t;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let inner = &after[..close];
+        let (name, decimals) = match inner.split_once(':') {
+            Some((n, d)) => (n, d.parse::<usize>().ok().map(|d| d.min(6))),
+            None => (inner, None),
+        };
+        match v.get(name) {
+            Some(x) if name == "gear" && decimals.is_none() => out.push_str(&gear_label(x.round() as i32)),
+            Some(x) => out.push_str(&format!("{:.*}", decimals.unwrap_or(0), x)),
+            None => {
+                out.push('{');
+                out.push_str(inner);
+                out.push('}');
+            }
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Fill fraction 0..=1 (degenerate ranges and NaN read as empty).
@@ -187,27 +263,34 @@ pub(crate) fn bar_fraction(v: f32, min: f32, max: f32) -> f32 {
     ((v - min) / span).clamp(0.0, 1.0)
 }
 
-/// Phase-1 value source: a looping launch (6 upshifts, then a short
-/// idle at N). Pure function of time so the render thread computes it
-/// without any shared state.
+/// Demo source: a looping launch (6 upshifts, then a short idle at N),
+/// in the same units as the live `UITachometer` values (km/h, RPM as
+/// the dial fill amount with its own min/max). Pure function of time.
 pub(crate) fn demo_values(t: f64) -> Values {
     const GEAR_S: f64 = 1.5;
     const GEARS: i32 = 6;
     const IDLE_S: f64 = 1.5;
     const TOPS: [f32; 6] = [60.0, 95.0, 130.0, 165.0, 200.0, 240.0];
+    const MIN_FILL: f32 = 0.1;
+    const MAX_FILL: f32 = 0.9;
     let period = GEAR_S * GEARS as f64 + IDLE_S;
     let p = if t.is_finite() { t.rem_euclid(period) } else { 0.0 };
-    if p >= GEAR_S * GEARS as f64 {
-        return Values { speed_kmh: 0.0, rpm: 900.0, gear: 0 };
-    }
-    let idx = (p / GEAR_S) as usize;
-    let k = ((p - idx as f64 * GEAR_S) / GEAR_S) as f32;
-    let rpm = 3000.0 + 4500.0 * k;
-    Values {
-        speed_kmh: TOPS[idx.min(5)] * rpm / 7500.0,
-        rpm,
-        gear: idx as i32 + 1,
-    }
+    let (speed, k, gear) = if p >= GEAR_S * GEARS as f64 {
+        (0.0, 0.05, 0)
+    } else {
+        let idx = (p / GEAR_S) as usize;
+        let k = 0.35 + 0.6 * ((p - idx as f64 * GEAR_S) / GEAR_S) as f32;
+        (TOPS[idx.min(5)] * k, k, idx as i32 + 1)
+    };
+    let mut v = Values::default();
+    v.set("speed", speed);
+    v.set("gear", gear as f32);
+    v.set("max_gear", GEARS as f32);
+    v.set("rpm", MIN_FILL + (MAX_FILL - MIN_FILL) * k);
+    v.set("rpm_min", MIN_FILL);
+    v.set("rpm_max", MAX_FILL);
+    v.set("redline", MIN_FILL + (MAX_FILL - MIN_FILL) * 0.85);
+    v
 }
 
 fn num(v: &toml::Value) -> Option<f32> {
@@ -223,6 +306,10 @@ fn pair(v: &toml::Value) -> Option<[f32; 2]> {
         return None;
     }
     Some([num(&a[0])?, num(&a[1])?])
+}
+
+fn bound(v: &toml::Value) -> Option<Bound> {
+    num(v).map(Bound::Num).or_else(|| v.as_str().map(|s| Bound::Src(s.to_string())))
 }
 
 /// `#RRGGBB` or `#RRGGBBAA` (alpha unmultiplied, like CSS).
@@ -274,6 +361,9 @@ impl Fields<'_> {
     fn str(&mut self, key: &str, def: &str) -> String {
         self.get(key, def.to_string(), |v| v.as_str().map(str::to_string))
     }
+    fn bound(&mut self, key: &str, def: Bound) -> Bound {
+        self.get(key, def, bound)
+    }
 }
 
 fn parse_widget(t: &toml::Table, ctx: String, warnings: &mut Vec<String>) -> Option<Widget> {
@@ -281,18 +371,15 @@ fn parse_widget(t: &toml::Table, ctx: String, warnings: &mut Vec<String>) -> Opt
     let kind = f.str("type", "");
     match kind.as_str() {
         "bar" => {
-            let src = f.str("source", "");
-            let source = match Source::parse(&src) {
-                Some(s) => s,
-                None => {
-                    f.warnings.push(format!("{}: source `{src}` inconnue, widget ignoré", f.ctx));
-                    return None;
-                }
-            };
+            let source = f.str("source", "");
+            if source.is_empty() {
+                f.warnings.push(format!("{}: `source` manquante, widget ignoré", f.ctx));
+                return None;
+            }
             let redline = match f.t.get("redline") {
                 None => None,
-                Some(v) => match num(v) {
-                    Some(x) => Some(x),
+                Some(v) => match bound(v) {
+                    Some(b) => Some(b),
                     None => {
                         f.warn("redline");
                         None
@@ -301,8 +388,8 @@ fn parse_widget(t: &toml::Table, ctx: String, warnings: &mut Vec<String>) -> Opt
             };
             Some(Widget::Bar {
                 source,
-                min: f.f32("min", 0.0),
-                max: f.f32("max", 8000.0),
+                min: f.bound("min", Bound::Num(0.0)),
+                max: f.bound("max", Bound::Num(1.0)),
                 redline,
                 pos: f.pair("pos", [0.0, 0.0]),
                 size: f.pair("size", [200.0, 8.0]),
@@ -338,6 +425,37 @@ fn parse_widget(t: &toml::Table, ctx: String, warnings: &mut Vec<String>) -> Opt
     }
 }
 
+/// `[sources]`: `name = "Root/…/field"` or
+/// `name = { path = "…", scale = 1.0, offset = 0.0 }`.
+fn parse_sources(root: &toml::Table, warnings: &mut Vec<String>) -> Vec<SourceDef> {
+    let mut out = Vec::new();
+    let Some(table) = root.get("sources") else {
+        return out;
+    };
+    let Some(table) = table.as_table() else {
+        warnings.push("`sources` doit être une table, ignoré".into());
+        return out;
+    };
+    for (name, v) in table {
+        let def = match v {
+            toml::Value::String(path) => SourceDef::from_path(name, path, 1.0, 0.0),
+            toml::Value::Table(t) => {
+                let mut f = Fields { t, ctx: format!("source `{name}`"), warnings };
+                let path = f.str("path", "");
+                let scale = f.f32("scale", 1.0);
+                let offset = f.f32("offset", 0.0);
+                SourceDef::from_path(name, &path, scale, offset)
+            }
+            _ => None,
+        };
+        match def {
+            Some(d) => out.push(d),
+            None => warnings.push(format!("source `{name}` : chemin `Classe/…/champ` attendu, ignorée")),
+        }
+    }
+    out
+}
+
 /// Parse a whole `hud.toml`. `Err` = syntax error (keep the previous
 /// layout); `Ok` carries the per-key warnings.
 pub(crate) fn parse_config(text: &str) -> Result<(HudConfig, Vec<String>), String> {
@@ -353,6 +471,15 @@ pub(crate) fn parse_config(text: &str) -> Result<(HudConfig, Vec<String>), Strin
         Some(f) => (f as u32).clamp(5, 60),
         None => DEFAULT_FPS,
     };
+    let mode = match root.get("mode").and_then(|v| v.as_str()) {
+        None | Some("live") => Mode::Live,
+        Some("demo") => Mode::Demo,
+        Some(other) => {
+            warnings.push(format!("mode `{other}` inconnu (live | demo), live utilisé"));
+            Mode::Live
+        }
+    };
+    let sources = parse_sources(&root, &mut warnings);
     let mut huds = Vec::new();
     let list = root.get("hud").and_then(|v| v.as_array()).cloned().unwrap_or_default();
     for (i, h) in list.iter().enumerate() {
@@ -376,6 +503,7 @@ pub(crate) fn parse_config(text: &str) -> Result<(HudConfig, Vec<String>), Strin
             scale: f.f32("scale", 1.0).clamp(0.1, 10.0),
             opacity: f.f32("opacity", 1.0).clamp(0.0, 1.0),
             background: f.color("background", Color32::TRANSPARENT),
+            hide_when_missing: f.bool("hide_when_missing", true),
             widgets: Vec::new(),
             name,
         };
@@ -394,27 +522,53 @@ pub(crate) fn parse_config(text: &str) -> Result<(HudConfig, Vec<String>), Strin
         }
         huds.push(hud);
     }
-    Ok((HudConfig { fps, huds }, warnings))
+    if mode == Mode::Live && sources.is_empty() && !huds.is_empty() {
+        warnings.push(
+            "mode live sans [sources] : aucune valeur, HUD masqués (ajoute [sources] ou supprime hud.toml pour régénérer l'exemple)"
+                .into(),
+        );
+    }
+    Ok((HudConfig { fps, mode, sources, huds }, warnings))
 }
 
 /// Example written on first enable when no `hud.toml` exists.
 pub(crate) const DEFAULT_CONFIG: &str = r##"# CXSFM — HUD personnalisés (rechargé à chaud : enregistre, regarde en jeu).
 #
+# mode = "live" lit le jeu via [sources] ; "demo" anime des valeurs
+# factices (pour travailler la mise en page sans rouler).
+#
+# [sources] : nom = "Classe/réf/…/champ" (chemins trouvés avec l'onglet
+# Explorateur ; survole un champ pour copier son chemin), ou
+# nom = { path = "…", scale = 1.0, offset = 0.0 } → valeur*scale+offset.
+# `speed_mph` est dérivée de `speed` (km/h) automatiquement.
+#
 # Plusieurs [[hud]] possibles. Chaque HUD est une boîte `size` (avant
 # `scale`) posée sur un coin/bord de l'écran (`anchor` : top_left, top,
 # top_right, left, center, right, bottom_left, bottom, bottom_right),
 # décalée de `offset` (px). Les widgets se placent DANS la boîte (`pos`).
+# `hide_when_missing` (défaut true) cache le HUD hors course (menus).
 #
 # Widgets :
-#   type = "bar"  : source = "rpm" | "speed" | "speed_mph" | "gear",
-#                   min, max, redline (optionnel), segments (0 = continu),
-#                   color, redline_color, track_color
-#   type = "text" : text avec {speed} {speed_mph} {rpm} {gear},
-#                   size, align = "left" | "center" | "right", mono, color
+#   type = "bar"  : source = nom, min / max / redline = nombre OU nom de
+#                   source, segments (0 = continu), color, redline_color,
+#                   track_color
+#   type = "text" : text avec {nom} (0 décimale ; {gear} → R/N/1…) ou
+#                   {nom:2} (2 décimales), size, align = "left" | "center"
+#                   | "right", mono, color
 # Couleurs : "#RRGGBB" ou "#RRGGBBAA".
 
-version = 1
+version = 2
 fps = 30
+mode = "live"
+
+[sources]
+speed = "UITachometer/m_currentSpeed"
+gear = "UITachometer/m_gear"
+max_gear = "UITachometer/m_maxGear"
+rpm = "UITachometer/m_rpmFillImage/m_FillAmount"
+rpm_min = "UITachometer/m_minRpmFillAmount"
+rpm_max = "UITachometer/m_maxRpmFillAmount"
+redline = "UITachometer/m_readZoneRpm"
 
 [[hud]]
 name = "GT minimal"
@@ -429,9 +583,9 @@ background = "#00000000"
   [[hud.widget]]
   type = "bar"
   source = "rpm"
-  min = 0
-  max = 8000
-  redline = 7000
+  min = "rpm_min"
+  max = "rpm_max"
+  redline = "redline"
   pos = [0.0, 0.0]
   size = [320.0, 6.0]
   color = "#FFFFFF"
@@ -474,15 +628,16 @@ background = "#000000A0"
   [[hud.widget]]
   type = "bar"
   source = "rpm"
-  max = 8000
-  redline = 7000
+  min = "rpm_min"
+  max = "rpm_max"
+  redline = "redline"
   segments = 20
   pos = [8.0, 6.0]
   size = [224.0, 8.0]
 
   [[hud.widget]]
   type = "text"
-  text = "{gear}  ·  {speed} km/h"
+  text = "{gear}/{max_gear}  ·  {speed} km/h"
   pos = [120.0, 18.0]
   size = 16
   align = "center"
@@ -581,6 +736,34 @@ pub(crate) fn decode_primitive(t: i32, b: &[u8]) -> Option<String> {
         te::PTR => format!("{:#x}", u64::from_le_bytes(le(b)?)),
         _ => return None,
     })
+}
+
+/// Numeric reading of a payload for live sources: primitives (bool,
+/// ints, floats) and small value types (enums) as integers. `None` for
+/// references and wider structs.
+pub(crate) fn decode_number(t: i32, b: &[u8]) -> Option<f32> {
+    Some(match t {
+        te::BOOLEAN => f32::from(*b.first()? != 0),
+        te::I1 => f32::from(b.first()?.cast_signed()),
+        te::U1 => f32::from(*b.first()?),
+        te::I2 | te::CHAR => f32::from(i16::from_le_bytes(le(b)?)),
+        te::U2 => f32::from(u16::from_le_bytes(le(b)?)),
+        te::I4 => i32::from_le_bytes(le(b)?) as f32,
+        te::U4 => u32::from_le_bytes(le(b)?) as f32,
+        te::I8 | te::I => i64::from_le_bytes(le(b)?) as f32,
+        te::U8 | te::U => u64::from_le_bytes(le(b)?) as f32,
+        te::R4 => f32::from_le_bytes(le(b)?),
+        te::R8 => f64::from_le_bytes(le(b)?) as f32,
+        te::VALUETYPE => match b.len() {
+            1 => f32::from(b[0]),
+            2 => f32::from(i16::from_le_bytes([b[0], b[1]])),
+            4 => i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32,
+            8 => i64::from_le_bytes(le(b)?) as f32,
+            _ => return None,
+        },
+        _ => return None,
+    })
+    .filter(|x| x.is_finite())
 }
 
 /// Display a value-type payload: known Unity structs as floats, small
@@ -683,16 +866,39 @@ mod tests {
         let (cfg, warnings) = parse_config(DEFAULT_CONFIG).expect("example must parse");
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(cfg.fps, 30);
+        assert_eq!(cfg.mode, Mode::Live);
+        assert_eq!(cfg.sources.len(), 7);
         assert_eq!(cfg.huds.len(), 2);
         assert_eq!(cfg.huds[0].widgets.len(), 4);
         assert!(cfg.huds[0].enabled && !cfg.huds[1].enabled);
+        let rpm = cfg.sources.iter().find(|s| s.name == "rpm").unwrap();
+        assert_eq!(rpm.root, "UITachometer");
+        assert_eq!(rpm.refs, vec!["m_rpmFillImage".to_string()]);
+        assert_eq!(rpm.field, "m_FillAmount");
+    }
+
+    /// Every source name the example HUDs use exists in demo values,
+    /// so `mode = "demo"` renders the full layout.
+    #[test]
+    fn demo_covers_example_sources() {
+        let (cfg, _) = parse_config(DEFAULT_CONFIG).unwrap();
+        let v = demo_values(1.0);
+        for s in &cfg.sources {
+            assert!(v.get(&s.name).is_some(), "demo lacks {}", s.name);
+        }
     }
 
     #[test]
     fn version_mismatch_warns_but_parses() {
-        let (cfg, w) = parse_config("version = 99\n[[hud]]").unwrap();
+        let (cfg, w) = parse_config("version = 99\nmode = \"demo\"\n[[hud]]").unwrap();
         assert_eq!(cfg.huds.len(), 1);
         assert_eq!(w.len(), 1);
+    }
+
+    #[test]
+    fn live_without_sources_warns() {
+        let (_, w) = parse_config("[[hud]]").unwrap();
+        assert_eq!(w.len(), 1, "{w:?}");
     }
 
     #[test]
@@ -708,21 +914,39 @@ name = "x"
 anchor = "nowhere"
   [[hud.widget]]
   type = "bar"
-  source = "boost"
   [[hud.widget]]
   type = "text"
   text = "{speed}"
   color = "red"
 "##;
-        let (cfg, warnings) = parse_config(text).unwrap();
+        let (cfg, warnings) = parse_config(&format!("mode = \"demo\"\n{text}")).unwrap();
         assert_eq!(cfg.huds[0].anchor, Anchor::BottomRight);
         assert_eq!(cfg.huds[0].widgets.len(), 1);
         assert_eq!(warnings.len(), 3, "{warnings:?}");
     }
 
     #[test]
+    fn sources_forms_and_errors() {
+        let text = r##"
+mode = "warp"
+[sources]
+a = "Root/field"
+b = { path = "Root/ref/field", scale = 3.6, offset = -1 }
+c = "nofield"
+d = 4
+"##;
+        let (cfg, w) = parse_config(text).unwrap();
+        assert_eq!(cfg.mode, Mode::Live);
+        assert_eq!(cfg.sources.len(), 2);
+        let b = cfg.sources.iter().find(|s| s.name == "b").unwrap();
+        assert_eq!((b.scale, b.offset), (3.6, -1.0));
+        assert_eq!(b.refs, vec!["ref".to_string()]);
+        assert_eq!(w.len(), 3, "{w:?}");
+    }
+
+    #[test]
     fn integers_accepted_where_floats_expected() {
-        let (cfg, w) = parse_config("[[hud]]\noffset = [-10, 5]\nscale = 2").unwrap();
+        let (cfg, w) = parse_config("mode = \"demo\"\n[[hud]]\noffset = [-10, 5]\nscale = 2").unwrap();
         assert!(w.is_empty());
         assert_eq!(cfg.huds[0].offset, [-10.0, 5.0]);
         assert_eq!(cfg.huds[0].scale, 2.0);
@@ -742,12 +966,27 @@ anchor = "nowhere"
 
     #[test]
     fn template_and_gear() {
-        let v = Values { speed_kmh: 123.6, rpm: 6512.2, gear: 3 };
-        assert_eq!(format_template("{gear} {speed} {rpm}", &v), "3 124 6512");
+        let mut v = Values::default();
+        v.set("speed", 123.6);
+        v.set("rpm", 0.4567);
+        v.set("gear", 3.0);
+        assert_eq!(format_template("{gear} {speed} {rpm:2}", &v), "3 124 0.46");
         assert_eq!(format_template("{speed_mph}", &v), "77");
-        assert_eq!(format_template("{boost}", &v), "{boost}");
+        assert_eq!(format_template("{gear:1}", &v), "3.0");
+        assert_eq!(format_template("{boost} x", &v), "{boost} x");
+        assert_eq!(format_template("open {speed", &v), "open {speed");
+        assert_eq!(format_template("km/h", &v), "km/h");
         assert_eq!(gear_label(-1), "R");
         assert_eq!(gear_label(0), "N");
+    }
+
+    #[test]
+    fn bounds_eval() {
+        let mut v = Values::default();
+        v.set("rpm_max", 0.9);
+        assert_eq!(Bound::Num(2.0).eval(&v), Some(2.0));
+        assert_eq!(Bound::Src("rpm_max".into()).eval(&v), Some(0.9));
+        assert_eq!(Bound::Src("nope".into()).eval(&v), None);
     }
 
     #[test]
@@ -773,6 +1012,18 @@ anchor = "nowhere"
     }
 
     #[test]
+    fn numbers_decode() {
+        assert_eq!(decode_number(te::R4, &2.5f32.to_le_bytes()), Some(2.5));
+        assert_eq!(decode_number(te::I4, &(-1i32).to_le_bytes()), Some(-1.0));
+        assert_eq!(decode_number(te::BOOLEAN, &[1]), Some(1.0));
+        assert_eq!(decode_number(te::R8, &3.0f64.to_le_bytes()), Some(3.0));
+        assert_eq!(decode_number(te::VALUETYPE, &4i32.to_le_bytes()), Some(4.0));
+        assert_eq!(decode_number(te::VALUETYPE, &[1, 0]), Some(1.0));
+        assert_eq!(decode_number(te::VALUETYPE, &[0; 12]), None);
+        assert_eq!(decode_number(te::STRING, &[0; 8]), None);
+    }
+
+    #[test]
     fn structs_decode() {
         let mut b = Vec::new();
         for f in [1.0f32, 2.0, 3.0] {
@@ -793,19 +1044,23 @@ anchor = "nowhere"
             binding_path("UITach", &["car".into(), "engine".into()], "rpm"),
             "UITach/car/engine/rpm"
         );
+        let s = SourceDef::from_path("x", &binding_path("UITach", &["car".into()], "rpm"), 1.0, 0.0).unwrap();
+        assert_eq!((s.root.as_str(), s.refs.len(), s.field.as_str()), ("UITach", 1, "rpm"));
+        assert!(SourceDef::from_path("x", "A//b", 1.0, 0.0).is_none());
     }
 
     #[test]
     fn demo_loops_through_gears() {
-        assert_eq!(demo_values(0.0).gear, 1);
-        assert_eq!(demo_values(1.6).gear, 2);
-        assert_eq!(demo_values(9.5).gear, 0);
-        assert_eq!(demo_values(10.5).gear, 1);
+        assert_eq!(demo_values(0.0).get("gear"), Some(1.0));
+        assert_eq!(demo_values(1.6).get("gear"), Some(2.0));
+        assert_eq!(demo_values(9.5).get("gear"), Some(0.0));
+        assert_eq!(demo_values(10.5).get("gear"), Some(1.0));
         for i in 0..200 {
             let v = demo_values(i as f64 * 0.07);
-            assert!((0.0..=8000.0).contains(&v.rpm));
-            assert!((0.0..=250.0).contains(&v.speed_kmh));
+            let (rpm, lo, hi) = (v.get("rpm").unwrap(), v.get("rpm_min").unwrap(), v.get("rpm_max").unwrap());
+            assert!((lo..=hi).contains(&rpm));
+            assert!((0.0..=250.0).contains(&v.get("speed").unwrap()));
         }
-        assert_eq!(demo_values(f64::NAN).gear, 1);
+        assert_eq!(demo_values(f64::NAN).get("gear"), Some(1.0));
     }
 }

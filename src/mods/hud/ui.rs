@@ -7,7 +7,7 @@
 
 use super::HudMod;
 use super::model::{
-    Align, ExploreReq, Hud, HudConfig, Values, Widget, bar_fraction, binding_path, demo_values,
+    Align, ExploreReq, Hud, HudConfig, Mode, Values, Widget, bar_fraction, binding_path, demo_values,
     format_template,
 };
 use crate::mods::common::lock;
@@ -52,9 +52,13 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values) {
                 track_color,
             } => {
                 let r = egui::Rect::from_min_size(at(*pos), egui::vec2(size[0] * s, size[1] * s));
-                let value = v.get(*source);
-                let frac = bar_fraction(value, *min, *max);
-                let red_frac = redline.map(|rl| bar_fraction(rl, *min, *max));
+                // Source or bound unavailable: skip this widget.
+                let (Some(value), Some(min), Some(max)) = (v.get(source), min.eval(v), max.eval(v)) else {
+                    continue;
+                };
+                let frac = bar_fraction(value, min, max);
+                let redline = redline.as_ref().and_then(|b| b.eval(v));
+                let red_frac = redline.map(|rl| bar_fraction(rl, min, max));
                 let hot = redline.is_some_and(|rl| value >= rl);
                 let fill = if hot { *redline_color } else { *color };
                 if *segments == 0 {
@@ -109,12 +113,18 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values) {
 impl HudMod {
     pub(crate) fn draw(&mut self, ctx: &egui::Context) {
         let cfg: Option<std::sync::Arc<HudConfig>> = lock(&self.config).clone();
-        let values = demo_values(ctx.input(|i| i.time));
+        let values = match cfg.as_deref().map(|c| c.mode) {
+            Some(Mode::Demo) => demo_values(ctx.input(|i| i.time)),
+            _ => lock(&self.live).clone(),
+        };
         if let Some(cfg) = &cfg {
             let mut any = false;
             for (i, h) in cfg.huds.iter().enumerate().filter(|(_, h)| h.enabled) {
-                draw_hud(ctx, i, h, &values);
                 any = true;
+                if h.hide_when_missing && values.is_empty() {
+                    continue;
+                }
+                draw_hud(ctx, i, h, &values);
             }
             // Live values need frames even with the menu closed: the
             // overlay re-runs egui when the requested delay expires.
@@ -170,13 +180,30 @@ impl HudMod {
                     ui.label(super::i18n::no_config(code));
                 }
             }
-            ui.add(egui::Label::new(egui::RichText::new(super::i18n::demo_notice(code)).small()).wrap());
-            ui.monospace(format!(
-                "speed {:.0} km/h · rpm {:.0} · gear {}",
-                values.speed_kmh,
-                values.rpm,
-                super::model::gear_label(values.gear)
-            ));
+            let demo = cfg.is_some_and(|c| c.mode == Mode::Demo);
+            ui.label(if demo { super::i18n::mode_demo(code) } else { super::i18n::mode_live(code) });
+            if !demo {
+                let live = lock(&self.live_status).clone();
+                for (root, found) in &live.roots {
+                    let (txt, col) = if *found {
+                        (super::i18n::root_found(code), ui.visuals().text_color())
+                    } else {
+                        (super::i18n::root_missing(code), ui.visuals().warn_fg_color)
+                    };
+                    ui.label(egui::RichText::new(txt.replace("{root}", root)).color(col));
+                }
+                for (name, err) in live.errors.iter().take(8) {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!("{name} : {err}")).small().color(ui.visuals().warn_fg_color),
+                        )
+                        .wrap(),
+                    );
+                }
+            }
+            // Current values, one compact line (what the HUDs see).
+            let line: Vec<String> = values.0.iter().map(|(n, v)| format!("{n}={v:.2}")).collect();
+            ui.add(egui::Label::new(egui::RichText::new(line.join("  ")).monospace().small()).wrap());
             if ui.button(super::i18n::reload_label(code)).clicked() {
                 self.reload_now.store(true, Ordering::SeqCst);
             }

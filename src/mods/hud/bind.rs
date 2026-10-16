@@ -29,7 +29,7 @@ type Ptr = *mut std::ffi::c_void;
 
 /// `UnityEngine.Object` (or a subclass): only those carry
 /// `m_CachedPtr`, so only those get the `object_alive` probe.
-unsafe fn is_unity_object(api: &Il2cppApi, mut k: Ptr) -> bool {
+pub(super) unsafe fn is_unity_object(api: &Il2cppApi, mut k: Ptr) -> bool {
     // SAFETY: caller contract; metadata reads, bounded climb.
     unsafe {
         for _ in 0..64 {
@@ -54,8 +54,8 @@ fn is_base_class(ns: &str, name: &str) -> bool {
 }
 
 impl HudMod {
-    /// Unity cache on demand (explorer only; nothing else needs it).
-    fn explore_unity(&self, api: &Il2cppApi) -> Option<UnityCache> {
+    /// Unity cache on demand (explorer + live reader).
+    pub(super) fn explore_unity(&self, api: &Il2cppApi) -> Option<UnityCache> {
         if let Some(c) = lock(&self.unity).as_ref().copied() {
             return Some(c);
         }

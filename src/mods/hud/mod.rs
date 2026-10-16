@@ -6,10 +6,10 @@
 //! its fingerprint changes (~1 s), so edits show up in game without a
 //! restart; a broken file keeps the last good layout on screen.
 //!
-//! PHASE 1: values come from `model::demo_values` (rendering + config
-//! only, zero Unity traffic). Live game values are the next phase —
-//! the getter-polling path crashed the game before (see field-notes,
-//! speedometer REDESIGN), so they will come from plain field reads.
+//! Values: `mode = "live"` reads the `[sources]` field paths at the
+//! config fps through `live` (raw field copies, bounded root-pointer
+//! exception — see that module); `mode = "demo"` animates
+//! `model::demo_values` (zero Unity traffic).
 //!
 //! PHASE 2: the "Explorer" tab finds where the game keeps those
 //! values — class search (metadata only) + on-demand field dumps of a
@@ -24,6 +24,7 @@
 pub mod i18n;
 
 mod bind;
+mod live;
 pub(crate) mod model;
 mod ui;
 
@@ -34,7 +35,8 @@ use crate::mods::api::{Mod, TileIcon};
 use crate::mods::common::lock;
 use crate::mods::tool::ToolChrome;
 use crate::unity::UnityCache;
-use model::{ExploreReq, ExploreView, HudConfig};
+use live::{LiveReader, LiveStatus};
+use model::{ExploreReq, ExploreView, HudConfig, Mode, Values};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -69,6 +71,11 @@ pub struct HudMod {
     /// Present thread only: active tab, search box text.
     pub(crate) tab_explore: bool,
     pub(crate) query: String,
+    /// Live values (tick reads at the config fps, render clones).
+    pub(crate) live: Mutex<Values>,
+    pub(crate) live_status: Mutex<LiveStatus>,
+    /// Tick-only reader state (bounded root-pointer exception).
+    pub(crate) reader: Mutex<LiveReader>,
 }
 
 // SAFETY: shared state is atomics or mutex-guarded plain data; the
@@ -91,6 +98,9 @@ impl HudMod {
             explore: Mutex::new(ExploreView::default()),
             tab_explore: false,
             query: String::new(),
+            live: Mutex::new(Values::default()),
+            live_status: Mutex::new(LiveStatus::default()),
+            reader: Mutex::new(LiveReader::default()),
         }
     }
 
@@ -149,6 +159,34 @@ impl HudMod {
     }
 }
 
+impl HudMod {
+    /// Live sources at the config fps (tick thread). Demo mode, no
+    /// sources or no visible HUD = zero Unity traffic.
+    fn live_tick(&self, t: u64) {
+        let Some(cfg) = lock(&self.config).clone() else {
+            return;
+        };
+        if cfg.mode != Mode::Live || cfg.sources.is_empty() || !cfg.huds.iter().any(|h| h.enabled) {
+            return;
+        }
+        let every = (60 / u64::from(cfg.fps.max(1))).max(1);
+        if t % every != 0 {
+            return;
+        }
+        let Some(api) = crate::il2cpp_api() else {
+            return;
+        };
+        let Some(cache) = self.explore_unity(api) else {
+            return;
+        };
+        // SAFETY: attached tick thread; the tick never runs mod updates
+        // during teardown. Reader rules: see `live` module docs.
+        let (values, status) = unsafe { lock(&self.reader).read_all(api, &cache, &cfg.sources, t) };
+        *lock(&self.live) = values;
+        *lock(&self.live_status) = status;
+    }
+}
+
 impl Default for HudMod {
     fn default() -> Self {
         Self::new()
@@ -190,6 +228,7 @@ impl Mod for HudMod {
         }
         // Explorer: on-demand only (no request = no Unity traffic).
         self.explore_tick();
+        self.live_tick(t);
     }
 
     fn on_draw_ui(&mut self, ctx: &egui::Context) {
@@ -204,7 +243,12 @@ impl Mod for HudMod {
 
     fn on_disable(&mut self) {
         // Nothing in the game was touched: hiding is the full undo.
+        // Drop the kept root instance with the values (re-found on
+        // the next enable).
         self.enabled.store(false, Ordering::SeqCst);
+        *lock(&self.reader) = LiveReader::default();
+        *lock(&self.live) = Values::default();
+        *lock(&self.live_status) = LiveStatus::default();
         crate::log_line("hud: off");
     }
 }

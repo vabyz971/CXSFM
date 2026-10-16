@@ -50,11 +50,31 @@ pub fn huds_label(lang_code: &str) -> &'static str {
     }
 }
 
-/// Phase-1 value source notice.
-pub fn demo_notice(lang_code: &str) -> &'static str {
+/// Value-source mode lines.
+pub fn mode_live(lang_code: &str) -> &'static str {
     match lang_code {
-        "fr" => "Valeurs de démo (lecture du jeu : phase suivante).",
-        _ => "Demo values (game reading: next phase).",
+        "fr" => "Mode : live (valeurs lues dans le jeu)",
+        _ => "Mode: live (values read from the game)",
+    }
+}
+pub fn mode_demo(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "Mode : démo (valeurs factices)",
+        _ => "Mode: demo (synthetic values)",
+    }
+}
+
+/// Live root state. Placeholder: `{root}`.
+pub fn root_found(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "{root} : trouvé",
+        _ => "{root}: found",
+    }
+}
+pub fn root_missing(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "{root} : introuvable (hors course ? recherche toutes les 2 s)",
+        _ => "{root}: not found (not driving? retried every 2 s)",
     }
 }
 

@@ -44,6 +44,11 @@ nix develop --command bash -c 'cargo test --lib'
   `invoke` dessus = échec silencieux alors que l'écriture a eu lieu.
 - **`object_alive` avant TOUT accès Unity** (lecture comme écriture) ;
   pointeurs stockés interdits — re-résoudre par chemin/nom à chaque usage.
+  Seule exception (accord utilisateur 2026-10-16) : `hud/live.rs` garde
+  l'instance racine (ex. `UITachometer`) entre deux lectures — re-trouvée
+  toutes les ~2 s, mémoire lisible + `m_CachedPtr` vérifiés avant CHAQUE
+  lecture, lectures = copies de champs brutes (aucun getter, aucune
+  écriture). Ne pas étendre ce schéma aux écritures.
 - **Aucun appel Unity depuis le thread de present** ; le tick saute tout
   IL2CPP pendant le teardown (domaine tué avant Vulkan).
 - **Pas d'arithmétique non bornée sur le chemin de rendu** (`checked`/
