@@ -8,6 +8,7 @@ Un mod = **un dossier** sous `src/mods/`, compilé dans le framework
 | `inspector/` | outil : arbre de scène (roots + hiérarchie + position, snapshot throttlé) |
 | `speedo/` | compteur custom : masque les textes vitesse du jeu, affiche le nôtre (restore) |
 | `gamelog/` | outil : `Player.log` du jeu en direct (filtre + erreurs, lecture seule) |
+| `hud/` | overlay pur egui : HUD décrits dans `hud.toml` (rechargé à chaud), aucun appel Unity |
 
 ## 1. Copier un dossier
 

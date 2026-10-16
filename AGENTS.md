@@ -26,7 +26,7 @@ nix develop --command bash -c 'cargo test --lib'
   text/TMP, transforms) + `UnityCache` des méthodes résolues.
 - `src/mods/{api,loader,tool,…}` — trait `Mod`, registre avec quarantaine
   au panic, chrome fenêtres (pin/opacité), mods livrés
-  (`inspector`, `gamelog`, `speedo`, `fpv_camera` parqué).
+  (`inspector`, `gamelog`, `speedo`, `map`, `hud`, `fpv_camera` parqué).
 - `src/mainthread.rs` — infra d'échange `MethodInfo.methodPointer`
   (phase 1 : sondes, aucun mod migré).
 - `src/hotkey.rs` — F8 = visibilité UI + capture (SDL + X11 ; chemin Unity

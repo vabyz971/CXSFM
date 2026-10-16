@@ -52,6 +52,14 @@ pub(crate) fn settings_path() -> Option<PathBuf> {
     Some(dir)
 }
 
+/// Custom HUD layouts (`hud.toml`, same dir — hot-reloaded by the
+/// hud mod, example written on first enable).
+pub(crate) fn hud_path() -> Option<PathBuf> {
+    let mut dir = settings_dir()?;
+    dir.push("hud.toml");
+    Some(dir)
+}
+
 fn settings_dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
