@@ -234,6 +234,7 @@ fn mod_tile(key: &str) -> Option<&'static str> {
         "mod_inspector" => Some(crate::mods::inspector::i18n::tile_label(code)),
         "mod_gamelog" => Some(crate::mods::gamelog::i18n::tile_label(code)),
         "mod_speedo" => Some(crate::mods::speedo::i18n::tile_label(code)),
+        "mod_map" => Some(crate::mods::map::i18n::tile_label(code)),
         _ => None,
     }
 }

@@ -213,6 +213,7 @@ fn deferred_init() {
         mods::inspector::register();
         mods::gamelog::register();
         mods::speedo::register();
+        mods::map::register();
         log_line("mods registered, starting tick thread");
         spawn_tick_thread();
         headless_ui_check();

@@ -15,4 +15,5 @@ pub mod tool;
 pub mod fpv_camera;
 pub mod gamelog;
 pub mod inspector;
+pub mod map;
 pub mod speedo;
