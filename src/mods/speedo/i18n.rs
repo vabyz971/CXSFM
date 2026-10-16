@@ -127,6 +127,15 @@ pub fn select_hint(lang_code: &str) -> &'static str {
     }
 }
 
+/// Re-activating an inactive object can crash the game (SetActive
+/// from the tick thread fires the game's lifecycle callbacks).
+pub fn active_warning(lang_code: &str) -> &'static str {
+    match lang_code {
+        "fr" => "⚠ Réactiver un élément désactivé peut faire planter le jeu.",
+        _ => "⚠ Re-activating a disabled element can crash the game.",
+    }
+}
+
 /// TMP color caveat (text material ignores vertex color).
 pub fn color_hint(lang_code: &str) -> &'static str {
     match lang_code {

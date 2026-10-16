@@ -140,6 +140,19 @@ impl SpeedoMod {
                     edited = true;
                 }
             });
+            // Inactive (by the game or by us): re-enabling fires the
+            // game's lifecycle callbacks from our thread — crashed the
+            // game in tests (see OP_ACTIVE). Warn before the click.
+            if !obj.active {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(super::i18n::active_warning(code))
+                            .small()
+                            .color(ui.visuals().warn_fg_color),
+                    )
+                    .wrap(),
+                );
+            }
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(super::i18n::card_visible(code)).weak());
                 // Scale-zero hide (staged; object stays active so texts
@@ -586,6 +599,9 @@ mod tests {
                 CompKind::Tmp,
             ),
         ];
+        // Inactive selection: the re-activation warning row must wrap
+        // inside the window too.
+        m.ui[1].active = false;
         m.selected = Some("Speed/Text (TMP) Speed".into());
         // Pin the window: placement itself is not under test.
         m.tool.pos = Some(egui::pos2(100.0, 100.0));
