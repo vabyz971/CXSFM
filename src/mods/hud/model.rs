@@ -165,7 +165,8 @@ pub(crate) enum Widget {
         start: f32,
         end: f32,
         rotation: f32,
-        count: u32,
+        /// `None` = auto: one major per label unit.
+        count: Option<u32>,
         minor: u32,
         major_length: f32,
         minor_length: f32,
@@ -175,7 +176,9 @@ pub(crate) enum Widget {
         minor_color: Color32,
         labels: bool,
         label_min: f32,
-        label_max: f32,
+        /// Number or source (e.g. max RPM in thousands), + margin.
+        label_max: Bound,
+        label_margin: f32,
         label_decimals: usize,
         label_radius: Option<f32>,
         label_size: f32,
@@ -209,7 +212,81 @@ pub(crate) struct Hud {
     pub(crate) background: Color32,
     /// Hide while no game value is available (menus, loading).
     pub(crate) hide_when_missing: bool,
-    pub(crate) widgets: Vec<Widget>,
+    pub(crate) widgets: Vec<Placed>,
+}
+
+/// A widget plus its shared-colour hook: while the named `[states]`
+/// entry is active, the widget's main colour becomes `color`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Placed {
+    pub(crate) w: Widget,
+    pub(crate) alert: Option<Alert>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Alert {
+    pub(crate) state: String,
+    pub(crate) color: Color32,
+}
+
+/// Named condition shared by any number of widgets (`[states]`):
+/// active while `source >= above` and/or `source <= below` (bounds are
+/// numbers or sources; neither = active while the value is non-zero),
+/// optionally blinking at `blink` Hz.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct StateDef {
+    pub(crate) name: String,
+    pub(crate) source: String,
+    pub(crate) above: Option<Bound>,
+    pub(crate) below: Option<Bound>,
+    pub(crate) blink: f32,
+}
+
+impl StateDef {
+    /// Whether the state shows at time `t` (seconds; blink phase).
+    pub(crate) fn active(&self, v: &Values, t: f64) -> bool {
+        let Some(x) = v.get(&self.source) else {
+            return false;
+        };
+        let above = match &self.above {
+            Some(b) => match b.eval(v) {
+                Some(lim) => x >= lim,
+                None => return false,
+            },
+            None => true,
+        };
+        let below = match &self.below {
+            Some(b) => match b.eval(v) {
+                Some(lim) => x <= lim,
+                None => return false,
+            },
+            None => true,
+        };
+        let on = if self.above.is_none() && self.below.is_none() { x != 0.0 } else { above && below };
+        if !on || !(self.blink > 0.0) || !t.is_finite() {
+            return on;
+        }
+        ((t * f64::from(self.blink) * 2.0).floor() as i64).rem_euclid(2) == 0
+    }
+}
+
+/// Copy of `w` with its main colour replaced (alert): fill/needle/text
+/// colour; ticks recolour marks and labels. Tracks and redline colours
+/// keep their own meaning.
+pub(crate) fn with_main_color(w: &Widget, c: Color32) -> Widget {
+    let mut w = w.clone();
+    match &mut w {
+        Widget::Bar { color, .. }
+        | Widget::Arc { color, .. }
+        | Widget::Needle { color, .. }
+        | Widget::Text { color, .. } => *color = c,
+        Widget::Ticks { color, minor_color, label_color, .. } => {
+            *color = c;
+            *minor_color = c;
+            *label_color = c;
+        }
+    }
+    w
 }
 
 /// Where values come from.
@@ -257,6 +334,7 @@ pub(crate) struct HudConfig {
     pub(crate) fps: u32,
     pub(crate) mode: Mode,
     pub(crate) sources: Vec<SourceDef>,
+    pub(crate) states: Vec<StateDef>,
     pub(crate) huds: Vec<Hud>,
 }
 
@@ -392,6 +470,27 @@ pub(crate) fn tick_layout(start: f32, end: f32, count: u32, minor: u32) -> Vec<T
             major: (i % minor == 0).then_some(i / minor),
         })
         .collect()
+}
+
+/// Effective `(count, label_max)` of a ticks widget this frame:
+/// `label_max` (number or source) + margin; auto count = one major per
+/// label unit (clamped 1..=100). `None` while a source is missing.
+pub(crate) fn ticks_range(
+    count: Option<u32>,
+    label_min: f32,
+    label_max: &Bound,
+    margin: f32,
+    v: &Values,
+) -> Option<(u32, f32)> {
+    let hi = label_max.eval(v)? + margin;
+    if !hi.is_finite() {
+        return None;
+    }
+    let n = match count {
+        Some(n) => n,
+        None => ((hi - label_min).abs().round() as u32).clamp(1, 100),
+    };
+    Some((n, hi))
 }
 
 /// Label of major tick `i` of `count`: linear `lo..=hi`.
@@ -630,7 +729,17 @@ fn parse_widget(t: &toml::Table, ctx: String, warnings: &mut Vec<String>) -> Opt
             })
         }
         "ticks" => {
-            let count = f.f32("count", 8.0).clamp(1.0, 100.0) as u32;
+            let count = match f.t.get("count") {
+                None => Some(8),
+                Some(v) if v.as_str() == Some("auto") => None,
+                Some(v) => match num(v) {
+                    Some(x) => Some(x.clamp(1.0, 100.0) as u32),
+                    None => {
+                        f.warn("count");
+                        Some(8)
+                    }
+                },
+            };
             let label_radius = match f.t.get("label_radius") {
                 None => None,
                 Some(v) => match num(v) {
@@ -658,7 +767,8 @@ fn parse_widget(t: &toml::Table, ctx: String, warnings: &mut Vec<String>) -> Opt
                 color,
                 labels: f.bool("labels", true),
                 label_min: f.f32("label_min", 0.0),
-                label_max: f.f32("label_max", count as f32),
+                label_max: f.bound("label_max", Bound::Num(count.unwrap_or(8) as f32)),
+                label_margin: f.f32("label_margin", 0.0),
                 label_decimals: f.f32("label_decimals", 0.0).clamp(0.0, 6.0) as usize,
                 label_radius,
                 label_size: f.f32("label_size", 14.0).clamp(4.0, 300.0),
@@ -725,6 +835,51 @@ fn parse_sources(root: &toml::Table, warnings: &mut Vec<String>) -> Vec<SourceDe
     out
 }
 
+/// `[states]`: `name = { source = "rpm", above = "redline", below = …,
+/// blink = 4.0 }`.
+fn parse_states(root: &toml::Table, warnings: &mut Vec<String>) -> Vec<StateDef> {
+    let mut out = Vec::new();
+    let Some(table) = root.get("states") else {
+        return out;
+    };
+    let Some(table) = table.as_table() else {
+        warnings.push("`states` doit être une table, ignoré".into());
+        return out;
+    };
+    for (name, v) in table {
+        let Some(t) = v.as_table() else {
+            warnings.push(format!("état `{name}` : table {{ source = …, above = … }} attendue, ignoré"));
+            continue;
+        };
+        let mut f = Fields { t, ctx: format!("état `{name}`"), warnings };
+        let source = f.str("source", "");
+        if source.is_empty() {
+            f.warnings.push(format!("état `{name}` : `source` manquante, ignoré"));
+            continue;
+        }
+        let opt_bound = |f: &mut Fields, key: &str| match f.t.get(key) {
+            None => None,
+            Some(v) => match bound(v) {
+                Some(b) => Some(b),
+                None => {
+                    f.warn(key);
+                    None
+                }
+            },
+        };
+        let above = opt_bound(&mut f, "above");
+        let below = opt_bound(&mut f, "below");
+        out.push(StateDef {
+            name: name.clone(),
+            source,
+            above,
+            below,
+            blink: f.f32("blink", 0.0).clamp(0.0, 30.0),
+        });
+    }
+    out
+}
+
 /// Parse a whole `hud.toml`. `Err` = syntax error (keep the previous
 /// layout); `Ok` carries the per-key warnings.
 pub(crate) fn parse_config(text: &str) -> Result<(HudConfig, Vec<String>), String> {
@@ -749,6 +904,7 @@ pub(crate) fn parse_config(text: &str) -> Result<(HudConfig, Vec<String>), Strin
         }
     };
     let sources = parse_sources(&root, &mut warnings);
+    let states = parse_states(&root, &mut warnings);
     let mut huds = Vec::new();
     let list = root.get("hud").and_then(|v| v.as_array()).cloned().unwrap_or_default();
     for (i, h) in list.iter().enumerate() {
@@ -782,8 +938,20 @@ pub(crate) fn parse_config(text: &str) -> Result<(HudConfig, Vec<String>), Strin
             let wctx = format!("{ctx} widget #{}", j + 1);
             match w.as_table() {
                 Some(wt) => {
+                    // Shared-colour hook, common to every widget type.
+                    let alert = match wt.get("alert").and_then(|a| a.as_str()) {
+                        Some(state) => {
+                            if !states.iter().any(|s| s.name == state) {
+                                warnings.push(format!("{wctx}: état `{state}` absent de [states]"));
+                            }
+                            let mut f = Fields { t: wt, ctx: wctx.clone(), warnings: &mut warnings };
+                            let color = f.color("alert_color", Color32::from_rgb(0xE0, 0x30, 0x30));
+                            Some(Alert { state: state.to_string(), color })
+                        }
+                        None => None,
+                    };
                     if let Some(w) = parse_widget(wt, wctx, &mut warnings) {
-                        hud.widgets.push(w);
+                        hud.widgets.push(Placed { w, alert });
                     }
                 }
                 None => warnings.push(format!("{wctx}: pas une table, ignoré")),
@@ -797,7 +965,7 @@ pub(crate) fn parse_config(text: &str) -> Result<(HudConfig, Vec<String>), Strin
                 .into(),
         );
     }
-    Ok((HudConfig { fps, mode, sources, huds }, warnings))
+    Ok((HudConfig { fps, mode, sources, states, huds }, warnings))
 }
 
 /// Example written on first enable when no `hud.toml` exists.
@@ -834,7 +1002,7 @@ pub(crate) const DEFAULT_CONFIG: &str = r##"# CXSFM — HUD personnalisés (rech
 #                   | "right", mono, color
 #   type = "needle" / "ticks" : aiguille et graduations de cadran.
 #   Tous les widgets : pos, rotation (degrés, 0 = haut, sens horaire),
-#   opacity. Doc complète + exemple de compteur à aiguille :
+#   opacity, alert = "état" + alert_color (couleur partagée, [states]). Doc complète + exemple de compteur à aiguille :
 #   src/mods/hud/README.md du dépôt CXSFM.
 # Couleurs : "#RRGGBB" ou "#RRGGBBAA".
 
@@ -1212,7 +1380,7 @@ anchor = "nowhere"
         let text = "mode = \"demo\"\n[[hud]]\n[[hud.widget]]\ntype = \"arc\"\n[[hud.widget]]\ntype = \"arc\"\nsource = \"rpm\"\nstart = 0\nend = 360\nfilled = true\nfill = \"end\"\nopacity = 0.5";
         let (cfg, w) = parse_config(text).unwrap();
         assert!(w.is_empty(), "{w:?}");
-        match (&cfg.huds[0].widgets[0], &cfg.huds[0].widgets[1]) {
+        match (&cfg.huds[0].widgets[0].w, &cfg.huds[0].widgets[1].w) {
             (
                 Widget::Arc { source: None, start, end, filled: false, .. },
                 Widget::Arc { source: Some(s), filled: true, from_end: true, opacity, end: e2, .. },
@@ -1234,12 +1402,12 @@ anchor = "nowhere"
             [[hud.widget]]\ntype = \"bar\"\nsource = \"rpm\"\nrotation = 90";
         let (cfg, w) = parse_config(text).unwrap();
         assert_eq!(w.len(), 1, "{w:?}"); // needle without source
-        let ws = &cfg.huds[0].widgets;
+        let ws: Vec<&Widget> = cfg.huds[0].widgets.iter().map(|p| &p.w).collect();
         assert_eq!(ws.len(), 4);
-        assert!(matches!(&ws[0], Widget::Needle { length, tail, .. } if *length == 120.0 && *tail == 10.0));
-        assert!(matches!(&ws[1], Widget::Ticks { count: 8, minor: 4, label_radius: Some(r), .. } if *r == 90.0));
-        assert!(matches!(&ws[2], Widget::Text { rotation, opacity, .. } if *rotation == -10.0 && *opacity == 0.5));
-        assert!(matches!(&ws[3], Widget::Bar { rotation, .. } if *rotation == 90.0));
+        assert!(matches!(ws[0], Widget::Needle { length, tail, .. } if *length == 120.0 && *tail == 10.0));
+        assert!(matches!(ws[1], Widget::Ticks { count: Some(8), minor: 4, label_radius: Some(r), .. } if *r == 90.0));
+        assert!(matches!(ws[2], Widget::Text { rotation, opacity, .. } if *rotation == -10.0 && *opacity == 0.5));
+        assert!(matches!(ws[3], Widget::Bar { rotation, .. } if *rotation == 90.0));
     }
 
     #[test]
@@ -1255,6 +1423,63 @@ anchor = "nowhere"
         assert_eq!(t[1].major, None);
         assert_eq!(tick_label(4, 8, 0.0, 8.0, 0), "4");
         assert_eq!(tick_label(1, 4, 0.0, 1.0, 2), "0.25");
+    }
+
+    #[test]
+    fn states_and_alerts() {
+        let text = r##"
+mode = "demo"
+[states]
+rouge = { source = "rpm", above = "redline" }
+plage = { source = "speed", above = 50, below = 100 }
+flash = { source = "rpm", above = 0.5, blink = 2 }
+neutre = { source = "gear" }
+bad = { above = 1 }
+[[hud]]
+  [[hud.widget]]
+  type = "text"
+  text = "{speed}"
+  alert = "rouge"
+  alert_color = "#FF0000"
+  [[hud.widget]]
+  type = "text"
+  alert = "nope"
+"##;
+        let (cfg, w) = parse_config(text).unwrap();
+        assert_eq!(cfg.states.len(), 4);
+        assert_eq!(w.len(), 2, "{w:?}"); // `bad` without source, `nope` unknown
+        let a = cfg.huds[0].widgets[0].alert.as_ref().unwrap();
+        assert_eq!((a.state.as_str(), a.color), ("rouge", Color32::from_rgb(255, 0, 0)));
+        let st = |n: &str| cfg.states.iter().find(|s| s.name == n).unwrap();
+        let mut v = Values::default();
+        v.set("rpm", 0.9);
+        v.set("redline", 0.85);
+        v.set("speed", 70.0);
+        v.set("gear", 0.0);
+        assert!(st("rouge").active(&v, 0.0));
+        assert!(st("plage").active(&v, 0.0));
+        assert!(!st("neutre").active(&v, 0.0));
+        assert!(st("flash").active(&v, 0.1) && !st("flash").active(&v, 0.3));
+        v.set("rpm", 0.5);
+        assert!(!st("rouge").active(&v, 0.0));
+        v.set("speed", 120.0);
+        assert!(!st("plage").active(&v, 0.0));
+        let red = with_main_color(&cfg.huds[0].widgets[0].w, Color32::RED);
+        assert!(matches!(red, Widget::Text { color, .. } if color == Color32::RED));
+    }
+
+    #[test]
+    fn ticks_auto_range() {
+        let mut v = Values::default();
+        v.set("max_rpm_k", 7.0);
+        let src = Bound::Src("max_rpm_k".into());
+        assert_eq!(ticks_range(None, 0.0, &src, 2.0, &v), Some((9, 9.0)));
+        assert_eq!(ticks_range(Some(4), 0.0, &src, 2.0, &v), Some((4, 9.0)));
+        assert_eq!(ticks_range(None, 0.0, &Bound::Num(8.0), 0.0, &v), Some((8, 8.0)));
+        assert_eq!(ticks_range(None, 0.0, &Bound::Src("nope".into()), 2.0, &v), None);
+        let (cfg, w) = parse_config("mode = \"demo\"\n[[hud]]\n[[hud.widget]]\ntype = \"ticks\"\ncount = \"auto\"\nlabel_max = \"max_rpm_k\"\nlabel_margin = 2").unwrap();
+        assert!(w.is_empty(), "{w:?}");
+        assert!(matches!(&cfg.huds[0].widgets[0].w, Widget::Ticks { count: None, label_margin, .. } if *label_margin == 2.0));
     }
 
     #[test]
@@ -1278,7 +1503,7 @@ anchor = "nowhere"
         let sides: Vec<bool> = cfg.huds[0]
             .widgets
             .iter()
-            .map(|w| matches!(w, Widget::Bar { from_right: true, .. }))
+            .map(|p| matches!(p.w, Widget::Bar { from_right: true, .. }))
             .collect();
         assert_eq!(sides, vec![true, false]);
         assert_eq!(w.len(), 1, "{w:?}");

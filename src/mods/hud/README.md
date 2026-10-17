@@ -67,7 +67,8 @@ widgets) : en **degrés**, **0 = en haut**, **sens horaire**.
 `90` = droite, `180` = bas, `-90` = gauche.
 
 **Tous les widgets** acceptent `pos`, `rotation` et `opacity`
-(`0.0..1.0`, multipliée par l'opacité du HUD).
+(`0.0..1.0`, multipliée par l'opacité du HUD), ainsi que `alert` +
+`alert_color` (couleur partagée, voir §3 bis).
 
 ## 3. Sources : brancher une valeur du jeu
 
@@ -103,6 +104,45 @@ redline  = { path = "UITachometer/m_rpmRedZoneImage/m_FillAmount", scale = -1.0,
 Partout où un widget accepte `min`, `max`, `redline`, tu peux mettre
 **un nombre** (`max = 8000`) **ou un nom de source** (`max = "rpm_max"`).
 Un widget dont la source ou une borne manque n'est pas dessiné.
+
+## 3 bis. États et couleur partagée (`[states]`, `alert`)
+
+Un **état** est une condition nommée, calculée une fois par image et
+réutilisable par autant de widgets que tu veux. Exemple : tout passe
+en rouge quand le régime est dans la zone rouge.
+
+```toml
+[states]
+rouge  = { source = "rpm", above = "redline" }             # rpm ≥ redline
+shift  = { source = "rpm", above = "redline", blink = 6 }  # pareil, clignote 6×/s
+lent   = { source = "speed", below = 30 }                  # vitesse ≤ 30
+plage  = { source = "speed", above = 80, below = 120 }     # 80 ≤ vitesse ≤ 120
+neutre = { source = "gear", below = 0.5, above = -0.5 }    # rapport N
+```
+
+| Clé | Rôle | Défaut |
+|---|---|---|
+| `source` | valeur testée (obligatoire) | — |
+| `above` | actif si valeur **≥** ce nombre ou cette source | aucune |
+| `below` | actif si valeur **≤** ce nombre ou cette source | aucune |
+| `blink` | clignotement en Hz (`0` = fixe) | `0` |
+
+Sans `above` ni `below`, l'état est actif quand la valeur n'est pas 0.
+
+Puis, sur **n'importe quel widget** :
+
+```toml
+  [[hud.widget]]
+  type = "text"
+  text = "{speed}"
+  alert = "rouge"          # nom d'un état de [states]
+  alert_color = "#E03030"  # couleur tant que l'état est actif (défaut : rouge)
+```
+
+La couleur **principale** du widget change : remplissage d'une barre
+ou d'un arc, aiguille, texte ; pour `ticks`, traits **et** chiffres.
+Les fonds (`track_color`) et `redline_color` gardent leur rôle. Un nom
+d'état inconnu est signalé dans les avertissements.
 
 ## 4. Les widgets
 
@@ -154,18 +194,38 @@ Sans `source`, c'est une forme fixe en `color` (décor, cadran, rond).
 |---|---|---|
 | `pos`, `radius` | centre, rayon extérieur des traits | `[50,50]`, `50` |
 | `start`, `end`, `rotation` | comme `arc` | `-135`, `135`, `0` |
-| `count` | nombre d'intervalles majeurs (`8` → 9 grands traits) | `8` |
+| `count` | nombre d'intervalles majeurs (`8` → 9 grands traits), ou `"auto"` = un grand trait par unité de chiffre | `8` |
 | `minor` | sous-divisions par intervalle (`4` → 3 petits traits entre deux grands) | `4` |
 | `major_length`, `minor_length` | longueur des traits (vers l'intérieur) | `10`, `5` |
 | `major_width`, `minor_width` | épaisseur | `2`, `1` |
 | `color`, `minor_color` | couleur des grands / petits traits | blanc 63 % |
 | `labels` | chiffres aux grands traits | `true` |
-| `label_min`, `label_max`, `label_decimals` | chiffres de `label_min` à `label_max` | `0`, `count`, `0` |
+| `label_min`, `label_max`, `label_decimals` | chiffres de `label_min` à `label_max` ; `label_max` = nombre **ou source** | `0`, `count`, `0` |
+| `label_margin` | ajouté à `label_max` (marge au-delà du max) | `0` |
 | `label_radius` | rayon des chiffres | sous les traits |
 | `label_size`, `label_color` | taille, couleur | `14`, blanc 63 % |
 
 Les chiffres restent droits (lisibles), seuls leurs emplacements
 suivent le cercle.
+
+**Cadran automatique selon la voiture** : avec une source qui donne
+le régime max en milliers, le cadran s'adapte tout seul (7000 tr/min
++ marge 2 → chiffres 0 à 9, 9 intervalles) :
+
+```toml
+[sources]
+max_rpm_k = { path = "Classe/…/champ_regime_max", scale = 0.001 }
+
+  [[hud.widget]]
+  type = "ticks"
+  count = "auto"
+  label_max = "max_rpm_k"
+  label_margin = 2
+```
+
+Le chemin du régime max est à trouver avec l'Explorateur (les
+sources actuelles `rpm*` sont des taux de remplissage, pas des tr/min).
+Si la source manque, le widget n'est pas dessiné.
 
 ### `text` — texte et valeurs
 

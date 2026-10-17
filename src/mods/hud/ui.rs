@@ -8,7 +8,8 @@
 use super::HudMod;
 use super::model::{
     Align, ExploreReq, Hud, HudConfig, Mode, Values, Widget, arc_point, arc_points, bar_fraction,
-    binding_path, demo_values, format_template, rotate_about, tick_label, tick_layout,
+    binding_path, demo_values, format_template, rotate_about, tick_label, tick_layout, ticks_range,
+    with_main_color,
 };
 use crate::mods::common::lock;
 use std::sync::atomic::Ordering;
@@ -85,7 +86,8 @@ fn fill_rotated(p: &egui::Painter, r: egui::Rect, pivot: egui::Pos2, deg: f32, c
     p.add(egui::Shape::convex_polygon(corners, col, egui::Stroke::NONE));
 }
 
-fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values) {
+/// `active` = names of the `[states]` entries showing this frame.
+fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values, active: &[&str]) {
     let screen = ctx.content_rect();
     let rect = hud_rect(screen, h);
     let mut p = ctx.layer_painter(egui::LayerId::new(
@@ -98,7 +100,17 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values) {
     }
     let s = h.scale;
     let at = |pos: [f32; 2]| rect.min + egui::vec2(pos[0] * s, pos[1] * s);
-    for w in &h.widgets {
+    for pw in &h.widgets {
+        // Shared colour: the widget's alert state is showing → its main
+        // colour switches for this frame.
+        let alerted;
+        let w = match &pw.alert {
+            Some(a) if active.contains(&a.state.as_str()) => {
+                alerted = with_main_color(&pw.w, a.color);
+                &alerted
+            }
+            _ => &pw.w,
+        };
         match w {
             Widget::Bar {
                 source,
@@ -260,17 +272,23 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values) {
                 labels,
                 label_min,
                 label_max,
+                label_margin,
                 label_decimals,
                 label_radius,
                 label_size,
                 label_color,
                 opacity,
             } => {
+                // Auto range (label_max from a source + margin, count
+                // following it) or fixed; missing source = skip.
+                let Some((count, label_hi)) = ticks_range(*count, *label_min, label_max, *label_margin, v) else {
+                    continue;
+                };
                 let c = at(*pos);
                 let cc = [c.x, c.y];
                 let k = |col: egui::Color32| col.gamma_multiply(*opacity);
                 let label_r = label_radius.unwrap_or(radius - major_length - label_size * 0.9);
-                for t in tick_layout(start + rotation, end + rotation, *count, *minor) {
+                for t in tick_layout(start + rotation, end + rotation, count, *minor) {
                     let (len, w, col) = match t.major {
                         Some(_) => (*major_length, *major_width, *color),
                         None => (*minor_length, *minor_width, *minor_color),
@@ -282,7 +300,7 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values) {
                         p.text(
                             pt(arc_point(cc, label_r * s, t.angle)),
                             egui::Align2::CENTER_CENTER,
-                            tick_label(i, *count, *label_min, *label_max, *label_decimals),
+                            tick_label(i, count, *label_min, label_hi, *label_decimals),
                             egui::FontId::proportional(label_size * s),
                             k(*label_color),
                         );
@@ -322,13 +340,20 @@ impl HudMod {
             _ => lock(&self.live).clone(),
         };
         if let Some(cfg) = &cfg {
+            let t = ctx.input(|i| i.time);
+            let active: Vec<&str> = cfg
+                .states
+                .iter()
+                .filter(|s| s.active(&values, t))
+                .map(|s| s.name.as_str())
+                .collect();
             let mut any = false;
             for (i, h) in cfg.huds.iter().enumerate().filter(|(_, h)| h.enabled) {
                 any = true;
                 if h.hide_when_missing && values.is_empty() {
                     continue;
                 }
-                draw_hud(ctx, i, h, &values);
+                draw_hud(ctx, i, h, &values, &active);
             }
             // Live values need frames even with the menu closed: the
             // overlay re-runs egui when the requested delay expires.
@@ -641,18 +666,20 @@ mod tests {
             .collect();
         let sources = blocks.iter().find(|b| b.contains("rpm_max")).expect("sources block");
         let dial = blocks.iter().find(|b| b.contains("Compteur aiguille")).expect("dial block");
-        let text = format!("version = 2\nmode = \"demo\"\n{sources}\n{dial}");
+        let states = blocks.iter().find(|b| b.contains("[states]")).expect("states block");
+        let text = format!("version = 2\nmode = \"demo\"\n{sources}\n{states}\n{dial}");
         let (cfg, w) = parse_config(&text).expect("README example must parse");
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(cfg.huds.len(), 1);
         assert_eq!(cfg.huds[0].widgets.len(), 11);
+        assert_eq!(cfg.states.len(), 5);
         let ctx = egui::Context::default();
         egui_material_icons::initialize(&ctx);
         ctx.begin_pass(egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0))),
             ..Default::default()
         });
-        draw_hud(&ctx, 0, &cfg.huds[0], &demo_values(2.0));
+        draw_hud(&ctx, 0, &cfg.huds[0], &demo_values(2.0), &[]);
         let mut out = ctx.end_pass();
         out.textures_delta.clear();
         assert!(!ctx.tessellate(out.shapes, out.pixels_per_point).is_empty());
@@ -671,8 +698,9 @@ mod tests {
              [[hud.widget]]\ntype = \"arc\"\nsource = \"rpm\"\nmin = \"rpm_min\"\nmax = \"rpm_max\"\nredline = \"redline\"\nfill = \"end\"\n\
              [[hud.widget]]\ntype = \"arc\"\nsource = \"rpm\"\nmin = \"rpm_min\"\nmax = \"rpm_max\"\nfilled = true\nstart = -150\nend = 150\n\
              [[hud.widget]]\ntype = \"arc\"\nfilled = true\nstart = 0\nend = 360\nopacity = 0.3\n\
-             [[hud.widget]]\ntype = \"needle\"\nsource = \"rpm\"\nmin = \"rpm_min\"\nmax = \"rpm_max\"\nredline = \"redline\"\ntail = 12\n\
-             [[hud.widget]]\ntype = \"ticks\"\nlabel_max = 8\nrotation = 15\n\
+             [[hud.widget]]\ntype = \"needle\"\nsource = \"rpm\"\nmin = \"rpm_min\"\nmax = \"rpm_max\"\nredline = \"redline\"\ntail = 12\nalert = \"rouge\"\n\
+             [[hud.widget]]\ntype = \"ticks\"\nlabel_max = 8\nrotation = 15\nalert = \"rouge\"\n\
+             [[hud.widget]]\ntype = \"ticks\"\ncount = \"auto\"\nlabel_max = \"max_gear\"\nlabel_margin = 2\n\
              [[hud.widget]]\ntype = \"bar\"\nsource = \"rpm\"\nrotation = 30\nsegments = 5\n\
              [[hud.widget]]\ntype = \"text\"\ntext = \"{speed}\"\nalign = \"right\"\nrotation = -12",
         )
@@ -687,7 +715,7 @@ mod tests {
         for t in 0..3 {
             ctx.begin_pass(input.clone());
             for (i, h) in cfg.huds.iter().enumerate() {
-                draw_hud(&ctx, i, h, &demo_values(t as f64 * 3.3));
+                draw_hud(&ctx, i, h, &demo_values(t as f64 * 3.3), &["rouge"]);
             }
             let mut out = ctx.end_pass();
             out.textures_delta.clear();
