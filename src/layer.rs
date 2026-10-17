@@ -96,6 +96,7 @@ type DestroySwapchainFn =
     unsafe extern "C" fn(usize, usize, *const std::ffi::c_void);
 type DestroyInstanceFn = unsafe extern "C" fn(usize, *const std::ffi::c_void);
 type DestroyDeviceFn = unsafe extern "C" fn(usize, *const std::ffi::c_void);
+type DeviceWaitIdleFn = unsafe extern "C" fn(usize) -> VkResult;
 type GetSwapchainImagesFn = unsafe extern "C" fn(
     usize,
     usize,
@@ -641,6 +642,7 @@ unsafe extern "C" fn layer_destroy_instance(
     instance: usize,
     p_allocator: *const std::ffi::c_void,
 ) {
+    crate::log_line(&format!("render/layer: DestroyInstance entry {instance:#x}"));
     let next = STATE.lock().unwrap().next_instance_proc;
     if let Some(n) = next {
         // SAFETY: forwarding the app's exact arguments.
@@ -666,6 +668,10 @@ unsafe extern "C" fn layer_destroy_device(
     device: usize,
     p_allocator: *const std::ffi::c_void,
 ) {
+    // Quit-hang diagnosis (2026-10-16: the game hung after the last
+    // swapchain went away): each step is logged so the next hang
+    // names where it stops.
+    crate::log_line(&format!("render/layer: DestroyDevice entry {device:#x}"));
     let real: Option<DestroyDeviceFn> = STATE
         .lock()
         .unwrap()
@@ -692,6 +698,7 @@ unsafe extern "C" fn layer_destroy_device(
         }
     }
     if let Some(destroy) = real {
+        crate::log_line("render/layer: DestroyDevice forwarding to driver");
         // SAFETY: forwarding the app's exact arguments.
         unsafe {
             destroy(device, p_allocator);
@@ -702,6 +709,33 @@ unsafe extern "C" fn layer_destroy_device(
         );
     }
     crate::log_line(&format!("render/layer: device {device:#x} destroyed"));
+}
+
+/// `vkDeviceWaitIdle` passthrough, logged during teardown only (games
+/// call it on resize too). A hang INSIDE it means queued GPU work never
+/// completes — e.g. a submission waiting on a semaphore nobody signals.
+unsafe extern "C" fn layer_device_wait_idle(device: usize) -> VkResult {
+    let next = crate::mods::common::lock(&STATE).devices.get(&device).copied();
+    let Some(next) = next else {
+        return VK_SUCCESS;
+    };
+    // SAFETY: device-chain lookup with a NUL-terminated name.
+    let p = unsafe { next(device, c"vkDeviceWaitIdle".as_ptr()) };
+    if p.is_null() {
+        return VK_SUCCESS;
+    }
+    // SAFETY: the next layer's/driver's vkDeviceWaitIdle.
+    let real: DeviceWaitIdleFn = unsafe { std::mem::transmute(p) };
+    let teardown = shutting_down();
+    if teardown {
+        crate::log_line(&format!("render/layer: DeviceWaitIdle entry {device:#x} (teardown)"));
+    }
+    // SAFETY: forwarding the app's exact argument.
+    let r = unsafe { real(device) };
+    if teardown {
+        crate::log_line(&format!("render/layer: DeviceWaitIdle returned {r}"));
+    }
+    r
 }
 
 /// Swapchain creation: capture format/extent/images for the overlay,
@@ -1127,6 +1161,7 @@ unsafe extern "C" fn layer_get_device_proc_addr(
     match read_name(name).as_deref() {
         Some("vkCreateDevice") => layer_create_device as *const std::ffi::c_void,
         Some("vkDestroyDevice") => layer_destroy_device as *const std::ffi::c_void,
+        Some("vkDeviceWaitIdle") => layer_device_wait_idle as *const std::ffi::c_void,
         Some("vkCreateSwapchainKHR") => layer_create_swapchain as *const std::ffi::c_void,
         Some("vkDestroySwapchainKHR") => layer_destroy_swapchain as *const std::ffi::c_void,
         Some("vkGetDeviceQueue") => layer_get_device_queue as *const std::ffi::c_void,
