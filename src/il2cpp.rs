@@ -120,6 +120,10 @@ pub type FieldSetValueFn = unsafe extern "C" fn(
     *mut std::ffi::c_void,
 );
 
+/// `Il2CppThread* il2cpp_thread_current(void)` (null when not attached)
+pub type ThreadCurrentFn = unsafe extern "C" fn() -> *mut std::ffi::c_void;
+/// `void il2cpp_thread_detach(Il2CppThread*)`
+pub type ThreadDetachFn = unsafe extern "C" fn(*mut std::ffi::c_void);
 /// `FieldInfo* il2cpp_class_get_fields(Il2CppClass*, void** iter)`
 /// (own fields only — parents walked by the caller)
 pub type ClassGetFieldsFn = unsafe extern "C" fn(
@@ -239,6 +243,10 @@ pub struct Il2cppApi {
     pub field_get_value: Option<FieldGetValueFn>,
     /// `il2cpp_field_set_value` — best effort.
     pub field_set_value: Option<FieldSetValueFn>,
+    /// `il2cpp_thread_current` / `il2cpp_thread_detach` — best effort
+    /// (our threads leave the runtime before it shuts down).
+    pub thread_current: Option<ThreadCurrentFn>,
+    pub thread_detach: Option<ThreadDetachFn>,
     /// Reflection (field explorer) — best effort, metadata reads only.
     pub class_get_fields: Option<ClassGetFieldsFn>,
     pub field_get_name: Option<FieldGetNameFn>,
@@ -266,6 +274,33 @@ impl Il2cppApi {
     pub unsafe fn attach_current_thread(&self, domain: *mut std::ffi::c_void) -> *mut std::ffi::c_void {
         // SAFETY: caller guarantees a live domain from this same API.
         unsafe { (self.thread_attach)(domain) }
+    }
+
+    /// Detach the *current* thread from the runtime (no-op when it is
+    /// not attached or the exports are missing). Returns whether a
+    /// detach happened.
+    ///
+    /// An attached thread that never detaches can keep the runtime's
+    /// shutdown waiting for it forever (suspected quit hang,
+    /// 2026-10-16): every framework thread leaves before the game
+    /// tears the runtime down.
+    ///
+    /// # Safety
+    /// Calls into the game's runtime; the runtime must still be alive.
+    pub unsafe fn detach_current_thread(&self) -> bool {
+        let (Some(current), Some(detach)) = (self.thread_current, self.thread_detach) else {
+            return false;
+        };
+        // SAFETY: caller guarantees a live runtime; `current` returns
+        // this thread's handle or null.
+        unsafe {
+            let t = current();
+            if t.is_null() {
+                return false;
+            }
+            detach(t);
+        }
+        true
     }
 
     /// Fetch the current IL2CPP domain, or [`Il2cppError::NullResult`].
@@ -550,6 +585,8 @@ pub fn resolve() -> Result<Il2cppApi, Il2cppError> {
         sym_opt!("il2cpp_field_get_value", FieldGetValueFn);
     let field_set_value: Option<FieldSetValueFn> =
         sym_opt!("il2cpp_field_set_value", FieldSetValueFn);
+    let thread_current: Option<ThreadCurrentFn> = sym_opt!("il2cpp_thread_current", ThreadCurrentFn);
+    let thread_detach: Option<ThreadDetachFn> = sym_opt!("il2cpp_thread_detach", ThreadDetachFn);
     let class_get_fields: Option<ClassGetFieldsFn> = sym_opt!("il2cpp_class_get_fields", ClassGetFieldsFn);
     let field_get_name: Option<FieldGetNameFn> = sym_opt!("il2cpp_field_get_name", FieldGetNameFn);
     let field_get_type: Option<FieldGetTypeFn> = sym_opt!("il2cpp_field_get_type", FieldGetTypeFn);
@@ -592,6 +629,8 @@ pub fn resolve() -> Result<Il2cppApi, Il2cppError> {
         class_get_field_from_name,
         field_get_value,
         field_set_value,
+        thread_current,
+        thread_detach,
         class_get_fields,
         field_get_name,
         field_get_type,

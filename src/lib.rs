@@ -260,6 +260,15 @@ fn deferred_init() {
         log_line("game NOT ready after timeout, mods NOT registered");
     }
 
+    // This thread is done with IL2CPP: leave the runtime so its
+    // shutdown never waits on us (attached threads that never detach
+    // are a suspected cause of the quit hang).
+    if let Some(api) = IL2CPP.get() {
+        // SAFETY: runtime alive (init just used it), own thread.
+        if unsafe { api.detach_current_thread() } {
+            log_line("il2cpp: init thread detached");
+        }
+    }
     INITIALIZED.store(true, Ordering::SeqCst);
     log_line("init finished");
 }
@@ -474,12 +483,16 @@ fn spawn_tick_thread() {
     let _ = std::thread::Builder::new()
         .name("cxsfm-tick".into())
         .spawn(|| {
+            // Whether this thread is currently attached to IL2CPP
+            // (detached during teardown, see the loop below).
+            let mut attached = false;
             if let Some(api) = IL2CPP.get() {
                 // SAFETY: domain re-fetched on this thread; attach is
                 // idempotent per thread, failure just skips IL2CPP use.
                 unsafe {
                     if let Ok(domain) = api.domain() {
                         let _ = api.attach_current_thread(domain);
+                        attached = true;
                     }
                 }
             }
@@ -576,9 +589,34 @@ fn spawn_tick_thread() {
                 // scripting domain is already dead (quit crash: SIGSEGV
                 // in tick at exit) — `domain_checked` parks after 3
                 // strikes, so this flips within ~50 ms of death.
-                let domain_gone = IL2CPP.get().is_some_and(|api| unsafe {
-                    crate::il2cpp::domain_checked(api).is_none()
-                });
+                // Runtime membership follows teardown: detach as soon as
+                // the last swapchain is gone (the runtime is still alive
+                // then — the game tears it down later and must not wait
+                // on us), re-attach if presentation comes back (resize
+                // storms briefly empty the swapchain set).
+                if let Some(api) = IL2CPP.get() {
+                    if down && attached {
+                        // SAFETY: runtime still alive at the first
+                        // teardown signal; own thread.
+                        unsafe { api.detach_current_thread() };
+                        attached = false;
+                        log_line("il2cpp: tick thread detached (teardown)");
+                    } else if !down && !attached {
+                        // SAFETY: presentation is back = runtime alive.
+                        unsafe {
+                            if let Ok(domain) = api.domain() {
+                                let _ = api.attach_current_thread(domain);
+                                attached = true;
+                                log_line("il2cpp: tick thread re-attached");
+                            }
+                        }
+                    }
+                }
+                // No IL2CPP call at all while down (not even the probe).
+                let domain_gone = !down
+                    && IL2CPP.get().is_some_and(|api| unsafe {
+                        crate::il2cpp::domain_checked(api).is_none()
+                    });
                 if !down && !domain_gone {
                     mod_api::update_all_mods(dt);
                     // Main-thread hook upkeep (install retries, probes,
