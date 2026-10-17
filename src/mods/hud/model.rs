@@ -102,6 +102,10 @@ pub(crate) enum Widget {
         /// Degrees clockwise around `pos` (the bar's top-left corner).
         rotation: f32,
         opacity: f32,
+        /// Segmented bars: height fraction of the first / last segment
+        /// (bottom-aligned ramp), `taper_curve` > 1 = flat then steep.
+        taper: Option<[f32; 2]>,
+        taper_curve: f32,
         min: Bound,
         max: Bound,
         redline: Option<Bound>,
@@ -196,6 +200,11 @@ pub(crate) enum Widget {
         mono: bool,
         rotation: f32,
         opacity: f32,
+        /// Italic-like lean in degrees (positive = leans right).
+        skew: f32,
+        /// Halo radius in px (0 = none), colour defaults to `color`.
+        glow: f32,
+        glow_color: Option<Color32>,
     },
 }
 
@@ -329,11 +338,63 @@ impl SourceDef {
     }
 }
 
+/// Source computed from another one: linear remap of `from` from
+/// `[in0, in1]` to `[out0, out1]` (bounds are numbers or sources),
+/// clamped to the output range. Evaluated in declaration order, so a
+/// derived source may use earlier ones.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DerivedDef {
+    pub(crate) name: String,
+    pub(crate) from: String,
+    pub(crate) input: [Bound; 2],
+    pub(crate) output: [Bound; 2],
+}
+
+/// Add every derived source to `v` (missing inputs = left out).
+/// TOML tables come key-sorted, so declaration order is lost: run
+/// passes until nothing new resolves (chains work in any order).
+pub(crate) fn apply_derived(v: &mut Values, defs: &[DerivedDef]) {
+    let mut done = vec![false; defs.len()];
+    for _ in 0..=defs.len() {
+        let mut progress = false;
+        for (d, done) in defs.iter().zip(done.iter_mut()) {
+            if *done {
+                continue;
+            }
+            let (Some(x), Some(i0), Some(i1), Some(o0), Some(o1)) = (
+                v.get(&d.from),
+                d.input[0].eval(v),
+                d.input[1].eval(v),
+                d.output[0].eval(v),
+                d.output[1].eval(v),
+            ) else {
+                continue;
+            };
+            let t = bar_fraction(x, i0, i1);
+            v.set(&d.name, o0 + (o1 - o0) * t);
+            *done = true;
+            progress = true;
+        }
+        if !progress {
+            break;
+        }
+    }
+}
+
+/// Height fraction of segment `i` of `n` on a taper ramp `[a, b]`
+/// shaped by `curve` (1 = linear).
+pub(crate) fn segment_height(i: u32, n: u32, taper: [f32; 2], curve: f32) -> f32 {
+    let t = if n <= 1 { 1.0 } else { i as f32 / (n - 1) as f32 };
+    let t = t.clamp(0.0, 1.0).powf(curve.max(0.01));
+    (taper[0] + (taper[1] - taper[0]) * t).clamp(0.0, 1.0)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct HudConfig {
     pub(crate) fps: u32,
     pub(crate) mode: Mode,
     pub(crate) sources: Vec<SourceDef>,
+    pub(crate) derived: Vec<DerivedDef>,
     pub(crate) states: Vec<StateDef>,
     pub(crate) huds: Vec<Hud>,
 }
@@ -635,6 +696,14 @@ fn parse_widget(t: &toml::Table, ctx: String, warnings: &mut Vec<String>) -> Opt
                 from_right,
                 rotation: f.f32("rotation", 0.0),
                 opacity: f.f32("opacity", 1.0).clamp(0.0, 1.0),
+                taper: f.t.get("taper").and_then(|v| match pair(v) {
+                    Some([a, b]) => Some([a.clamp(0.0, 1.0), b.clamp(0.0, 1.0)]),
+                    None => {
+                        f.warnings.push(format!("{}: `taper` invalide ([début, fin] attendu), ignoré", f.ctx));
+                        None
+                    }
+                }),
+                taper_curve: f.f32("taper_curve", 1.0).clamp(0.1, 10.0),
                 min: f.bound("min", Bound::Num(0.0)),
                 max: f.bound("max", Bound::Num(1.0)),
                 redline,
@@ -795,6 +864,15 @@ fn parse_widget(t: &toml::Table, ctx: String, warnings: &mut Vec<String>) -> Opt
                 mono: f.bool("mono", false),
                 rotation: f.f32("rotation", 0.0),
                 opacity: f.f32("opacity", 1.0).clamp(0.0, 1.0),
+                skew: f.f32("skew", 0.0).clamp(-45.0, 45.0),
+                glow: f.f32("glow", 0.0).clamp(0.0, 40.0),
+                glow_color: f.t.get("glow_color").and_then(|v| match v.as_str().and_then(parse_color) {
+                    Some(c) => Some(c),
+                    None => {
+                        f.warnings.push(format!("{}: `glow_color` invalide, ignoré", f.ctx));
+                        None
+                    }
+                }),
             })
         }
         other => {
@@ -806,18 +884,41 @@ fn parse_widget(t: &toml::Table, ctx: String, warnings: &mut Vec<String>) -> Opt
 
 /// `[sources]`: `name = "Root/…/field"` or
 /// `name = { path = "…", scale = 1.0, offset = 0.0 }`.
-fn parse_sources(root: &toml::Table, warnings: &mut Vec<String>) -> Vec<SourceDef> {
+fn parse_sources(root: &toml::Table, warnings: &mut Vec<String>) -> (Vec<SourceDef>, Vec<DerivedDef>) {
     let mut out = Vec::new();
+    let mut derived = Vec::new();
     let Some(table) = root.get("sources") else {
-        return out;
+        return (out, derived);
     };
     let Some(table) = table.as_table() else {
         warnings.push("`sources` doit être une table, ignoré".into());
-        return out;
+        return (out, derived);
     };
     for (name, v) in table {
         let def = match v {
             toml::Value::String(path) => SourceDef::from_path(name, path, 1.0, 0.0),
+            // Derived: { from = "rpm", in = [a, b], out = [c, d] }
+            toml::Value::Table(t) if t.contains_key("from") => {
+                let two = |key: &str| -> Option<[Bound; 2]> {
+                    let a = t.get(key)?.as_array()?;
+                    if a.len() != 2 {
+                        return None;
+                    }
+                    Some([bound(&a[0])?, bound(&a[1])?])
+                };
+                match (t.get("from").and_then(|f| f.as_str()), two("in"), two("out")) {
+                    (Some(from), Some(input), Some(output)) => derived.push(DerivedDef {
+                        name: name.clone(),
+                        from: from.to_string(),
+                        input,
+                        output,
+                    }),
+                    _ => warnings.push(format!(
+                        "source `{name}` : dérivée attendue {{ from = \"…\", in = [a, b], out = [c, d] }}, ignorée"
+                    )),
+                }
+                continue;
+            }
             toml::Value::Table(t) => {
                 let mut f = Fields { t, ctx: format!("source `{name}`"), warnings };
                 let path = f.str("path", "");
@@ -832,7 +933,7 @@ fn parse_sources(root: &toml::Table, warnings: &mut Vec<String>) -> Vec<SourceDe
             None => warnings.push(format!("source `{name}` : chemin `Classe/…/champ` attendu, ignorée")),
         }
     }
-    out
+    (out, derived)
 }
 
 /// `[states]`: `name = { source = "rpm", above = "redline", below = …,
@@ -903,7 +1004,7 @@ pub(crate) fn parse_config(text: &str) -> Result<(HudConfig, Vec<String>), Strin
             Mode::Live
         }
     };
-    let sources = parse_sources(&root, &mut warnings);
+    let (sources, derived) = parse_sources(&root, &mut warnings);
     let states = parse_states(&root, &mut warnings);
     let mut huds = Vec::new();
     let list = root.get("hud").and_then(|v| v.as_array()).cloned().unwrap_or_default();
@@ -965,7 +1066,7 @@ pub(crate) fn parse_config(text: &str) -> Result<(HudConfig, Vec<String>), Strin
                 .into(),
         );
     }
-    Ok((HudConfig { fps, mode, sources, states, huds }, warnings))
+    Ok((HudConfig { fps, mode, sources, derived, states, huds }, warnings))
 }
 
 /// Example written on first enable when no `hud.toml` exists.
@@ -1480,6 +1581,47 @@ bad = { above = 1 }
         let (cfg, w) = parse_config("mode = \"demo\"\n[[hud]]\n[[hud.widget]]\ntype = \"ticks\"\ncount = \"auto\"\nlabel_max = \"max_rpm_k\"\nlabel_margin = 2").unwrap();
         assert!(w.is_empty(), "{w:?}");
         assert!(matches!(&cfg.huds[0].widgets[0].w, Widget::Ticks { count: None, label_margin, .. } if *label_margin == 2.0));
+    }
+
+    #[test]
+    fn derived_sources_and_taper() {
+        let text = r##"
+mode = "demo"
+[sources]
+rpm = "UITachometer/m_rpmFillImage/m_FillAmount"
+a_rpm_k = { from = "rpm_tr", in = [0, 8000], out = [0, 8] }
+rpm_tr = { from = "rpm", in = ["rpm_min", "rpm_max"], out = [0, 8000] }
+bad = { from = "rpm", in = [0] }
+[[hud]]
+  [[hud.widget]]
+  type = "bar"
+  source = "rpm"
+  segments = 10
+  taper = [0.2, 1.0]
+  taper_curve = 2
+  [[hud.widget]]
+  type = "text"
+  skew = 12
+  glow = 4
+  glow_color = "#00FFFF60"
+"##;
+        let (cfg, w) = parse_config(text).unwrap();
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert_eq!((cfg.sources.len(), cfg.derived.len()), (1, 2));
+        let mut v = Values::default();
+        v.set("rpm", 0.5);
+        v.set("rpm_min", 0.1);
+        v.set("rpm_max", 0.9);
+        apply_derived(&mut v, &cfg.derived);
+        // `a_rpm_k` sorts first but depends on `rpm_tr`: multi-pass.
+        assert!((v.get("rpm_tr").unwrap() - 4000.0).abs() < 0.01);
+        assert!((v.get("a_rpm_k").unwrap() - 4.0).abs() < 1e-4);
+        assert!(matches!(&cfg.huds[0].widgets[0].w, Widget::Bar { taper: Some([a, b]), taper_curve, .. } if *a == 0.2 && *b == 1.0 && *taper_curve == 2.0));
+        assert!(matches!(&cfg.huds[0].widgets[1].w, Widget::Text { skew, glow, glow_color: Some(_), .. } if *skew == 12.0 && *glow == 4.0));
+        assert_eq!(segment_height(0, 10, [0.2, 1.0], 1.0), 0.2);
+        assert_eq!(segment_height(9, 10, [0.2, 1.0], 1.0), 1.0);
+        assert!(segment_height(5, 10, [0.2, 1.0], 2.0) < segment_height(5, 10, [0.2, 1.0], 1.0));
+        assert_eq!(segment_height(0, 1, [0.2, 1.0], 1.0), 1.0);
     }
 
     #[test]

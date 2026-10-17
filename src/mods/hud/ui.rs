@@ -8,8 +8,8 @@
 use super::HudMod;
 use super::model::{
     Align, ExploreReq, Hud, HudConfig, Mode, Values, Widget, arc_point, arc_points, bar_fraction,
-    binding_path, demo_values, format_template, rotate_about, tick_label, tick_layout, ticks_range,
-    with_main_color,
+    apply_derived, binding_path, demo_values, format_template, rotate_about, segment_height, tick_label,
+    tick_layout, ticks_range, with_main_color,
 };
 use crate::mods::common::lock;
 use std::sync::atomic::Ordering;
@@ -86,6 +86,44 @@ fn fill_rotated(p: &egui::Painter, r: egui::Rect, pivot: egui::Pos2, deg: f32, c
     p.add(egui::Shape::convex_polygon(corners, col, egui::Stroke::NONE));
 }
 
+/// Text as a raw mesh (font texture), sheared by `skew` degrees for an
+/// italic look (bottom edge fixed, top leaning right), turned `deg`
+/// around `anchor_local` (galley space) and placed at `top_left +
+/// shift`. Mirrors epaint's own text tessellation (row meshes carry
+/// texel UVs: normalise by the font atlas size).
+#[allow(clippy::too_many_arguments)]
+fn text_mesh(
+    galley: &egui::Galley,
+    top_left: egui::Pos2,
+    anchor_local: egui::Vec2,
+    deg: f32,
+    skew: f32,
+    color: egui::Color32,
+    tex: [usize; 2],
+    shift: egui::Vec2,
+) -> egui::Mesh {
+    let k = skew.to_radians().tan();
+    let h = galley.size().y;
+    let norm = egui::vec2(1.0 / tex[0].max(1) as f32, 1.0 / tex[1].max(1) as f32);
+    let mut mesh = egui::Mesh::default();
+    for placed in &galley.rows {
+        let src = &placed.row.visuals.mesh;
+        let base = mesh.vertices.len() as u32;
+        mesh.indices.extend(src.indices.iter().map(|i| i + base));
+        for v in &src.vertices {
+            let mut lp = placed.pos.to_vec2() + v.pos.to_vec2();
+            lp.x += (h - lp.y) * k;
+            let r = rotate_about([lp.x, lp.y], [anchor_local.x, anchor_local.y], deg);
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: top_left + egui::vec2(r[0], r[1]) + shift,
+                uv: egui::pos2(v.uv.x * norm.x, v.uv.y * norm.y),
+                color,
+            });
+        }
+    }
+    mesh
+}
+
 /// `active` = names of the `[states]` entries showing this frame.
 fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values, active: &[&str]) {
     let screen = ctx.content_rect();
@@ -117,6 +155,8 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values, active: &[&str
                 from_right,
                 rotation,
                 opacity,
+                taper,
+                taper_curve,
                 min,
                 max,
                 redline,
@@ -163,7 +203,12 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values, active: &[&str
                     let seg_w = ((r.width() - gap * (n - 1.0)) / n).max(1.0);
                     for i in 0..*segments {
                         let x = r.min.x + i as f32 * (seg_w + gap);
-                        let sr = egui::Rect::from_min_size(egui::pos2(x, r.min.y), egui::vec2(seg_w, r.height()));
+                        // Ramp: bottom-aligned, height per taper curve.
+                        let hf = taper.map(|t| segment_height(i, *segments, t, *taper_curve)).unwrap_or(1.0);
+                        let sr = egui::Rect::from_min_max(
+                            egui::pos2(x, r.max.y - r.height() * hf),
+                            egui::pos2(x + seg_w, r.max.y),
+                        );
                         let center = (i as f32 + 0.5) / n;
                         let in_red = red_frac.is_some_and(|rf| center >= rf);
                         let lit = if *from_right { center >= frac } else { center <= frac };
@@ -307,7 +352,7 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values, active: &[&str
                     }
                 }
             }
-            Widget::Text { text, pos, size, align, color, mono, rotation, opacity } => {
+            Widget::Text { text, pos, size, align, color, mono, rotation, opacity, skew, glow, glow_color } => {
                 let anchor = match align {
                     Align::Left => egui::Align2::LEFT_TOP,
                     Align::Center => egui::Align2::CENTER_TOP,
@@ -323,10 +368,32 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values, active: &[&str
                 // Unrotated placement by alignment, then turn around the
                 // alignment point (= `pos`).
                 let top_left = anchor.anchor_size(at(*pos), galley.size()).min;
-                p.add(
-                    egui::epaint::TextShape::new(top_left, galley, col)
-                        .with_angle_and_anchor(rotation.to_radians(), anchor),
-                );
+                if *skew == 0.0 && *glow <= 0.0 {
+                    p.add(
+                        egui::epaint::TextShape::new(top_left, galley, col)
+                            .with_angle_and_anchor(rotation.to_radians(), anchor),
+                    );
+                    continue;
+                }
+                // Italic / halo: draw the glyph mesh ourselves.
+                let tex = ctx.fonts(|f| f.font_image_size());
+                let anchor_local = anchor
+                    .pos_in_rect(&egui::Rect::from_min_size(egui::Pos2::ZERO, galley.size()))
+                    .to_vec2();
+                let mk = |c: egui::Color32, shift: egui::Vec2| {
+                    egui::Shape::mesh(text_mesh(&galley, top_left, anchor_local, *rotation, *skew, c, tex, shift))
+                };
+                if *glow > 0.0 {
+                    // Halo: two rings of 8 faint copies around the text.
+                    let gc = glow_color.unwrap_or(color.gamma_multiply(0.12)).gamma_multiply(*opacity);
+                    for ring in [0.5f32, 1.0] {
+                        for step in 0..8 {
+                            let o = arc_point([0.0, 0.0], glow * s * ring, step as f32 * 45.0);
+                            p.add(mk(gc, egui::vec2(o[0], o[1])));
+                        }
+                    }
+                }
+                p.add(mk(col, egui::Vec2::ZERO));
             }
         }
     }
@@ -335,10 +402,16 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values, active: &[&str
 impl HudMod {
     pub(crate) fn draw(&mut self, ctx: &egui::Context) {
         let cfg: Option<std::sync::Arc<HudConfig>> = lock(&self.config).clone();
-        let values = match cfg.as_deref().map(|c| c.mode) {
+        let mut values = match cfg.as_deref().map(|c| c.mode) {
             Some(Mode::Demo) => demo_values(ctx.input(|i| i.time)),
             _ => lock(&self.live).clone(),
         };
+        // Derived sources (remaps) on top of whatever was read.
+        if let Some(c) = cfg.as_deref() {
+            if !values.is_empty() {
+                apply_derived(&mut values, &c.derived);
+            }
+        }
         if let Some(cfg) = &cfg {
             let t = ctx.input(|i| i.time);
             let active: Vec<&str> = cfg
@@ -667,19 +740,27 @@ mod tests {
         let sources = blocks.iter().find(|b| b.contains("rpm_max")).expect("sources block");
         let dial = blocks.iter().find(|b| b.contains("Compteur aiguille")).expect("dial block");
         let states = blocks.iter().find(|b| b.contains("[states]")).expect("states block");
-        let text = format!("version = 2\nmode = \"demo\"\n{sources}\n{states}\n{dial}");
+        let cluster = blocks.iter().find(|b| b.contains("Cluster digital")).expect("cluster block");
+        let text = format!("version = 2\nmode = \"demo\"\n{sources}\n{states}\n{dial}\n{cluster}");
         let (cfg, w) = parse_config(&text).expect("README example must parse");
         assert!(w.is_empty(), "{w:?}");
-        assert_eq!(cfg.huds.len(), 1);
+        assert_eq!(cfg.huds.len(), 2);
         assert_eq!(cfg.huds[0].widgets.len(), 11);
+        assert_eq!(cfg.huds[1].widgets.len(), 6);
         assert_eq!(cfg.states.len(), 5);
+        assert_eq!(cfg.derived.len(), 1);
         let ctx = egui::Context::default();
         egui_material_icons::initialize(&ctx);
         ctx.begin_pass(egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0))),
             ..Default::default()
         });
-        draw_hud(&ctx, 0, &cfg.huds[0], &demo_values(2.0), &[]);
+        let mut v = demo_values(2.0);
+        apply_derived(&mut v, &cfg.derived);
+        assert!(v.get("rpm_tr").is_some());
+        for (i, h) in cfg.huds.iter().enumerate() {
+            draw_hud(&ctx, i, h, &v, &[]);
+        }
         let mut out = ctx.end_pass();
         out.textures_delta.clear();
         assert!(!ctx.tessellate(out.shapes, out.pixels_per_point).is_empty());
@@ -702,7 +783,9 @@ mod tests {
              [[hud.widget]]\ntype = \"ticks\"\nlabel_max = 8\nrotation = 15\nalert = \"rouge\"\n\
              [[hud.widget]]\ntype = \"ticks\"\ncount = \"auto\"\nlabel_max = \"max_gear\"\nlabel_margin = 2\n\
              [[hud.widget]]\ntype = \"bar\"\nsource = \"rpm\"\nrotation = 30\nsegments = 5\n\
-             [[hud.widget]]\ntype = \"text\"\ntext = \"{speed}\"\nalign = \"right\"\nrotation = -12",
+             [[hud.widget]]\ntype = \"text\"\ntext = \"{speed}\"\nalign = \"right\"\nrotation = -12\n\
+             [[hud.widget]]\ntype = \"text\"\ntext = \"130\"\nalign = \"center\"\nskew = 12\nglow = 6\nrotation = 5\n\
+             [[hud.widget]]\ntype = \"bar\"\nsource = \"rpm\"\nsegments = 24\ntaper = [0.3, 1.0]\ntaper_curve = 2.5",
         )
         .unwrap();
         cfg.huds.extend(arcs.huds);

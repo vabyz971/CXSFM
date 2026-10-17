@@ -82,6 +82,8 @@ rpm_min  = "UITachometer/m_minRpmFillAmount"
 rpm_max  = "UITachometer/m_maxRpmFillAmount"
 # zone rouge mesurée depuis l'autre bout de la jauge → 1 - valeur
 redline  = { path = "UITachometer/m_rpmRedZoneImage/m_FillAmount", scale = -1.0, offset = 1.0 }
+# source DÉRIVÉE : régime affichable en tr/min (voir plus bas)
+rpm_tr   = { from = "rpm", in = ["rpm_min", "rpm_max"], out = [0, 8000] }
 ```
 
 - Forme courte : `nom = "Classe/référence/…/champ"`.
@@ -98,6 +100,20 @@ redline  = { path = "UITachometer/m_rpmRedZoneImage/m_FillAmount", scale = -1.0,
   de la jauge (`rpm`), entre `rpm_min` et `rpm_max`. Donne ces deux
   sources comme bornes aux widgets (voir plus bas) et la jauge suit la
   plage propre à chaque voiture.
+
+### Sources dérivées (conversion)
+
+```toml
+nom = { from = "source", in = [a, b], out = [c, d] }
+```
+
+Convertit linéairement `source` de la plage `[a, b]` vers `[c, d]`
+(bornée à `[c, d]`). Les 4 bornes sont des nombres **ou** des sources,
+et une dérivée peut en utiliser une autre (l'ordre n'a pas
+d'importance). Exemple : `rpm_tr` ci-dessus transforme le remplissage
+de la jauge en « tr/min » de 0 à 8000 pour l'afficher (`{rpm_tr}`).
+C'est une **approximation** tant qu'on n'a pas le vrai régime max de la
+voiture (mets-le dans `out` si tu le trouves : `out = [0, "max_rpm"]`).
 
 ### Bornes `min` / `max` / `redline`
 
@@ -157,6 +173,8 @@ d'état inconnu est signalé dans les avertissements.
 | `segments` | `0` = continue, sinon nombre de pavés | `0` |
 | `fill` | `"left"` (depuis la gauche) ou `"right"` (depuis la droite jusqu'à la valeur) | `"left"` |
 | `rotation` | rotation autour de `pos` (`90` = barre verticale vers le bas, `-90` = vers le haut) | `0` |
+| `taper` | barres segmentées : hauteur `[premier, dernier]` segment en fraction de `size` (rampe posée en bas, ex. `[0.3, 1.0]`) | aucune |
+| `taper_curve` | forme de la rampe : `1` = droite, `> 1` = plate puis raide, `< 1` = l'inverse | `1` |
 | `color`, `redline_color`, `track_color` | remplissage, zone rouge, fond | blanc, rouge, blanc 16 % |
 
 ### `arc` — cercle, demi-cercle, arc, disque, camembert
@@ -237,6 +255,9 @@ Si la source manque, le widget n'est pas dessiné.
 | `align` | `"left"`, `"center"`, `"right"` (par rapport à `pos`) | `"left"` |
 | `mono` | police à chasse fixe (chiffres qui ne « dansent » pas) | `false` |
 | `rotation` | rotation autour de `pos` | `0` |
+| `skew` | inclinaison façon italique, en degrés (`12` = penché à droite) | `0` |
+| `glow` | halo lumineux autour du texte, rayon en px (`0` = aucun) | `0` |
+| `glow_color` | couleur du halo — garde un alpha faible (ex. `"#00E5FF22"`), il est empilé 16 fois | `color` à 12 % |
 | `color` | couleur | blanc |
 
 Valeurs dans le texte :
@@ -248,8 +269,8 @@ Valeurs dans le texte :
 - un nom inconnu reste affiché tel quel (`{boost}`) : une faute de
   frappe se voit tout de suite.
 
-Pas d'italique (egui n'en a pas) : pour un effet incliné, une petite
-`rotation` sur le texte s'en approche.
+egui n'a pas de police italique : `skew` incline les glyphes eux-mêmes,
+ce qui donne le même rendu.
 
 ## 5. Exemple complet : compteur à aiguille
 
@@ -391,6 +412,87 @@ size = [380.0, 340.0]
 Pour la retoucher : tout le cadran partage `pos = [170, 170]` et les
 mêmes `start`/`end` — change-les ensemble pour déplacer ou ouvrir le
 cadran ; `scale` du `[[hud]]` agrandit l'ensemble.
+
+## 5 bis. Exemple : cluster digital (style LCD)
+
+Grosse vitesse inclinée avec halo cyan, `KM/H`, rapport, régime en
+chiffres et barre de segments en rampe qui s'allument avec le régime.
+Utilise `rpm_tr` (source dérivée du §3).
+
+```toml
+[[hud]]
+name = "Cluster digital"
+enabled = true
+anchor = "bottom_right"
+offset = [-40.0, -40.0]
+size = [360.0, 200.0]
+
+  # vitesse
+  [[hud.widget]]
+  type = "text"
+  text = "{speed}"
+  pos = [250.0, 0.0]
+  size = 96
+  align = "right"
+  mono = true
+  skew = 12
+  glow = 6
+  color = "#7FF6FF"
+  glow_color = "#00E5FF22"
+
+  [[hud.widget]]
+  type = "text"
+  text = "KM/H"
+  pos = [262.0, 18.0]
+  size = 16
+  skew = 12
+  color = "#7FF6FF"
+
+  # rapport
+  [[hud.widget]]
+  type = "text"
+  text = "› {gear}"
+  pos = [262.0, 66.0]
+  size = 24
+  skew = 12
+  color = "#7FF6FF"
+
+  # régime en chiffres
+  [[hud.widget]]
+  type = "text"
+  text = "{rpm_tr}"
+  pos = [0.0, 104.0]
+  size = 26
+  mono = true
+  skew = 12
+  glow = 3
+  color = "#7FF6FF"
+  glow_color = "#00E5FF22"
+
+  [[hud.widget]]
+  type = "text"
+  text = "RPM"
+  pos = [80.0, 108.0]
+  size = 12
+  skew = 12
+  color = "#7FF6FF"
+
+  # barre de régime : 28 segments en rampe courbe
+  [[hud.widget]]
+  type = "bar"
+  source = "rpm"
+  min = "rpm_min"
+  max = "rpm_max"
+  redline = "redline"
+  pos = [0.0, 138.0]
+  size = [340.0, 56.0]
+  segments = 28
+  taper = [0.3, 1.0]
+  taper_curve = 2.5
+  color = "#7FF6FF"
+  redline_color = "#FF5A5A"
+  track_color = "#7FF6FF14"
+```
 
 ## 6. Dépannage
 
