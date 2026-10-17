@@ -93,9 +93,12 @@ pub(crate) enum Align {
 pub(crate) enum Widget {
     /// Horizontal fill bar. `segments = 0` is a continuous fill; the
     /// fill turns `redline_color` past `redline`. Not drawn while its
-    /// source or a bound is unavailable.
+    /// source or a bound is unavailable. `from_right`: the fill grows
+    /// from the right edge back to the value's position (the value
+    /// lands at the same spot either way).
     Bar {
         source: String,
+        from_right: bool,
         min: Bound,
         max: Bound,
         redline: Option<Bound>,
@@ -386,8 +389,17 @@ fn parse_widget(t: &toml::Table, ctx: String, warnings: &mut Vec<String>) -> Opt
                     }
                 },
             };
+            let from_right = match f.str("fill", "left").as_str() {
+                "left" => false,
+                "right" => true,
+                _ => {
+                    f.warn("fill");
+                    false
+                }
+            };
             Some(Widget::Bar {
                 source,
+                from_right,
                 min: f.bound("min", Bound::Num(0.0)),
                 max: f.bound("max", Bound::Num(1.0)),
                 redline,
@@ -550,8 +562,9 @@ pub(crate) const DEFAULT_CONFIG: &str = r##"# CXSFM — HUD personnalisés (rech
 #
 # Widgets :
 #   type = "bar"  : source = nom, min / max / redline = nombre OU nom de
-#                   source, segments (0 = continu), color, redline_color,
-#                   track_color
+#                   source, segments (0 = continu), fill = "left" (défaut)
+#                   | "right" (remplit depuis le bord droit jusqu'à la
+#                   valeur), color, redline_color, track_color
 #   type = "text" : text avec {nom} (0 décimale ; {gear} → R/N/1…) ou
 #                   {nom:2} (2 décimales), size, align = "left" | "center"
 #                   | "right", mono, color
@@ -923,6 +936,19 @@ anchor = "nowhere"
         assert_eq!(cfg.huds[0].anchor, Anchor::BottomRight);
         assert_eq!(cfg.huds[0].widgets.len(), 1);
         assert_eq!(warnings.len(), 3, "{warnings:?}");
+    }
+
+    #[test]
+    fn bar_fill_side() {
+        let text = "mode = \"demo\"\n[[hud]]\n[[hud.widget]]\ntype = \"bar\"\nsource = \"rpm\"\nfill = \"right\"\n[[hud.widget]]\ntype = \"bar\"\nsource = \"rpm\"\nfill = \"up\"";
+        let (cfg, w) = parse_config(text).unwrap();
+        let sides: Vec<bool> = cfg.huds[0]
+            .widgets
+            .iter()
+            .map(|w| matches!(w, Widget::Bar { from_right: true, .. }))
+            .collect();
+        assert_eq!(sides, vec![true, false]);
+        assert_eq!(w.len(), 1, "{w:?}");
     }
 
     #[test]

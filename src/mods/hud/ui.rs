@@ -41,6 +41,7 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values) {
         match w {
             Widget::Bar {
                 source,
+                from_right,
                 min,
                 max,
                 redline,
@@ -71,7 +72,12 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values) {
                         );
                         p.rect_filled(z, 0.0, redline_color.gamma_multiply(0.35));
                     }
-                    let f = egui::Rect::from_min_size(r.min, egui::vec2(r.width() * frac, r.height()));
+                    let x = r.min.x + r.width() * frac;
+                    let f = if *from_right {
+                        egui::Rect::from_min_max(egui::pos2(x, r.min.y), r.max)
+                    } else {
+                        egui::Rect::from_min_max(r.min, egui::pos2(x, r.max.y))
+                    };
                     p.rect_filled(f, 0.0, fill);
                 } else {
                     let n = *segments as f32;
@@ -82,7 +88,8 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values) {
                         let sr = egui::Rect::from_min_size(egui::pos2(x, r.min.y), egui::vec2(seg_w, r.height()));
                         let center = (i as f32 + 0.5) / n;
                         let in_red = red_frac.is_some_and(|rf| center >= rf);
-                        let c = if center <= frac {
+                        let lit = if *from_right { center >= frac } else { center <= frac };
+                        let c = if lit {
                             if in_red { *redline_color } else { fill }
                         } else if in_red {
                             redline_color.gamma_multiply(0.35)
