@@ -690,6 +690,13 @@ Diagnostic line (zero keypresses needed):
   seulement, pas de symboles).
 - `render/overlay: frame draw failed` + compteur `plain` qui monte
   menu fermé = UI vide (HUD masqué faute de valeurs), PAS une panne.
+- Fermeture du jeu SANS CXSFM (2026-10-16, log vidé avant) : SIGSEGV
+  du jeu lui-même dans `__run_exit_handlers` → `exit`, après `Vulkan
+  PSO: Saved`. Le nettoyage de sortie de CarX est fragile de base. Avec
+  CXSFM : pas de SIGSEGV mais SIGINT puis SIGTERM ~2 s après (envoyés
+  par un processus utilisateur, uid 1000 = Steam qui tue le jeu bloqué
+  en sortie). Jeu déjà fermé + caches écrits dans les deux cas : rien à
+  corriger côté CXSFM tant que ça reste après la sauvegarde PSO.
 
 ## egui 0.29 → 0.36 migration (branche egui-036, 2026-10-10)
 
