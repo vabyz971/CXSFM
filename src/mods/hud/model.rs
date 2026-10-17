@@ -339,15 +339,36 @@ impl SourceDef {
 }
 
 /// Source computed from another one: linear remap of `from` from
-/// `[in0, in1]` to `[out0, out1]` (bounds are numbers or sources),
-/// clamped to the output range. Evaluated in declaration order, so a
-/// derived source may use earlier ones.
+/// `[in0, in1]` to `[out0, out1]` (bounds are numbers or sources).
+/// `clamp` (default) keeps the result inside the output range; without
+/// it the line extends past both ends (e.g. revs above the redline).
+/// `round` > 0 snaps the result to a multiple (digital tach steps).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct DerivedDef {
     pub(crate) name: String,
     pub(crate) from: String,
     pub(crate) input: [Bound; 2],
     pub(crate) output: [Bound; 2],
+    pub(crate) clamp: bool,
+    pub(crate) round: f32,
+}
+
+/// Linear remap `x: [i0, i1] → [o0, o1]`, optionally clamped and
+/// snapped. A degenerate input range yields `None`.
+pub(crate) fn remap(x: f32, i0: f32, i1: f32, o0: f32, o1: f32, clamp: bool, round: f32) -> Option<f32> {
+    let span = i1 - i0;
+    if !(span.abs() > f32::EPSILON) || !x.is_finite() {
+        return None;
+    }
+    let mut t = (x - i0) / span;
+    if clamp {
+        t = t.clamp(0.0, 1.0);
+    }
+    let mut y = o0 + (o1 - o0) * t;
+    if round > 0.0 {
+        y = (y / round).round() * round;
+    }
+    y.is_finite().then_some(y)
 }
 
 /// Add every derived source to `v` (missing inputs = left out).
@@ -370,10 +391,12 @@ pub(crate) fn apply_derived(v: &mut Values, defs: &[DerivedDef]) {
             ) else {
                 continue;
             };
-            let t = bar_fraction(x, i0, i1);
-            v.set(&d.name, o0 + (o1 - o0) * t);
+            // Degenerate input range: resolved as "unavailable".
             *done = true;
             progress = true;
+            if let Some(y) = remap(x, i0, i1, o0, o1, d.clamp, d.round) {
+                v.set(&d.name, y);
+            }
         }
         if !progress {
             break;
@@ -907,12 +930,19 @@ fn parse_sources(root: &toml::Table, warnings: &mut Vec<String>) -> (Vec<SourceD
                     Some([bound(&a[0])?, bound(&a[1])?])
                 };
                 match (t.get("from").and_then(|f| f.as_str()), two("in"), two("out")) {
-                    (Some(from), Some(input), Some(output)) => derived.push(DerivedDef {
-                        name: name.clone(),
-                        from: from.to_string(),
-                        input,
-                        output,
-                    }),
+                    (Some(from), Some(input), Some(output)) => {
+                        let mut f = Fields { t, ctx: format!("source `{name}`"), warnings };
+                        let clamp = f.bool("clamp", true);
+                        let round = f.f32("round", 0.0).max(0.0);
+                        derived.push(DerivedDef {
+                            name: name.clone(),
+                            from: from.to_string(),
+                            input,
+                            output,
+                            clamp,
+                            round,
+                        })
+                    }
                     _ => warnings.push(format!(
                         "source `{name}` : dérivée attendue {{ from = \"…\", in = [a, b], out = [c, d] }}, ignorée"
                     )),
@@ -1622,6 +1652,36 @@ bad = { from = "rpm", in = [0] }
         assert_eq!(segment_height(9, 10, [0.2, 1.0], 1.0), 1.0);
         assert!(segment_height(5, 10, [0.2, 1.0], 2.0) < segment_height(5, 10, [0.2, 1.0], 1.0));
         assert_eq!(segment_height(0, 1, [0.2, 1.0], 1.0), 1.0);
+    }
+
+    #[test]
+    fn rev_illusion_from_redline() {
+        // Fill units: idle 0.1, redline 0.8, dial end 0.9. Redline is
+        // pinned to 7000 rpm, the scale continues past it unclamped.
+        let text = r##"
+mode = "demo"
+[sources]
+rpm_tr = { from = "rpm", in = ["rpm_min", "redline"], out = [0, 7000], clamp = false, round = 50 }
+rpm_max_k = { from = "rpm_max", in = ["rpm_min", "redline"], out = [0, 7], clamp = false }
+"##;
+        let (cfg, w) = parse_config(text).unwrap();
+        assert!(w.is_empty(), "{w:?}");
+        let mut v = Values::default();
+        v.set("rpm_min", 0.1);
+        v.set("redline", 0.8);
+        v.set("rpm_max", 0.9);
+        v.set("rpm", 0.9);
+        apply_derived(&mut v, &cfg.derived);
+        assert_eq!(v.get("rpm_tr"), Some(8000.0));
+        assert!((v.get("rpm_max_k").unwrap() - 8.0).abs() < 1e-3);
+        let mut v2 = v.clone();
+        v2.set("rpm", 0.455);
+        apply_derived(&mut v2, &cfg.derived);
+        assert_eq!(v2.get("rpm_tr"), Some(3550.0)); // 3550 exactly, snapped
+        assert_eq!(remap(5.0, 1.0, 1.0, 0.0, 1.0, true, 0.0), None);
+        assert_eq!(remap(2.0, 0.0, 1.0, 0.0, 10.0, true, 0.0), Some(10.0));
+        assert_eq!(remap(2.0, 0.0, 1.0, 0.0, 10.0, false, 0.0), Some(20.0));
+        assert_eq!(remap(0.123, 0.0, 1.0, 0.0, 1000.0, false, 50.0), Some(100.0));
     }
 
     #[test]

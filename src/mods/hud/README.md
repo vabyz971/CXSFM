@@ -82,8 +82,9 @@ rpm_min  = "UITachometer/m_minRpmFillAmount"
 rpm_max  = "UITachometer/m_maxRpmFillAmount"
 # zone rouge mesurée depuis l'autre bout de la jauge → 1 - valeur
 redline  = { path = "UITachometer/m_rpmRedZoneImage/m_FillAmount", scale = -1.0, offset = 1.0 }
-# source DÉRIVÉE : régime affichable en tr/min (voir plus bas)
-rpm_tr   = { from = "rpm", in = ["rpm_min", "rpm_max"], out = [0, 8000] }
+# sources DÉRIVÉES : illusion de régime en tr/min (voir « Illusion de régime »)
+rpm_tr    = { from = "rpm", in = ["rpm_min", "redline"], out = [0, 7000], clamp = false, round = 50 }
+rpm_max_k = { from = "rpm_max", in = ["rpm_min", "redline"], out = [0, 7], clamp = false }
 ```
 
 - Forme courte : `nom = "Classe/référence/…/champ"`.
@@ -104,16 +105,45 @@ rpm_tr   = { from = "rpm", in = ["rpm_min", "rpm_max"], out = [0, 8000] }
 ### Sources dérivées (conversion)
 
 ```toml
-nom = { from = "source", in = [a, b], out = [c, d] }
+nom = { from = "source", in = [a, b], out = [c, d], clamp = true, round = 0 }
 ```
 
-Convertit linéairement `source` de la plage `[a, b]` vers `[c, d]`
-(bornée à `[c, d]`). Les 4 bornes sont des nombres **ou** des sources,
-et une dérivée peut en utiliser une autre (l'ordre n'a pas
-d'importance). Exemple : `rpm_tr` ci-dessus transforme le remplissage
-de la jauge en « tr/min » de 0 à 8000 pour l'afficher (`{rpm_tr}`).
-C'est une **approximation** tant qu'on n'a pas le vrai régime max de la
-voiture (mets-le dans `out` si tu le trouves : `out = [0, "max_rpm"]`).
+Convertit linéairement `source` de la plage `[a, b]` vers `[c, d]`.
+Les 4 bornes sont des nombres **ou** des sources, et une dérivée peut
+en utiliser une autre (l'ordre n'a pas d'importance).
+
+| Clé | Rôle | Défaut |
+|---|---|---|
+| `from` | source convertie | — |
+| `in`, `out` | plages `[a, b]` → `[c, d]` | — |
+| `clamp` | `true` : résultat bloqué dans `[c, d]` ; `false` : la droite continue au-delà | `true` |
+| `round` | arrondi au multiple (ex. `50` → 7813 devient 7800) ; `0` = aucun | `0` |
+
+#### Illusion de régime (le vrai RPM du jeu n'est pas lisible)
+
+Le jeu n'expose que le **remplissage** de sa jauge (`rpm`, entre
+`rpm_min` et `rpm_max`) et la position de sa **zone rouge** (`redline`,
+dans la même unité). La zone rouge est placée par le jeu **pour chaque
+voiture** : on s'en sert de repère en lui attribuant un régime de
+rupteur plausible, et tout le reste en découle proportionnellement.
+
+```toml
+rpm_tr    = { from = "rpm", in = ["rpm_min", "redline"], out = [0, 7000], clamp = false, round = 50 }
+rpm_max_k = { from = "rpm_max", in = ["rpm_min", "redline"], out = [0, 7], clamp = false }
+```
+
+- `rpm_tr` : 0 tr/min au ralenti de la jauge, **7000 pile à l'entrée de
+  la zone rouge**, et ça continue au-delà (`clamp = false`) jusqu'au bout
+  de la jauge ; arrondi à 50 comme un compte-tours numérique.
+- `rpm_max_k` : le bout de la jauge en **milliers**, propre à la voiture
+  (ex. 8.0) — à brancher sur un cadran automatique :
+  `type = "ticks"`, `count = "auto"`, `label_max = "rpm_max_k"`.
+- Change `7000` / `7` (ensemble) pour le rupteur que tu veux montrer.
+
+Ce n'est **pas** le vrai régime : c'est une échelle cohérente (le rupteur
+tombe toujours sur la zone rouge du jeu, les voitures à zone rouge
+tardive montent plus haut). Elle n'est juste que si `redline` est bien
+calibrée : au rupteur, `{rpm_tr}` doit afficher ~7000.
 
 ### Bornes `min` / `max` / `redline`
 
@@ -281,7 +311,7 @@ HUD à `enabled = false` si besoin, enregistre.
 
 ```toml
 [[hud]]
-name = "Compteur aiguille"
+name = "preview_FH"
 enabled = true
 anchor = "bottom_right"
 offset = [-40.0, -40.0]
@@ -421,7 +451,7 @@ Utilise `rpm_tr` (source dérivée du §3).
 
 ```toml
 [[hud]]
-name = "Cluster digital"
+name = "NFS_World"
 enabled = true
 anchor = "bottom_right"
 offset = [-40.0, -40.0]

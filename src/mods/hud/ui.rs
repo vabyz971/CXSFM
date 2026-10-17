@@ -738,9 +738,17 @@ mod tests {
             .filter_map(|b| b.split("```").next())
             .collect();
         let sources = blocks.iter().find(|b| b.contains("rpm_max")).expect("sources block");
-        let dial = blocks.iter().find(|b| b.contains("Compteur aiguille")).expect("dial block");
+        // Examples are found by SECTION (§5 / §5 bis), not by HUD name:
+        // renaming an example must not break the test.
+        let section_block = |heading: &str| -> &str {
+            let start = readme.find(heading).unwrap_or_else(|| panic!("README section {heading}"));
+            let body = &readme[start + heading.len()..];
+            let body = &body[..body.find("\n## ").unwrap_or(body.len())];
+            body.split("```toml").nth(1).and_then(|b| b.split("```").next()).expect("toml block in section")
+        };
+        let dial = section_block("## 5. ");
         let states = blocks.iter().find(|b| b.contains("[states]")).expect("states block");
-        let cluster = blocks.iter().find(|b| b.contains("Cluster digital")).expect("cluster block");
+        let cluster = section_block("## 5 bis.");
         let text = format!("version = 2\nmode = \"demo\"\n{sources}\n{states}\n{dial}\n{cluster}");
         let (cfg, w) = parse_config(&text).expect("README example must parse");
         assert!(w.is_empty(), "{w:?}");
@@ -748,7 +756,7 @@ mod tests {
         assert_eq!(cfg.huds[0].widgets.len(), 11);
         assert_eq!(cfg.huds[1].widgets.len(), 6);
         assert_eq!(cfg.states.len(), 5);
-        assert_eq!(cfg.derived.len(), 1);
+        assert_eq!(cfg.derived.len(), 2);
         let ctx = egui::Context::default();
         egui_material_icons::initialize(&ctx);
         ctx.begin_pass(egui::RawInput {
