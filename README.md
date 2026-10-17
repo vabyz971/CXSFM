@@ -6,6 +6,7 @@
 [![Rust Edition](https://img.shields.io/badge/Rust-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/editions/2024.html)
 [![egui](https://img.shields.io/badge/egui-0.36-FF0000)](https://github.com/emilk/egui)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)](https://github.com/CXSFM/cxsfm)
+[![Version](https://img.shields.io/badge/version-0.4.0-informational)](Cargo.toml)
 
 ## What is CXSFM?
 
@@ -13,7 +14,8 @@ CXSFM is a **framework for creating in-game mods** for CarX Street. It provides:
 
 - 🎨 **Cosmetic UI Overlays** - Inject egui-based interfaces into the game
 - 📷 **Camera Manipulation** - Modify camera perspective (FPV, drone, etc.)
-- 🛡️ **Anti-Cheat Compliant** - Focuses on visual modifications only
+- 🛡️ **Visual-only by design** - Reads game state for display; never
+  touches gameplay, economy, physics or the network
 - 🔌 **Modular Architecture** - Easy-to-implement trait-based mod system
 - 🚀 **Cross-Platform layout** - Builds as `.dll` / `.so` / `.dylib`;
   only **Linux is proven in-game** (Windows/macOS paths below are
@@ -29,22 +31,51 @@ HUD version tag applied to the game's own nickname label](docs/overlay-proof.png
   checkboxes, software cursor, full text)
 - ✅ X11 input capture (grab + event pump) + SDL — the UI is clickable
   (Unity `Input` path dropped: it segfaulted at teardown)
-- ✅ IL2CPP bridge: camera FOV, UI text read/write, scene inspection
+- ✅ IL2CPP bridge: camera FOV, UI text read/write, scene inspection,
+  field reflection (class search, field dumps, raw field reads)
 - ✅ Bundled mods: Scene Inspector (read-only), GameLog (Player.log),
   [Speedometer](src/mods/speedo/README.md) +
   [Minimap](src/mods/map/README.md) (HUD restyle; edits kept on
   disable, Restore button; saves auto-applied at launch),
   [Custom HUD](src/mods/hud/README.md) (HUDs from a hot-reloaded
-  `hud.toml`: bars, arcs, needles, dial ticks, text; live game values
-  through field paths found with its Explorer tab)
+  `hud.toml`: bars, arcs, needles, dial ticks, text with italic/glow;
+  live game values through field paths found with its Explorer tab,
+  ~16 min of driving validated without a crash)
 - ✅ Stability: stale-handle re-resolve, `object_alive` readability
-  guard, no crash on scene change (garage ↔ race) or at quit
+  guard, no crash on scene change (garage ↔ race); the overlay can no
+  longer freeze the game's present (a dead fence pauses the overlay
+  instead)
+- ⚠️ Quit: CarX's own exit is fragile (vanilla SIGSEGVs in its exit
+  handlers). CXSFM detaches its threads from IL2CPP before the runtime
+  shuts down; if a quit still hangs, run `tools/cxsfm-hang-dump.sh`
+  before killing the game
 - ⏸️ FPV Camera mod (parked until per-frame application is possible)
 - 🔑 Single hotkey: **F8** = UI visibility + input capture (mods
   persist independently, toggled from the manager window)
 
 See [docs/field-notes.md](docs/field-notes.md) for the full verified
 findings log (input paths, layer bring-up, incidents and fixes).
+
+## Using CXSFM
+
+- **F8** opens/closes the menu and captures input while it is open.
+  Mods are tiles: enabling a tile arms the mod (all mods boot
+  disarmed); windows can be pinned to stay visible with the menu
+  closed.
+- **Settings → auto-load**: speedo/map saves are re-applied a few
+  seconds after arriving in game, even with their tiles closed.
+- Files (outside the game install dir, hand-editable):
+
+| File | Content |
+|---|---|
+| `~/.config/cxsfm/settings.toml` | framework settings (auto-load) |
+| `~/.config/cxsfm/saves.toml` | speedo/map saved edits, by object path (`.bak` kept on save) |
+| `~/.config/cxsfm/hud.toml` | Custom HUD layouts (hot-reloaded) — see [its README](src/mods/hud/README.md) |
+| `~/.cache/cxsfm/cxsfm.log` | framework log (next to the staged layer; `CXSF_LOG` overrides) |
+
+- Diagnostics: the log starts with `diag: cxsfm base=…` / `il2cpp
+  base=…` (to attribute raw `Player.log` crash frames to a module);
+  `tools/cxsfm-hang-dump.sh` snapshots every thread of a frozen game.
 
 ## Why CXSFM Respects CarX Street's CGU
 
@@ -158,7 +189,9 @@ sudo ./tools/cxsym-inject "$PID" ~/.cache/cxsfm/cxsfm-$$.so
 ```
 
 Keep `tools/` **outside** the game install dir (anti-cheat scans it).
-Check `CXSF_LOG` (default `/tmp/cxsfm.log`) for the init sequence.
+Check the log for the init sequence: `CXSF_LOG` if set, else
+`cxsfm.log` next to the loaded `.so` (`~/.cache/cxsfm/` here), else
+`/tmp/cxsfm.log`.
 
 ### Linux — LD_PRELOAD (alternative)
 
@@ -180,41 +213,50 @@ Check `CXSF_LOG` (default `/tmp/cxsfm.log`) for the init sequence.
 
 ## Framework API
 
+Mods are compiled into the framework: one folder under `src/mods/`,
+registered in `src/lib.rs`. The full walkthrough (folder layout,
+i18n, Unity rules) is in [docs/plugin-guide.md](docs/plugin-guide.md).
+
 ### Creating a Mod
 
-Implement the `Mod` trait:
+Implement the `Mod` trait (only `name` and `on_update` are required):
 
 ```rust
-use cxsfm::mod_api::{Mod, ModManager};
-use egui;
+use crate::mods::api::{Mod, TileIcon};
 
 struct MyMod;
 
 impl Mod for MyMod {
-    fn name(&self) -> &'static str {
-        "My Mod"
-    }
-    
-    fn on_update(&mut self, delta_time: f32) {
-        // Game logic update
-    }
-    
+    fn name(&self) -> &'static str { "My Mod" }          // unique
+    fn menu_label_key(&self) -> &'static str { "mod_my" } // menu tile key
+    fn menu_icon(&self) -> TileIcon { TileIcon::Tag }
+
+    // Tick thread, ~60 Hz, while enabled. Unity calls allowed here.
+    fn on_update(&mut self, _dt: f32) {}
+    // Tick thread, while DISABLED (opt-in background work; default no-op).
+    fn on_background_update(&mut self, _dt: f32) {}
+    // Present thread: egui only, never Unity.
     fn on_draw_ui(&mut self, ctx: &egui::Context) {
         egui::Window::new("My Mod").show(ctx, |ui| {
             ui.label("Hello from CXSFM!");
         });
     }
+    // Transitions run on the tick thread, never on the UI thread.
+    fn on_enable(&mut self) {}
+    fn on_disable(&mut self) {}  // restore what you changed
+    // Keep drawing with the menu closed (view-only).
+    fn is_pinned(&self) -> bool { false }
 }
 ```
+
+Every hook runs under `catch_unwind`: a panicking mod is quarantined,
+the menu and the other mods keep running.
 
 ### Registering a Mod
 
 ```rust
-use cxsfm::mod_api::register_mod;
-
-fn register_mods() {
-    register_mod(Box::new(MyMod));
-}
+// src/lib.rs, next to the bundled mods (boots disarmed)
+crate::mod_api::register_mod(Box::new(MyMod));
 ```
 
 ## Project Structure
@@ -226,15 +268,19 @@ cxsfm/
 ├── CONTRIBUTING.md      # Contribution guidelines
 ├── OBJECTIVES.md        # Roadmap
 ├── flake.nix            # Pinned Nix toolchain
+├── AGENTS.md            # Rules for coding agents (proven in-game constraints)
 ├── docs/
 │   ├── README.md        # Documentation overview
 │   ├── architecture.md  # System architecture
+│   ├── plugin-guide.md  # Writing a mod, step by step
 │   ├── field-notes.md   # Verified in-game findings log
 │   └── overlay-proof.png # Screenshot: overlay in CarX Street
 ├── tools/
 │   ├── cxsfm-setup.sh   # Stage the Vulkan layer + manifest
 │   ├── cxsfm-watchdog.sh # ptrace injection for running games
-│   └── cxsym-inject     # ptrace injector (+ --self-test)
+│   ├── cxsfm-hang-dump.sh # Thread snapshot of a frozen game
+│   ├── cxsym-inject     # ptrace injector (+ --self-test)
+│   └── inject.c, Makefile # injector sources
 └── src/
     ├── lib.rs          # Entry point (#[ctor], init + tick threads)
     ├── layer.rs        # Implicit Vulkan layer (present routing)
@@ -244,10 +290,15 @@ cxsfm/
     │   ├── dxgi.rs     # Windows DXGI scaffold
     │   ├── metal.rs    # macOS stub
     │   └── overlay.rs  # egui-into-swapchain renderer
-    ├── il2cpp.rs       # IL2CPP embedding bridge
+    ├── il2cpp.rs       # IL2CPP embedding bridge (+ field reflection)
     ├── unity/          # Unity helpers (object, camera, scene, text)
+    ├── config.rs       # settings.toml / saves.toml / hud.toml paths + IO
+    ├── i18n/           # Framework strings (7 languages)
+    ├── menu.rs, ui/    # Tile menu + CarX theme
+    ├── mainthread.rs   # methodPointer-swap infra (parked)
     ├── hotkey.rs       # SDL/X11 hotkeys + X11 input capture
     ├── memory.rs       # Maps/AOB scanning utilities
+    ├── shim.rs         # glibc symbol shims (Steam Runtime)
     ├── mod_api.rs      # Mod trait + ModManager
     ├── mods.rs         # Mod registry
     └── mods/
@@ -268,6 +319,7 @@ cxsfm/
 | egui | 0.36 (+`default_fonts`) | In-game UI rendering |
 | egui-ash-renderer | 0.13 | egui → Vulkan pipeline (egui 0.36 line) |
 | egui_material_icons | 0.8 | Material Symbols tile glyphs |
+| toml | 0.8 | settings / saves / HUD layout files |
 | ash | 0.38 | Vulkan calls through layer-resolved pointers |
 | glam | 0.29 | 3D math vectors/matrices |
 | ctor | 0.2 | Library constructor (auto-init) |
@@ -275,6 +327,7 @@ cxsfm/
 | iced-x86 | 1 | Instruction decoding (inline-hook analysis) |
 | bitflags | 2.9 | Bitflag types |
 | windows-sys | 0.59 | Windows API bindings (Windows only) |
+| objc | 0.2 | Objective-C runtime (macOS only) |
 
 ## Thread Safety
 
