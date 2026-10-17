@@ -1,87 +1,86 @@
 # AGENTS.md — CXSFM (CarX Street Framework Mod)
 
-> Framework de mods Rust (Edition 2024) pour CarX Street : couche Vulkan
-> implicite, overlay egui 0.36, pont IL2CPP. Mods cosmétiques/interface/
-> caméra uniquement — jamais de gameplay, d'économie ni de physique.
+> Rust (Edition 2024) mod framework for CarX Street: implicit Vulkan
+> layer, egui 0.36 overlay, IL2CPP bridge. Cosmetic/interface/camera
+> mods only — never gameplay, economy or physics.
 
-## Commandes
+## Commands
 
 ```bash
 nix develop --command cargo build --release  # build (rustc 1.98 via flake)
 nix develop --command bash -c 'cargo test --lib'
-./tools/cxsfm-setup.sh                       # stage le layer après chaque rebuild
+./tools/cxsfm-setup.sh                       # stage the layer after every rebuild
 ```
 
-## Architecture (10 lignes)
+## Architecture (10 lines)
 
-- `src/layer.rs` — couche Vulkan implicite : le loader nous `dlopen`, on
-  route `vkQueuePresentKHR` (négociation, link nodes, `advance_link`).
-- `src/render/overlay.rs` — rendu egui dans les images swapchain au moment
-  du present (render pass `loadOp=LOAD`, 1 frame in-flight, replay par image).
-- `src/render/vk.rs` — LEGACY : GOT/inline patching (le layer est le chemin
-  retenu ; ne pas étendre sans accord).
-- `src/il2cpp.rs` — pont IL2CPP (`resolve`, `invoke`/`invoke_void`,
-  `domain_checked`, classes/méthodes cachées, objets re-résolus à l'usage).
-- `src/unity/` — helpers (`object_alive` via `m_CachedPtr`, camera, scene,
-  text/TMP, transforms) + `UnityCache` des méthodes résolues.
-- `src/mods/{api,loader,tool,…}` — trait `Mod`, registre avec quarantaine
-  au panic, chrome fenêtres (pin/opacité), mods livrés
-  (`inspector`, `gamelog`, `speedo`, `map`, `hud`, `fpv_camera` parqué).
-- `src/mainthread.rs` — infra d'échange `MethodInfo.methodPointer`
-  (phase 1 : sondes, aucun mod migré).
-- `src/hotkey.rs` — F8 = visibilité UI + capture (SDL + X11 ; chemin Unity
-  coupé : il segfaultait au teardown).
-- `src/lib.rs` — `#[ctor]` → thread init différé → tick ~60 Hz
-  (`on_update`), jamais d'IL2CPP pendant le teardown.
-- `src/menu.rs` + `src/ui/` — menu tuiles + thème CarX (panneaux noirs,
-  accent jaune `#F5C518`, coins 3px, icônes Material Symbols).
+- `src/layer.rs` — implicit Vulkan layer: the loader `dlopen`s us, we
+  route `vkQueuePresentKHR` (negotiation, link nodes, `advance_link`).
+- `src/render/overlay.rs` — egui rendered into the swapchain images at
+  present time (render pass `loadOp=LOAD`, 1 frame in flight, per-image
+  replay).
+- `src/render/vk.rs` — LEGACY: GOT/inline patching (the layer is the
+  chosen path; do not extend without agreement).
+- `src/il2cpp.rs` — IL2CPP bridge (`resolve`, `invoke`/`invoke_void`,
+  `domain_checked`, cached classes/methods, objects re-resolved on use).
+- `src/unity/` — helpers (`object_alive` via `m_CachedPtr`, camera,
+  scene, text/TMP, transforms) + `UnityCache` of resolved methods.
+- `src/mods/{api,loader,tool,…}` — `Mod` trait, registry with panic
+  quarantine, window chrome (pin/opacity), bundled mods
+  (`inspector`, `gamelog`, `speedo`, `map`, `hud`, `fpv_camera` parked).
+- `src/mainthread.rs` — `MethodInfo.methodPointer` swap infrastructure
+  (phase 1: probes, no mod migrated).
+- `src/hotkey.rs` — F8 = UI visibility + capture (SDL + X11; Unity path
+  cut: it segfaulted at teardown).
+- `src/lib.rs` — `#[ctor]` → deferred init thread → ~60 Hz tick
+  (`on_update`), never IL2CPP during teardown.
+- `src/menu.rs` + `src/ui/` — tile menu + CarX theme (black panels,
+  yellow accent `#F5C518`, 3px corners, Material Symbols icons).
 
-## Règles prouvées en jeu (docs/field-notes.md — LIRE avant de modifier)
+## Rules proven in game (docs/field-notes.md — READ before changing)
 
-- **bind-then-match** sur les verrous : jamais de `match` direct sur un
-  garde si un bras peut re-locker (self-deadlock du tick, incident 2026-10-06).
-- **`invoke_void` pour les setters** : le runtime rend NULL au succès —
-  `invoke` dessus = échec silencieux alors que l'écriture a eu lieu.
-- **`object_alive` avant TOUT accès Unity** (lecture comme écriture) ;
-  pointeurs stockés interdits — re-résoudre par chemin/nom à chaque usage.
-  Seule exception (accord utilisateur 2026-10-16) : `hud/live.rs` garde
-  l'instance racine (ex. `UITachometer`) entre deux lectures — mémoire
-  lisible + `m_CachedPtr` + classe identique vérifiés avant CHAQUE
-  lecture, lectures = copies de champs brutes (aucun getter, aucune
-  écriture). `FindObjectsOfType` seulement quand l'instance a disparu,
-  ≤ 1 fois / 5 s : une re-recherche périodique (2 s) crashait le jeu en
-  roulant (le jeu crée/détruit des objets en continu). Ne pas étendre ce
-  schéma aux écritures.
-- **Aucun appel Unity depuis le thread de present** ; le tick saute tout
-  IL2CPP pendant le teardown (domaine tué avant Vulkan).
-- **Pas d'arithmétique non bornée sur le chemin de rendu** (`checked`/
-  saturant — un panic dans `extern "C"` = abort).
-- **`#[repr(C)]` sur les structs FFI** (ex. `VkPresentInfoKHR` local).
-- Textures : un free est obsolète si son id est (re-)set ; `set_texture` /
-  `free_texture` par item ; jamais de `vkQueueWaitIdle`, timeouts bornés.
-- Handles Vulkan suivis jusqu'à destruction (instances/devices/swapchains).
+- **bind-then-match** on locks: never a direct `match` on a guard if an
+  arm may re-lock (tick self-deadlock, incident 2026-10-06).
+- **`invoke_void` for setters**: the runtime returns NULL on success —
+  `invoke` on them = silent failure although the write happened.
+- **`object_alive` before ANY Unity access** (read as well as write);
+  stored pointers forbidden — re-resolve by path/name on every use.
+  Only exception (user agreement 2026-10-16): `hud/live.rs` keeps the
+  root instance (e.g. `UITachometer`) between two reads — readable
+  memory + `m_CachedPtr` + same class checked before EVERY read, reads
+  = raw field copies (no getter, no write). `FindObjectsOfType` only
+  once the instance is gone, ≤ once / 5 s: a periodic (2 s) re-search
+  crashed the game while driving (the game creates/destroys objects
+  continuously). Do not extend this pattern to writes.
+- **No Unity call from the present thread**; the tick skips all IL2CPP
+  during teardown (domain killed before Vulkan).
+- **No unbounded arithmetic on the render path** (`checked`/saturating
+  — a panic in `extern "C"` = abort).
+- **`#[repr(C)]` on FFI structs** (e.g. the local `VkPresentInfoKHR`).
+- Textures: a free is stale if its id is (re-)set; `set_texture` /
+  `free_texture` per item; never `vkQueueWaitIdle`, bounded timeouts.
+- Vulkan handles tracked until destruction (instances/devices/swapchains).
 
-## Contraintes
+## Constraints
 
-- Binaire final : symboles **max `GLIBC_2.35`** (Steam Runtime sniper =
-  2.36) — vérifier après chaque bump toolchain :
+- Final binary: symbols **max `GLIBC_2.35`** (Steam Runtime sniper =
+  2.36) — check after every toolchain bump:
   `objdump -T target/release/libcxsfm.so | grep -oP "GLIBC_[0-9.]+"`.
-- **Jamais** de modification gameplay/économie/physique/réseau.
-- Mods **désarmés au boot**, restore à la désactivation — sauf
-  speedo/map : leurs modifs restent à la désactivation (demande
-  utilisateur), retour aux originaux via le bouton Restaurer ; avec
-  l'auto-load (opt-in Settings), leurs saves se ré-appliquent même
-  tuile fermée (`Mod::on_background_update`).
-- Un changement = un commit, message clair, un seul sujet.
-- Pas de nouvelle dépendance sans accord (pure Rust uniquement).
-- `cargo test` ne prouve rien en jeu : indiquer ce qui reste à valider.
+- **Never** any gameplay/economy/physics/network change.
+- Mods **disarmed at boot**, restore on disable — except speedo/map:
+  their edits stay on disable (user request), back to originals through
+  the Restore button; with auto-load (Settings opt-in), their saves are
+  re-applied even with the tile closed (`Mod::on_background_update`).
+- One change = one commit, clear message, a single subject.
+- No new dependency without agreement (pure Rust only).
+- `cargo test` proves nothing in game: state what remains to validate.
 
-## Test en jeu
+## In-game test
 
-1. Rebuild + `./tools/cxsfm-setup.sh`, vider `~/.cache/cxsfm/cxsfm.log`.
-2. Lancer (options Steam : `VK_ADD_LAYER_PATH="$HOME/.cache/cxsfm"
+1. Rebuild + `./tools/cxsfm-setup.sh`, empty `~/.cache/cxsfm/cxsfm.log`.
+2. Launch (Steam options: `VK_ADD_LAYER_PATH="$HOME/.cache/cxsfm"
    VK_INSTANCE_LAYERS=VK_LAYER_CXSFM_overlay %command%`).
-3. Attendu : `negotiated` → `render hook installed: Vulkan` →
-   `first present intercepted` → ligne `input: ...` sans appui touche.
-4. F8 → `hotkey F8 (...)` ; scénarios : course, garage↔ville, quit propre.
-5. Après quit : `grep -a -c SIGSEGV Player.log` doit rester muet sur cxsfm.
+3. Expected: `negotiated` → `render hook installed: Vulkan` →
+   `first present intercepted` → an `input: ...` line without a key press.
+4. F8 → `hotkey F8 (...)`; scenarios: race, garage↔city, clean quit.
+5. After quit: `grep -a -c SIGSEGV Player.log` must stay silent about cxsfm.

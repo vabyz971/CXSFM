@@ -567,150 +567,147 @@ Diagnostic line (zero keypresses needed):
 2. Expect init block → `input: ...` line with no keypress.
 3. Press F8 → `hotkey F8 (...)` + mod lines. Report the `(src)`.
 
-## Transitions de mods sur le thread de tick
+## Mod transitions on the tick thread
 
-- Symptôme : freeze à la **désactivation** du mod camera (image
-  figée, son vivant) — `CameraMod::on_disable()` → `restore()` fait
-  3 `FindObjectsOfType` + écritures Unity. Et si le tick est bloqué
-  dans `on_update` pendant un churn de scène, le thread UI attend le
-  verrou d'entrée partagé et gèle aussi (processus ensuite tué comme
-  "crashé" : Player.log fini en `SIGINT`+`SIGTERM`, pas de segfault).
-- Cause : `set_enabled` exécutait `on_enable`/`on_disable` de façon
-  synchrone, sous verrou, depuis le thread UI/present.
-- Règle : `on_enable`/`on_disable` **ne s'exécutent jamais sur le
-  thread UI**. `set_enabled` n'enregistre que l'intention (`desired`,
-  verrou d'état, retour immédiat) ; le tick (`update_all`) applique
-  les transitions en attente avant `on_update` — une désactivation
-  exécute donc `restore()` là où Unity est appelable. Entrées à
-  verrous séparés état/code : le present ne touche que l'état (+ cache
-  avec `try_lock`, stale servi sinon) et ne peut plus se garer
-  derrière un mod enlisé dans Unity. Pendant le teardown le tick
-  saute `update_all` : les transitions en attente ne s'appliquent
-  pas — voulu (jamais d'IL2CPP pendant que Unity démonte son domaine).
-- `apply()` sans snapshot : `apply()`/`do_boost()` réutilisent leur
-  propre énumération pour rafraîchir les lignes UI (offset relu après
-  écriture) au lieu de relancer `snapshot()` (~5 énumérations
-  juste après avoir écrit). Durées loggées
+- Symptom: freeze when **disabling** the camera mod (frozen image,
+  sound alive) — `CameraMod::on_disable()` → `restore()` runs 3
+  `FindObjectsOfType` + Unity writes. And if the tick is stuck in
+  `on_update` during a scene churn, the UI thread waits on the shared
+  entry lock and freezes too (process then killed as "crashed":
+  Player.log ends in `SIGINT`+`SIGTERM`, no segfault).
+- Cause: `set_enabled` ran `on_enable`/`on_disable` synchronously,
+  under a lock, from the UI/present thread.
+- Rule: `on_enable`/`on_disable` **never run on the UI thread**.
+  `set_enabled` only records the intent (`desired`, state lock,
+  returns immediately); the tick (`update_all`) applies pending
+  transitions before `on_update` — so a disable runs `restore()` where
+  Unity is callable. Entries have separate state/code locks: present
+  only touches the state (+ cache via `try_lock`, stale served
+  otherwise) and can no longer park behind a mod stuck inside Unity.
+  During teardown the tick skips `update_all`: pending transitions are
+  not applied — on purpose (never IL2CPP while Unity tears down its
+  domain).
+- `apply()` without snapshot: `apply()`/`do_boost()` reuse their own
+  enumeration to refresh the UI rows (offset read back after the
+  write) instead of re-running `snapshot()` (~5 enumerations right
+  after writing). Durations logged
   (`camera: apply/boost/snapshot/restore took X ms, N enumerations`).
 
-## Règle m_CachedPtr : vérifier qu'un objet est vivant avant d'écrire
+## m_CachedPtr rule: check an object is alive before writing
 
-- Piste d'un user Cursor (crashs aux mêmes changements de valeurs) :
-  avant d'écrire (toute valeur, pas seulement caméra), vérifier que
-  l'objet Unity est encore vivant. Si `m_CachedPtr` du wrapper est
-  null, l'objet natif est parti et lire OU écrire le wrapper crashe.
-  Après le check + re-search forcée qui rebind le remplaçant, plus
-  aucun crash sur les changements de valeurs (camera ou autres).
-- Implantation : `UnityCache.m_cached_ptr` (`Object.m_CachedPtr`,
-  résolu une fois), `unity::object_alive()` (copie un IntPtr, aucun
-  déréférencement ; `None` = sonde indisponible = traité comme vivant,
-  comme avant). Appliqué avant chaque écriture de camera (`apply`,
-  `do_boost`, `restore`), hud_hide et hud_text (`maintain` +
-  `restore`) : handle mort → log + re-search immédiate qui rebind le
-  remplaçant (maintain) ou skip loggé (restore — l'objet parti n'a
-  rien à restaurer, une scène fraîche le recrée propre).
-- L'ancien raisonnement ("les lectures d'objets morts rendent des
-  données absurdes mais ne crashent pas") est faux : les lectures
-  crashent aussi. Les commentaires `maintain`/`restore` ont été
-  corrigés en ce sens.
+- Lead from a Cursor user (crashes on the same value changes): before
+  writing (any value, not only the camera), check that the Unity
+  object is still alive. If the wrapper's `m_CachedPtr` is null, the
+  native object is gone and reading OR writing the wrapper crashes.
+  After the check + a forced re-search that rebinds the replacement,
+  no more crashes on value changes (camera or others).
+- Implementation: `UnityCache.m_cached_ptr` (`Object.m_CachedPtr`,
+  resolved once), `unity::object_alive()` (copies one IntPtr, no
+  dereference; `None` = probe unavailable = treated as alive, as
+  before). Applied before every camera write (`apply`, `do_boost`,
+  `restore`), hud_hide and hud_text (`maintain` + `restore`): dead
+  handle → log + immediate re-search that rebinds the replacement
+  (maintain) or a logged skip (restore — a gone object has nothing to
+  restore, a fresh scene recreates it clean).
+- The old reasoning ("reads of dead objects return garbage but do not
+  crash") is wrong: reads crash too. The `maintain`/`restore` comments
+  were corrected accordingly.
 
-## Tick main-thread (échange de MethodInfo.methodPointer, PHASE 1)
+## Main-thread tick (MethodInfo.methodPointer swap, PHASE 1)
 
-- PARKED 2026-10-15 (auto-install OFF, `AUTO_INSTALL = false`) :
-  `MethodInfo` offset 0 (`methodPointer`) est le pointeur NATIF
-  compilé, invoqué avec l'ABI native de la méthode (`(this, args…,
-  MethodInfo*)`) — vérifié sur deux sources indépendantes : le C++
-  généré par IL2CPP (`methodPointer` déréférencé comme `(...)(args…,
-  method)`, article Jackson Dunstan sur IL2CPP/Burst) et le guide ABI
-  du modding (`methodPtr` appelé comme `(Object*, MethodInfo*)`).
-  L'invoker est le champ SÉPARÉ `invoker_method` (offset 8, ABI
-  4 args `(methodPtr, method, obj, args)`). Notre hook 5-arg ne
-  correspond à AUCUN des deux : il ne survivait que par chance sur
-  les `Update()` void sans args (registres surnuméraires ignorés).
-  Le module reste compilé (sondes unit-testées) ; les compteurs
-  `calls=` passés restent valides (l'interception tirait, seule la
-  forme du hook était fausse). Retour possible : hooks natifs par
+- PARKED 2026-10-15 (auto-install OFF, `AUTO_INSTALL = false`):
+  `MethodInfo` offset 0 (`methodPointer`) is the compiled NATIVE
+  pointer, called with the method's native ABI (`(this, args…,
+  MethodInfo*)`) — checked against two independent sources: the C++
+  generated by IL2CPP (`methodPointer` dereferenced as `(...)(args…,
+  method)`, Jackson Dunstan's article on IL2CPP/Burst) and the modding
+  ABI guide (`methodPtr` called as `(Object*, MethodInfo*)`). The
+  invoker is the SEPARATE `invoker_method` field (offset 8, 4-arg ABI
+  `(methodPtr, method, obj, args)`). Our 5-arg hook matches NEITHER:
+  it only survived by luck on argument-less void `Update()` (extra
+  registers ignored). The module stays compiled (unit-tested probes);
+  past `calls=` counters remain valid (the interception fired, only
+  the hook shape was wrong). Possible comeback: native hooks per
   signature.
-- Fond : nos écritures Unity partent du thread `cxsfm-tick` (≠ main
-  thread) — courses résiduelles (freezes, SIGSEGV). minhud tourne
-  chaque frame via des hooks (main thread). `src/mainthread.rs`
-  fournit l'équivalent : échange du mot `methodPointer` (offset 0 du
-  `MethodInfo`, écriture de donnée pure comme le cas
-  `jmp [rip+off]` de `vk.rs`), phase 1 = infra + sondes + API, aucun
-  mod migré.
-- Hypothèse à vérifier en jeu : si tous les slots restent à
-  `calls=0`, le moteur n'invoque pas par ce chemin (info, pas erreur
-  → approche B au prochain tour).
-- Lignes à guetter :
-  - `mainthread: updater candidate Ns.Classe::Update` (≤60, une fois)
+- Background: our Unity writes come from the `cxsfm-tick` thread
+  (≠ main thread) — residual races (freezes, SIGSEGV). minhud runs
+  every frame through hooks (main thread). `src/mainthread.rs`
+  provides the equivalent: swapping the `methodPointer` word (offset 0
+  of the `MethodInfo`, a pure data write like the `jmp [rip+off]` case
+  in `vk.rs`), phase 1 = infra + probes + API, no mod migrated.
+- Hypothesis to check in game: if every slot stays at `calls=0`, the
+  engine does not call through this path (info, not an error →
+  approach B next round).
+- Lines to watch:
+  - `mainthread: updater candidate Ns.Class::Update` (≤60, once)
   - `mainthread: found RearRaceCamera::PostPipelineStageCallback …`
-  - `mainthread: <label> installed (orig=0x…, mi=0x…)` ou la raison
-    du refus (hors pages exécutables GameAssembly, méthode absente)
+  - `mainthread: <label> installed (orig=0x…, mi=0x…)` or the refusal
+    reason (outside GameAssembly executable pages, method missing)
   - `mainthread: <label> calls=<n>/s thread=<main|other> cb_ms=<x>`
-    (toutes les 5 s, par slot installé)
-  - `mainthread: <label> src=delegate? (…)` si installé + classe
-    vivante + 0 appel (cas ManualUpdate attendu)
+    (every 5 s, per installed slot)
+  - `mainthread: <label> src=delegate? (…)` when installed + class
+    alive + 0 calls (expected ManualUpdate case)
   - `mainthread: active slot latched: <label>` (≥20/s main × 3 s)
-- Si calls=0 partout : ne rien changer aux mods (ils continuent
-  comme avant) ; décider ensuite (hook de code + relocation
-  iced-x86, déjà dépendance).
-- ABI : le pointeur est l'INVOKER à 5 args (pas `(this, mi)`) —
-  vérifié contre la signature `InvokerMethod` d'il2cpp.
-- Scènes : `sceneCount` s'épelle `get_sceneCount` côté managé
-  (`unity: scene api count=… at=…` loggé une fois) ;
-  `DontDestroyOnLoad` regroupé au refresh manuel seul ;
-  enfants inspecteur à la demande (fin des walks 3000 nœuds tronqués).
+- If calls=0 everywhere: change nothing in the mods (they keep working
+  as before); decide next (code hook + iced-x86 relocation, already a
+  dependency).
+- ABI: the pointer is the 5-arg INVOKER (not `(this, mi)`) — checked
+  against il2cpp's `InvokerMethod` signature.
+- Scenes: `sceneCount` is spelled `get_sceneCount` on the managed side
+  (`unity: scene api count=… at=…` logged once); `DontDestroyOnLoad`
+  grouped on manual refresh only; inspector children on demand (end of
+  the truncated 3000-node walks).
 
-## HUD perso — valeurs en direct (2026-10-16)
+## Custom HUD — live values (2026-10-16)
 
-- Mod `hud` : HUD décrits dans `~/.config/cxsfm/hud.toml` (rechargé à
-  chaud), rendu egui pur sur un calque d'arrière-plan, `is_pinned` =
-  visible menu fermé, `request_repaint_after(1/fps)` = fluide sans
-  battement 10 Hz. VALIDÉ en jeu : fluide, aucune perte de FPS.
-- Valeurs trouvées avec l'onglet Explorateur (lecture des champs par
-  copie mémoire, chemin re-parcouru depuis la racine à chaque clic) :
-  `UITachometer/m_currentSpeed` (suit l'unité choisie dans le jeu),
+- `hud` mod: HUDs described in `~/.config/cxsfm/hud.toml`
+  (hot-reloaded), pure egui on a background layer, `is_pinned` =
+  visible with the menu closed, `request_repaint_after(1/fps)` = smooth
+  without the 10 Hz heartbeat. VALIDATED in game: smooth, no FPS loss.
+- Values found with the Explorer tab (fields read by memory copy, path
+  re-walked from the root on every click):
+  `UITachometer/m_currentSpeed` (follows the unit chosen in the game),
   `m_gear`, `m_maxGear`, `m_readZoneRpm`, `m_minRpmFillAmount`,
-  `m_maxRpmFillAmount`, `m_rpmFillImage/m_FillAmount` (régime = taux de
-  remplissage de la jauge, pas des tr/min). Rapports affichés justes
-  sans offset.
-- CRASH PROUVÉ : lecteur v1 = instance gardée MAIS re-recherchée par
-  `FindObjectsOfType` toutes les ~2 s (+ `component_active`) →
-  SIGSEGV en roulant, jamais à l'arrêt. `FindObjectsOfType` parcourt la
-  liste native des objets sans verrou pendant que le jeu streame
-  ville/trafic. Même famille que « énumération répétée depuis le tick »
-  plus haut : à traiter comme INTERDIT en périodique.
-- Correctif VALIDÉ (~16 min de conduite, 0 SIGSEGV) : instance gardée
-  tant que lisible + `m_CachedPtr` vivant + classe d'exécution
-  identique (détecte une adresse recyclée) ; `FindObjectsOfType`
-  seulement après perte, ≤ 1 fois / 5 s ; lectures 30 Hz = copies de
-  champs brutes. Log : un seul `trouvé` par arrivée, `perdu` au quit.
-- Diagnostic : `diag: cxsfm/il2cpp base=…` au démarrage pour attribuer
-  les frames d'une pile `Player.log` (binaire strippé : module
-  seulement, pas de symboles).
-- `render/overlay: frame draw failed` + compteur `plain` qui monte
-  menu fermé = UI vide (HUD masqué faute de valeurs), PAS une panne.
-- Fermeture du jeu SANS CXSFM (2026-10-16, log vidé avant) : SIGSEGV
-  du jeu lui-même dans `__run_exit_handlers` → `exit`, après `Vulkan
-  PSO: Saved`. Le nettoyage de sortie de CarX est fragile de base. Avec
-  CXSFM : pas de SIGSEGV mais SIGINT puis SIGTERM ~2 s après (envoyés
-  par un processus utilisateur, uid 1000 = Steam qui tue le jeu bloqué
-  en sortie). Jeu déjà fermé + caches écrits dans les deux cas : rien à
-  corriger côté CXSFM tant que ça reste après la sauvegarde PSO.
+  `m_maxRpmFillAmount`, `m_rpmFillImage/m_FillAmount` (revs = dial fill
+  amount, not rpm). Gears displayed right without offset.
+- PROVEN CRASH: reader v1 = instance kept BUT re-found with
+  `FindObjectsOfType` every ~2 s (+ `component_active`) → SIGSEGV while
+  driving, never when parked. `FindObjectsOfType` walks the native
+  object list without a lock while the game streams city/traffic. Same
+  family as "repeated enumeration from the tick" above: treat as
+  FORBIDDEN on a periodic basis.
+- VALIDATED fix (~16 min of driving, 0 SIGSEGV): instance kept while
+  readable + `m_CachedPtr` alive + same runtime class (catches a
+  recycled address); `FindObjectsOfType` only after a loss, ≤ once /
+  5 s; 30 Hz reads = raw field copies. Log: a single `found` per
+  arrival, `lost` at quit.
+- Diagnostics: `diag: cxsfm/il2cpp base=…` at startup to attribute the
+  frames of a `Player.log` stack (stripped binary: module only, no
+  symbols).
+- `render/overlay: frame draw failed` + a rising `plain` counter with
+  the menu closed = empty UI (HUD hidden for lack of values), NOT a
+  failure.
+- Quitting the game WITHOUT CXSFM (2026-10-16, log cleared first): the
+  game itself SIGSEGVs in `__run_exit_handlers` → `exit`, after
+  `Vulkan PSO: Saved`. CarX's exit cleanup is fragile to begin with.
+  With CXSFM: no SIGSEGV but SIGINT then SIGTERM ~2 s later (sent by a
+  user process, uid 1000 = Steam killing the game stuck on exit). Game
+  already closed + caches written in both cases: nothing to fix on the
+  CXSFM side as long as it stays after the PSO save.
 
-## egui 0.29 → 0.36 migration (branche egui-036, 2026-10-10)
+## egui 0.29 → 0.36 migration (egui-036 branch, 2026-10-10)
 
-- Bump : `egui 0.36.2` + `egui-ash-renderer 0.13.0` (`ash 0.38`
-  inchangé). Toolchain rustup 1.99 (le flake reste à rustc 1.86,
-  MSRV 0.36 = 1.95) ; binaire final max `GLIBC_2.35` < sniper 2.36.
-- API : `Renderer<DefaultAllocator>` + `RenderMode::RenderPass` ;
-  `set_texture`/`free_texture` par item (`TexturesDelta.set` =
-  HashMap, `free` = HashSet) ; `ctx.run` → `begin_pass/end_pass` ;
-  `SidePanel` → `Panel` (`default_size`/`size_range`/`show`) ;
-  `Rounding` → `CornerRadius`, `rect_stroke` + `StrokeKind::Middle` ;
-  `allocate_new_ui` → `scope_builder` ; `ctx.style/set_style` →
+- Bump: `egui 0.36.2` + `egui-ash-renderer 0.13.0` (`ash 0.38`
+  unchanged). rustup toolchain 1.99 (the flake stays on rustc 1.86,
+  egui 0.36 MSRV = 1.95); final binary max `GLIBC_2.35` < sniper 2.36.
+- API: `Renderer<DefaultAllocator>` + `RenderMode::RenderPass`;
+  `set_texture`/`free_texture` per item (`TexturesDelta.set` =
+  HashMap, `free` = HashSet); `ctx.run` → `begin_pass/end_pass`;
+  `SidePanel` → `Panel` (`default_size`/`size_range`/`show`);
+  `Rounding` → `CornerRadius`, `rect_stroke` + `StrokeKind::Middle`;
+  `allocate_new_ui` → `scope_builder`; `ctx.style/set_style` →
   `style_mut_of(ctx.theme())` (`window_fill`/`window_corner_radius`
-  dans `visuals`) ; `screen_rect()` → `content_rect()` ;
+  in `visuals`); `screen_rect()` → `content_rect()`;
   `Event::MouseWheel` + `phase: TouchPhase::Move`.
-- Comportement pixels préservé (strokes Middle, mêmes rects) ;
-  `cargo test` 20/20. Reste à valider en jeu (overlay + F8).
+- Pixel behaviour preserved (Middle strokes, same rects);
+  `cargo test` 20/20. Still to validate in game (overlay + F8).

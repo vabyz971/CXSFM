@@ -1,76 +1,75 @@
-# HUD perso (hud)
+# Custom HUD (hud)
 
-HUD dessinés par CXSFM par-dessus le jeu, décrits dans un fichier TOML
-et **rechargés à chaud** : tu enregistres, le résultat apparaît en jeu
-en ~1 s. Cosmétique uniquement : le mod **lit** des valeurs du jeu, il
-n'écrit jamais rien dedans.
+HUDs drawn by CXSFM on top of the game, described in a TOML file and
+**hot-reloaded**: save the file, the result shows up in game within
+~1 s. Cosmetic only: the mod **reads** game values, it never writes
+anything into the game.
 
-- Fichier : `~/.config/cxsfm/hud.toml` (créé avec un exemple à la
-  première activation de la tuile **HUD perso**).
-- Fenêtre du mod (menu ouvert) : chemin du fichier, HUD actifs,
-  erreurs/avertissements de la config, valeurs lues en direct, onglet
-  **Explorateur** pour trouver de nouvelles valeurs.
-- Les HUD restent visibles menu fermé et ne prennent jamais la souris
-  ni le clavier.
+- File: `~/.config/cxsfm/hud.toml` (created with an example the first
+  time the **Custom HUD** tile is enabled).
+- Mod window (menu open): file path, active HUDs, config errors and
+  warnings, live values, and the **Explorer** tab to find new values.
+- HUDs stay visible with the menu closed and never take the mouse or
+  the keyboard.
 
-## 1. Structure du fichier
+## 1. File layout
 
 ```toml
 version = 2
-fps = 30          # rafraîchissement des HUD (5..60)
-mode = "live"     # "live" = valeurs du jeu, "demo" = valeurs factices animées
+fps = 30          # HUD refresh rate (5..60)
+mode = "live"     # "live" = game values, "demo" = animated fake values
 
-[sources]         # les valeurs du jeu, par nom (voir §3)
+[sources]         # game values, by name (see §3)
 speed = "UITachometer/m_currentSpeed"
 
-[[hud]]           # autant de [[hud]] que tu veux
-name = "Mon HUD"
-  [[hud.widget]]  # les éléments du HUD, dessinés dans l'ordre
+[[hud]]           # as many [[hud]] as you like
+name = "My HUD"
+  [[hud.widget]]  # the HUD's elements, drawn in order
   type = "text"
   text = "{speed}"
 ```
 
-Une erreur de **syntaxe** TOML garde la dernière config valide à
-l'écran (l'erreur s'affiche dans la fenêtre du mod). Une clé ou un
-widget invalide est seulement **ignoré**, avec un avertissement.
+A TOML **syntax** error keeps the last valid config on screen (the
+error is shown in the mod window). An invalid key or widget is only
+**skipped**, with a warning.
 
-`mode = "demo"` sert à travailler la mise en page sans rouler : il
-anime `speed`, `gear`, `max_gear`, `rpm`, `rpm_min`, `rpm_max`,
-`redline` dans les mêmes unités que le jeu.
+`mode = "demo"` is for layout work without driving: it animates
+`speed`, `gear`, `max_gear`, `rpm`, `rpm_min`, `rpm_max` and `redline`
+in the same units as the game.
 
-## 2. Positions, tailles, angles
+## 2. Positions, sizes, angles
 
-Chaque `[[hud]]` est une **boîte** posée sur l'écran :
+Each `[[hud]]` is a **box** placed on the screen:
 
-| Clé | Rôle | Défaut |
+| Key | Role | Default |
 |---|---|---|
-| `enabled` | affiche ce HUD | `true` |
-| `anchor` | coin/bord de l'écran : `top_left`, `top`, `top_right`, `left`, `center`, `right`, `bottom_left`, `bottom`, `bottom_right` | `bottom_right` |
-| `offset` | décalage `[x, y]` en pixels depuis l'ancre | `[0, 0]` |
-| `size` | taille `[l, h]` de la boîte (avant `scale`) | `[300, 100]` |
-| `scale` | zoom de tout le HUD | `1.0` |
-| `opacity` | opacité de tout le HUD | `1.0` |
-| `background` | fond de la boîte | transparent |
-| `hide_when_missing` | cache le HUD quand aucune valeur n'est lue (menus, chargement) | `true` |
+| `enabled` | show this HUD | `true` |
+| `anchor` | screen corner/edge: `top_left`, `top`, `top_right`, `left`, `center`, `right`, `bottom_left`, `bottom`, `bottom_right` | `bottom_right` |
+| `offset` | `[x, y]` shift in pixels from the anchor | `[0, 0]` |
+| `size` | box size `[w, h]` (before `scale`) | `[300, 100]` |
+| `scale` | zoom of the whole HUD | `1.0` |
+| `opacity` | opacity of the whole HUD | `1.0` |
+| `background` | box background | transparent |
+| `hide_when_missing` | hide the HUD while no value is read (menus, loading) | `true` |
 
-Le coin de la boîte qui correspond à l'ancre se pose sur ce coin de
-l'écran, puis `offset` le déplace (`offset = [-48, -48]` avec
-`bottom_right` = 48 px du bord bas-droit).
+The box corner matching the anchor sits on that screen corner, then
+`offset` moves it (`offset = [-48, -48]` with `bottom_right` = 48 px
+from the bottom-right edge).
 
-**Dans la boîte**, chaque widget se place avec `pos = [x, y]` (pixels,
-origine en haut à gauche de la boîte, multipliés par `scale`). Un
-widget peut **dépasser** de la boîte (`pos` négatif ou plus grand que
-`size`) : la boîte sert de repère, pas de cadre.
+**Inside the box**, each widget is placed with `pos = [x, y]` (pixels,
+origin at the box's top-left, multiplied by `scale`). A widget may
+**overflow** the box (negative `pos`, or larger than `size`): the box
+is a reference frame, not a clip.
 
-**Angles** (arcs, aiguille, graduations, `rotation` de tous les
-widgets) : en **degrés**, **0 = en haut**, **sens horaire**.
-`90` = droite, `180` = bas, `-90` = gauche.
+**Angles** (arcs, needle, ticks, `rotation` of every widget): in
+**degrees**, **0 = up**, **clockwise**. `90` = right, `180` = down,
+`-90` = left.
 
-**Tous les widgets** acceptent `pos`, `rotation` et `opacity`
-(`0.0..1.0`, multipliée par l'opacité du HUD), ainsi que `alert` +
-`alert_color` (couleur partagée, voir §3 bis).
+**Every widget** accepts `pos`, `rotation` and `opacity` (`0.0..1.0`,
+multiplied by the HUD opacity), plus `alert` + `alert_color` (shared
+colour, see §3b).
 
-## 3. Sources : brancher une valeur du jeu
+## 3. Sources: bind a game value
 
 ```toml
 [sources]
@@ -80,189 +79,187 @@ max_gear = "UITachometer/m_maxGears"
 rpm      = "UITachometer/m_rpmFillImage/m_FillAmount"
 rpm_min  = "UITachometer/m_minRpmFillAmount"
 rpm_max  = "UITachometer/m_maxRpmFillAmount"
-# zone rouge mesurée depuis l'autre bout de la jauge → 1 - valeur
+# red zone measured from the far end of the dial → 1 - value
 redline  = { path = "UITachometer/m_rpmRedZoneImage/m_FillAmount", scale = -1.0, offset = 1.0 }
-# sources DÉRIVÉES : illusion de régime en tr/min (voir « Illusion de régime »)
+# DERIVED sources: rev-count illusion in rpm (see "Rev-count illusion")
 rpm_tr    = { from = "rpm", in = ["rpm_min", "redline"], out = [0, 7000], clamp = false, round = 50 }
 rpm_max_k = { from = "rpm_max", in = ["rpm_min", "redline"], out = [0, 7], clamp = false }
 ```
 
-- Forme courte : `nom = "Classe/référence/…/champ"`.
-- Forme longue : `nom = { path = "…", scale = 1.0, offset = 0.0 }` →
-  valeur affichée = `valeur × scale + offset` (inverser, convertir une
-  unité, décaler un rapport…).
-- `speed_mph` existe toujours en plus (dérivée de `speed` en km/h).
-  `m_currentSpeed` suit déjà l'unité choisie dans le jeu.
-- **Trouver un chemin** : onglet **Explorateur** → cherche une classe
-  (ex. `Tachometer`) → clique → les champs s'affichent avec leur
-  valeur ; `→` suit une référence ; **Relire** après avoir roulé pour
-  voir ce qui bouge ; **survole un champ** pour lire son chemin.
-- Le RPM du jeu n'est pas en tr/min : c'est le **taux de remplissage**
-  de la jauge (`rpm`), entre `rpm_min` et `rpm_max`. Donne ces deux
-  sources comme bornes aux widgets (voir plus bas) et la jauge suit la
-  plage propre à chaque voiture.
+- Short form: `name = "Class/reference/…/field"`.
+- Long form: `name = { path = "…", scale = 1.0, offset = 0.0 }` →
+  displayed value = `value × scale + offset` (invert, convert a unit,
+  shift a gear index…).
+- `speed_mph` always exists too (derived from `speed` in km/h).
+  `m_currentSpeed` already follows the unit chosen in the game.
+- **Finding a path**: **Explorer** tab → search a class (e.g.
+  `Tachometer`) → click it → its fields show with their values; `→`
+  follows a reference; **Reread** after driving to see what moves;
+  **hover a field** to read its path.
+- The game's RPM is not in rpm: it is the dial's **fill amount**
+  (`rpm`), between `rpm_min` and `rpm_max`. Give those two sources as
+  widget bounds (see below) and the dial follows each car's own range.
 
-### Sources dérivées (conversion)
+### Derived sources (conversion)
 
 ```toml
-nom = { from = "source", in = [a, b], out = [c, d], clamp = true, round = 0 }
+name = { from = "source", in = [a, b], out = [c, d], clamp = true, round = 0 }
 ```
 
-Convertit linéairement `source` de la plage `[a, b]` vers `[c, d]`.
-Les 4 bornes sont des nombres **ou** des sources, et une dérivée peut
-en utiliser une autre (l'ordre n'a pas d'importance).
+Linearly converts `source` from the `[a, b]` range to `[c, d]`. The 4
+bounds are numbers **or** sources, and a derived source may use
+another one (order does not matter).
 
-| Clé | Rôle | Défaut |
+| Key | Role | Default |
 |---|---|---|
-| `from` | source convertie | — |
-| `in`, `out` | plages `[a, b]` → `[c, d]` | — |
-| `clamp` | `true` : résultat bloqué dans `[c, d]` ; `false` : la droite continue au-delà | `true` |
-| `round` | arrondi au multiple (ex. `50` → 7813 devient 7800) ; `0` = aucun | `0` |
+| `from` | converted source | — |
+| `in`, `out` | ranges `[a, b]` → `[c, d]` | — |
+| `clamp` | `true`: result kept inside `[c, d]`; `false`: the line keeps going past it | `true` |
+| `round` | snap to a multiple (e.g. `50` → 7813 becomes 7800); `0` = none | `0` |
 
-#### Illusion de régime (le vrai RPM du jeu n'est pas lisible)
+#### Rev-count illusion (the game's real RPM is not readable)
 
-Le jeu n'expose que le **remplissage** de sa jauge (`rpm`, entre
-`rpm_min` et `rpm_max`) et la position de sa **zone rouge** (`redline`,
-dans la même unité). La zone rouge est placée par le jeu **pour chaque
-voiture** : on s'en sert de repère en lui attribuant un régime de
-rupteur plausible, et tout le reste en découle proportionnellement.
+The game only exposes its dial **fill** (`rpm`, between `rpm_min` and
+`rpm_max`) and the position of its **red zone** (`redline`, same
+unit). The game places the red zone **per car**: we use it as an
+anchor by giving it a plausible rev-limiter value, and everything else
+follows proportionally.
 
 ```toml
 rpm_tr    = { from = "rpm", in = ["rpm_min", "redline"], out = [0, 7000], clamp = false, round = 50 }
 rpm_max_k = { from = "rpm_max", in = ["rpm_min", "redline"], out = [0, 7], clamp = false }
 ```
 
-- `rpm_tr` : 0 tr/min au ralenti de la jauge, **7000 pile à l'entrée de
-  la zone rouge**, et ça continue au-delà (`clamp = false`) jusqu'au bout
-  de la jauge ; arrondi à 50 comme un compte-tours numérique.
-- `rpm_max_k` : le bout de la jauge en **milliers**, propre à la voiture
-  (ex. 8.0) — à brancher sur un cadran automatique :
-  `type = "ticks"`, `count = "auto"`, `label_max = "rpm_max_k"`.
-- Change `7000` / `7` (ensemble) pour le rupteur que tu veux montrer.
+- `rpm_tr`: 0 rpm at the dial's idle, **exactly 7000 where the red
+  zone starts**, and it keeps going (`clamp = false`) to the end of the
+  dial; snapped to 50 like a digital tach.
+- `rpm_max_k`: the end of the dial in **thousands**, per car (e.g.
+  8.0) — plug it into an automatic dial: `type = "ticks"`,
+  `count = "auto"`, `label_max = "rpm_max_k"`.
+- Change `7000` / `7` (together) for the limiter you want to show.
 
-Ce n'est **pas** le vrai régime : c'est une échelle cohérente (le rupteur
-tombe toujours sur la zone rouge du jeu, les voitures à zone rouge
-tardive montent plus haut). Elle n'est juste que si `redline` est bien
-calibrée : au rupteur, `{rpm_tr}` doit afficher ~7000.
+This is **not** the real RPM: it is a consistent scale (the limiter
+always lands on the game's red zone, cars with a late red zone rev
+higher). It is only right if `redline` is calibrated: at the limiter,
+`{rpm_tr}` should read ~7000.
 
-### Bornes `min` / `max` / `redline`
+### `min` / `max` / `redline` bounds
 
-Partout où un widget accepte `min`, `max`, `redline`, tu peux mettre
-**un nombre** (`max = 8000`) **ou un nom de source** (`max = "rpm_max"`).
-Un widget dont la source ou une borne manque n'est pas dessiné.
+Wherever a widget accepts `min`, `max`, `redline`, you can put **a
+number** (`max = 8000`) **or a source name** (`max = "rpm_max"`). A
+widget whose source or bound is missing is not drawn.
 
-## 3 bis. États et couleur partagée (`[states]`, `alert`)
+## 3b. States and shared colour (`[states]`, `alert`)
 
-Un **état** est une condition nommée, calculée une fois par image et
-réutilisable par autant de widgets que tu veux. Exemple : tout passe
-en rouge quand le régime est dans la zone rouge.
+A **state** is a named condition, evaluated once per frame and usable
+by as many widgets as you like. Example: everything turns red while
+the revs are in the red zone.
 
 ```toml
 [states]
-rouge  = { source = "rpm", above = "redline" }             # rpm ≥ redline
-shift  = { source = "rpm", above = "redline", blink = 6 }  # pareil, clignote 6×/s
-lent   = { source = "speed", below = 30 }                  # vitesse ≤ 30
-plage  = { source = "speed", above = 80, below = 120 }     # 80 ≤ vitesse ≤ 120
-neutre = { source = "gear", below = 0.5, above = -0.5 }    # rapport N
+red     = { source = "rpm", above = "redline" }             # rpm ≥ redline
+shift   = { source = "rpm", above = "redline", blink = 6 }  # same, blinks 6×/s
+slow    = { source = "speed", below = 30 }                  # speed ≤ 30
+band    = { source = "speed", above = 80, below = 120 }     # 80 ≤ speed ≤ 120
+neutral = { source = "gear", below = 0.5, above = -0.5 }    # gear N
 ```
 
-| Clé | Rôle | Défaut |
+| Key | Role | Default |
 |---|---|---|
-| `source` | valeur testée (obligatoire) | — |
-| `above` | actif si valeur **≥** ce nombre ou cette source | aucune |
-| `below` | actif si valeur **≤** ce nombre ou cette source | aucune |
-| `blink` | clignotement en Hz (`0` = fixe) | `0` |
+| `source` | tested value (required) | — |
+| `above` | active while value **≥** this number or source | none |
+| `below` | active while value **≤** this number or source | none |
+| `blink` | blink rate in Hz (`0` = steady) | `0` |
 
-Sans `above` ni `below`, l'état est actif quand la valeur n'est pas 0.
+Without `above` or `below`, the state is active while the value is not 0.
 
-Puis, sur **n'importe quel widget** :
+Then, on **any widget**:
 
 ```toml
   [[hud.widget]]
   type = "text"
   text = "{speed}"
-  alert = "rouge"          # nom d'un état de [states]
-  alert_color = "#E03030"  # couleur tant que l'état est actif (défaut : rouge)
+  alert = "red"            # name of a [states] entry
+  alert_color = "#E03030"  # colour while the state is active (default: red)
 ```
 
-La couleur **principale** du widget change : remplissage d'une barre
-ou d'un arc, aiguille, texte ; pour `ticks`, traits **et** chiffres.
-Les fonds (`track_color`) et `redline_color` gardent leur rôle. Un nom
-d'état inconnu est signalé dans les avertissements.
+The widget's **main** colour changes: bar or arc fill, needle, text;
+for `ticks`, marks **and** labels. Backgrounds (`track_color`) and
+`redline_color` keep their role. An unknown state name is reported in
+the warnings.
 
-## 4. Les widgets
+## 4. Widgets
 
-### `bar` — barre horizontale
+### `bar` — horizontal bar
 
-| Clé | Rôle | Défaut |
+| Key | Role | Default |
 |---|---|---|
-| `source` | valeur affichée (obligatoire) | — |
-| `min`, `max` | bornes (nombre ou source) | `0`, `1` |
-| `redline` | à partir de cette valeur, la barre passe en `redline_color` ; la zone est rappelée en sombre sur le fond | aucune |
-| `pos`, `size` | coin haut-gauche, `[longueur, épaisseur]` | `[0,0]`, `[200,8]` |
-| `segments` | `0` = continue, sinon nombre de pavés | `0` |
-| `fill` | `"left"` (depuis la gauche) ou `"right"` (depuis la droite jusqu'à la valeur) | `"left"` |
-| `rotation` | rotation autour de `pos` (`90` = barre verticale vers le bas, `-90` = vers le haut) | `0` |
-| `taper` | barres segmentées : hauteur `[premier, dernier]` segment en fraction de `size` (rampe posée en bas, ex. `[0.3, 1.0]`) | aucune |
-| `taper_curve` | forme de la rampe : `1` = droite, `> 1` = plate puis raide, `< 1` = l'inverse | `1` |
-| `color`, `redline_color`, `track_color` | remplissage, zone rouge, fond | blanc, rouge, blanc 16 % |
+| `source` | displayed value (required) | — |
+| `min`, `max` | bounds (number or source) | `0`, `1` |
+| `redline` | from this value on, the bar turns `redline_color`; the zone is hinted dimly on the track | none |
+| `pos`, `size` | top-left corner, `[length, thickness]` | `[0,0]`, `[200,8]` |
+| `segments` | `0` = continuous, else number of blocks | `0` |
+| `fill` | `"left"` (from the left) or `"right"` (from the right up to the value) | `"left"` |
+| `rotation` | rotation around `pos` (`90` = vertical bar going down, `-90` = going up) | `0` |
+| `taper` | segmented bars: `[first, last]` segment height as a fraction of `size` (bottom-aligned ramp, e.g. `[0.3, 1.0]`) | none |
+| `taper_curve` | ramp shape: `1` = straight, `> 1` = flat then steep, `< 1` = the opposite | `1` |
+| `color`, `redline_color`, `track_color` | fill, red zone, track | white, red, white 16 % |
 
-### `arc` — cercle, demi-cercle, arc, disque, camembert
+### `arc` — circle, half circle, arc, disc, pie
 
-| Clé | Rôle | Défaut |
+| Key | Role | Default |
 |---|---|---|
 | `pos` | **centre** | `[50, 50]` |
-| `radius`, `thickness` | rayon, largeur de l'anneau | `50`, `6` |
-| `start`, `end` | angles de début/fin (`0→360` = cercle complet, `-90→90` = demi-cercle haut, `90→270` = bas) | `-135`, `135` |
-| `rotation` | décale `start` et `end` | `0` |
-| `filled` | `true` = disque / part pleine au lieu d'un anneau | `false` |
-| `color`, `track_color` | couleur (fixe ou remplissage), fond de l'arc | blanc, blanc 16 % |
-| `source`, `min`, `max`, `redline`, `redline_color` | optionnel : l'arc se remplit selon la valeur, comme une barre | statique |
-| `fill` | `"start"` (depuis `start`) ou `"end"` (depuis `end` jusqu'à la valeur) | `"start"` |
+| `radius`, `thickness` | radius, ring width | `50`, `6` |
+| `start`, `end` | start/end angles (`0→360` = full circle, `-90→90` = top half, `90→270` = bottom half) | `-135`, `135` |
+| `rotation` | shifts `start` and `end` | `0` |
+| `filled` | `true` = disc / filled slice instead of a ring | `false` |
+| `color`, `track_color` | colour (static or fill), arc track | white, white 16 % |
+| `source`, `min`, `max`, `redline`, `redline_color` | optional: the arc fills with the value, like a bar | static |
+| `fill` | `"start"` (from `start`) or `"end"` (from `end` back to the value) | `"start"` |
 
-Sans `source`, c'est une forme fixe en `color` (décor, cadran, rond).
+Without `source`, it is a static shape in `color` (decoration, dial, dot).
 
-### `needle` — aiguille
+### `needle`
 
-| Clé | Rôle | Défaut |
+| Key | Role | Default |
 |---|---|---|
-| `source`, `min`, `max` | valeur et bornes (obligatoire : `source`) | —, `0`, `1` |
-| `pos` | centre de rotation | `[50, 50]` |
-| `start`, `end` | angle pour `min` et pour `max` | `-135`, `135` |
-| `rotation` | décale `start`/`end` | `0` |
-| `length` | rayon de la pointe | `50` |
-| `inner` | rayon où l'aiguille commence (laisse un trou au centre) | `0` |
-| `tail` | queue derrière le centre | `0` |
-| `width` | épaisseur | `3` |
-| `color`, `redline`, `redline_color` | couleur, passe en rouge à `redline` | blanc, aucune, rouge |
+| `source`, `min`, `max` | value and bounds (`source` required) | —, `0`, `1` |
+| `pos` | rotation centre | `[50, 50]` |
+| `start`, `end` | angle for `min` and for `max` | `-135`, `135` |
+| `rotation` | shifts `start`/`end` | `0` |
+| `length` | tip radius | `50` |
+| `inner` | radius where the needle starts (leaves a hole in the middle) | `0` |
+| `tail` | tail behind the centre | `0` |
+| `width` | thickness | `3` |
+| `color`, `redline`, `redline_color` | colour, turns red at `redline` | white, none, red |
 
-### `ticks` — graduations et chiffres d'un cadran
+### `ticks` — dial graduations and numbers
 
-| Clé | Rôle | Défaut |
+| Key | Role | Default |
 |---|---|---|
-| `pos`, `radius` | centre, rayon extérieur des traits | `[50,50]`, `50` |
-| `start`, `end`, `rotation` | comme `arc` | `-135`, `135`, `0` |
-| `count` | nombre d'intervalles majeurs (`8` → 9 grands traits), ou `"auto"` = un grand trait par unité de chiffre | `8` |
-| `minor` | sous-divisions par intervalle (`4` → 3 petits traits entre deux grands) | `4` |
-| `major_length`, `minor_length` | longueur des traits (vers l'intérieur) | `10`, `5` |
-| `major_width`, `minor_width` | épaisseur | `2`, `1` |
-| `color`, `minor_color` | couleur des grands / petits traits | blanc 63 % |
-| `labels` | chiffres aux grands traits | `true` |
-| `label_min`, `label_max`, `label_decimals` | chiffres de `label_min` à `label_max` ; `label_max` = nombre **ou source** | `0`, `count`, `0` |
-| `label_margin` | ajouté à `label_max` (marge au-delà du max) | `0` |
-| `label_radius` | rayon des chiffres | sous les traits |
-| `label_size`, `label_color` | taille, couleur | `14`, blanc 63 % |
+| `pos`, `radius` | centre, outer radius of the marks | `[50,50]`, `50` |
+| `start`, `end`, `rotation` | as for `arc` | `-135`, `135`, `0` |
+| `count` | number of major intervals (`8` → 9 major marks), or `"auto"` = one major mark per label unit | `8` |
+| `minor` | subdivisions per interval (`4` → 3 small marks between two majors) | `4` |
+| `major_length`, `minor_length` | mark length (inwards) | `10`, `5` |
+| `major_width`, `minor_width` | thickness | `2`, `1` |
+| `color`, `minor_color` | major / minor mark colour | white 63 % |
+| `labels` | numbers at the major marks | `true` |
+| `label_min`, `label_max`, `label_decimals` | numbers from `label_min` to `label_max`; `label_max` = number **or source** | `0`, `count`, `0` |
+| `label_margin` | added to `label_max` (headroom past the max) | `0` |
+| `label_radius` | radius of the numbers | under the marks |
+| `label_size`, `label_color` | size, colour | `14`, white 63 % |
 
-Les chiffres restent droits (lisibles), seuls leurs emplacements
-suivent le cercle.
+Numbers stay upright (readable); only their positions follow the circle.
 
-**Cadran automatique selon la voiture** : avec une source qui donne
-le régime max en milliers, le cadran s'adapte tout seul (7000 tr/min
-+ marge 2 → chiffres 0 à 9, 9 intervalles) :
+**Per-car automatic dial**: with a source giving the max RPM in
+thousands, the dial adapts by itself (7000 rpm + margin 2 → numbers 0
+to 9, 9 intervals):
 
 ```toml
 [sources]
-max_rpm_k = { path = "Classe/…/champ_regime_max", scale = 0.001 }
+max_rpm_k = { path = "Class/…/max_rpm_field", scale = 0.001 }
 
   [[hud.widget]]
   type = "ticks"
@@ -271,45 +268,46 @@ max_rpm_k = { path = "Classe/…/champ_regime_max", scale = 0.001 }
   label_margin = 2
 ```
 
-Le chemin du régime max est à trouver avec l'Explorateur (les
-sources actuelles `rpm*` sont des taux de remplissage, pas des tr/min).
-Si la source manque, le widget n'est pas dessiné.
+The max-RPM path has to be found with the Explorer (the current
+`rpm*` sources are fill amounts, not rpm) — or use `rpm_max_k` from
+the rev-count illusion above. If the source is missing, the widget is
+not drawn.
 
-### `text` — texte et valeurs
+### `text` — text and values
 
-| Clé | Rôle | Défaut |
+| Key | Role | Default |
 |---|---|---|
-| `text` | texte, avec des valeurs `{nom}` | `""` |
-| `pos` | point d'alignement (haut du texte) | `[0, 0]` |
-| `size` | taille | `16` |
-| `align` | `"left"`, `"center"`, `"right"` (par rapport à `pos`) | `"left"` |
-| `mono` | police à chasse fixe (chiffres qui ne « dansent » pas) | `false` |
-| `rotation` | rotation autour de `pos` | `0` |
-| `skew` | inclinaison façon italique, en degrés (`12` = penché à droite) | `0` |
-| `glow` | halo lumineux autour du texte, rayon en px (`0` = aucun) | `0` |
-| `glow_color` | couleur du halo — garde un alpha faible (ex. `"#00E5FF22"`), il est empilé 16 fois | `color` à 12 % |
-| `color` | couleur | blanc |
+| `text` | text, with `{name}` values | `""` |
+| `pos` | alignment point (top of the text) | `[0, 0]` |
+| `size` | size | `16` |
+| `align` | `"left"`, `"center"`, `"right"` (relative to `pos`) | `"left"` |
+| `mono` | fixed-width font (digits that do not "dance") | `false` |
+| `rotation` | rotation around `pos` | `0` |
+| `skew` | italic-like lean, in degrees (`12` = leaning right) | `0` |
+| `glow` | glow around the text, radius in px (`0` = none) | `0` |
+| `glow_color` | glow colour — keep a low alpha (e.g. `"#00E5FF22"`), it is stacked 16 times | `color` at 12 % |
+| `color` | colour | white |
 
-Valeurs dans le texte :
+Values in the text:
 
-- `{nom}` → la source, sans décimale (`{speed}` → `139`) ;
-- `{nom:2}` → avec 2 décimales (`{rpm:2}` → `0.46`) ;
-- `{gear}` → `R`, `N`, `1`, `2`… (`{gear:0}` donne le nombre brut) ;
-- `{speed_mph}` → vitesse convertie en mph ;
-- un nom inconnu reste affiché tel quel (`{boost}`) : une faute de
-  frappe se voit tout de suite.
+- `{name}` → the source, no decimals (`{speed}` → `139`);
+- `{name:2}` → with 2 decimals (`{rpm:2}` → `0.46`);
+- `{gear}` → `R`, `N`, `1`, `2`… (`{gear:0}` gives the raw number);
+- `{speed_mph}` → speed converted to mph;
+- an unknown name is shown as is (`{boost}`): a typo is visible right
+  away.
 
-egui n'a pas de police italique : `skew` incline les glyphes eux-mêmes,
-ce qui donne le même rendu.
+egui has no italic font: `skew` leans the glyphs themselves, which
+gives the same look.
 
-## 5. Exemple complet : compteur à aiguille
+## 5. Full example: needle speedometer
 
 ![preview_FH](preview_FH.png)
 
-Cadran gradué 0 → 8, zone rouge en fin de course, aiguille, rapport
-dans un rond vert au centre, grosse vitesse en bas à droite. Colle ce
-`[[hud]]` dans ton fichier (avec les `[sources]` du §3), passe l'autre
-HUD à `enabled = false` si besoin, enregistre.
+Dial graduated 0 → 8, red zone at the end of travel, needle, gear in a
+green circle in the middle, big speed bottom-right. Paste this
+`[[hud]]` into your file (with the `[sources]` from §3), set the other
+HUD to `enabled = false` if needed, save.
 
 ```toml
 [[hud]]
@@ -319,7 +317,7 @@ anchor = "bottom_right"
 offset = [-40.0, -40.0]
 size = [380.0, 340.0]
 
-  # fin trait du cadran
+  # thin dial line
   [[hud.widget]]
   type = "arc"
   pos = [170.0, 170.0]
@@ -329,7 +327,7 @@ size = [380.0, 340.0]
   end = 125
   color = "#FFFFFF50"
 
-  # graduations + chiffres 0..8
+  # graduations + numbers 0..8
   [[hud.widget]]
   type = "ticks"
   pos = [170.0, 170.0]
@@ -347,7 +345,7 @@ size = [380.0, 340.0]
   minor_color = "#FFFFFF50"
   label_color = "#FFFFFFA0"
 
-  # zone rouge : de la redline jusqu'au bout du cadran
+  # red zone: from the redline to the end of the dial
   [[hud.widget]]
   type = "arc"
   source = "redline"
@@ -362,7 +360,7 @@ size = [380.0, 340.0]
   color = "#E0304A"
   track_color = "#00000000"
 
-  # aiguille
+  # needle
   [[hud.widget]]
   type = "needle"
   source = "rpm"
@@ -378,7 +376,7 @@ size = [380.0, 340.0]
   color = "#FFFFFF"
   redline_color = "#E0304A"
 
-  # rond central : fond sombre + anneau vert
+  # centre circle: dark fill + green ring
   [[hud.widget]]
   type = "arc"
   pos = [170.0, 170.0]
@@ -397,7 +395,7 @@ size = [380.0, 340.0]
   end = 360
   color = "#2EE59D"
 
-  # rapport au centre
+  # gear in the middle
   [[hud.widget]]
   type = "text"
   text = "{gear}"
@@ -406,7 +404,7 @@ size = [380.0, 340.0]
   align = "center"
   color = "#2EE59D"
 
-  # libellés
+  # labels
   [[hud.widget]]
   type = "text"
   text = "ABS"
@@ -431,7 +429,7 @@ size = [380.0, 340.0]
   align = "right"
   color = "#FFFFFF90"
 
-  # grosse vitesse, légèrement inclinée
+  # big speed, slightly tilted
   [[hud.widget]]
   type = "text"
   text = "{speed}"
@@ -441,17 +439,17 @@ size = [380.0, 340.0]
   rotation = -4
 ```
 
-Pour la retoucher : tout le cadran partage `pos = [170, 170]` et les
-mêmes `start`/`end` — change-les ensemble pour déplacer ou ouvrir le
-cadran ; `scale` du `[[hud]]` agrandit l'ensemble.
+To tweak it: the whole dial shares `pos = [170, 170]` and the same
+`start`/`end` — change them together to move or open up the dial; the
+`[[hud]]` `scale` enlarges everything.
 
-## 5 bis. Exemple : cluster digital (style LCD)
+## 5b. Example: digital cluster (LCD style)
 
 ![preview_NFSW](preview_NFSW.png)
 
-Grosse vitesse inclinée avec halo cyan, `KM/H`, rapport, régime en
-chiffres et barre de segments en rampe qui s'allument avec le régime.
-Utilise `rpm_tr` (source dérivée du §3).
+Big leaning speed with a cyan glow, `KM/H`, gear, rev count in digits
+and a ramp of segments lighting up with the revs. Uses `rpm_tr` (the
+derived source from §3).
 
 ```toml
 [[hud]]
@@ -461,7 +459,7 @@ anchor = "bottom_right"
 offset = [-40.0, -40.0]
 size = [360.0, 200.0]
 
-  # vitesse
+  # speed
   [[hud.widget]]
   type = "text"
   text = "{speed}"
@@ -482,7 +480,7 @@ size = [360.0, 200.0]
   skew = 12
   color = "#7FF6FF"
 
-  # rapport
+  # gear
   [[hud.widget]]
   type = "text"
   text = "› {gear}"
@@ -491,7 +489,7 @@ size = [360.0, 200.0]
   skew = 12
   color = "#7FF6FF"
 
-  # régime en chiffres
+  # rev count in digits
   [[hud.widget]]
   type = "text"
   text = "{rpm_tr}"
@@ -511,7 +509,7 @@ size = [360.0, 200.0]
   skew = 12
   color = "#7FF6FF"
 
-  # barre de régime : 28 segments en rampe courbe
+  # rev bar: 28 segments on a curved ramp
   [[hud.widget]]
   type = "bar"
   source = "rpm"
@@ -528,16 +526,16 @@ size = [360.0, 200.0]
   track_color = "#7FF6FF14"
 ```
 
-## 6. Dépannage
+## 6. Troubleshooting
 
-- **Rien ne s'affiche** : fenêtre du mod → la ligne d'état dit
-  `UITachometer : introuvable` hors course (normal, nouvelle recherche
-  toutes les 5 s) ; sinon lis les avertissements de la config.
-- **« mode live sans [sources] »** : ajoute une section `[sources]`
-  (§3), ou supprime `hud.toml` pour régénérer l'exemple.
-- **Une valeur reste `{nom}` à l'écran** : nom absent de `[sources]`
-  ou faute de frappe.
-- **Une barre/arc/aiguille manque** : sa source ou une borne
-  (`min`/`max` en nom de source) n'est pas lue — vérifie la dernière
-  ligne de la fenêtre du mod, qui liste toutes les valeurs.
-- **Mise en page sans rouler** : `mode = "demo"`.
+- **Nothing shows**: mod window → the status line says `UITachometer:
+  not found` when not driving (normal, retried every 5 s); otherwise
+  read the config warnings.
+- **"live mode without [sources]"**: add a `[sources]` section (§3),
+  or delete `hud.toml` to regenerate the example.
+- **A value stays `{name}` on screen**: name missing from `[sources]`,
+  or a typo.
+- **A bar/arc/needle is missing**: its source or a bound (`min`/`max`
+  as a source name) is not read — check the last line of the mod
+  window, which lists every value.
+- **Layout work without driving**: `mode = "demo"`.

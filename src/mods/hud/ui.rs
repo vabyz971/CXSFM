@@ -748,7 +748,7 @@ mod tests {
         };
         let dial = section_block("## 5. ");
         let states = blocks.iter().find(|b| b.contains("[states]")).expect("states block");
-        let cluster = section_block("## 5 bis.");
+        let cluster = section_block("## 5b.");
         let text = format!("version = 2\nmode = \"demo\"\n{sources}\n{states}\n{dial}\n{cluster}");
         let (cfg, w) = parse_config(&text).expect("README example must parse");
         assert!(w.is_empty(), "{w:?}");

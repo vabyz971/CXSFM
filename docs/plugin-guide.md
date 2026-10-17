@@ -1,97 +1,99 @@
-# Plugin guide — écrire un mod CXSFM
+# Plugin guide — writing a CXSFM mod
 
-Un mod = **un dossier** sous `src/mods/`, compilé dans le framework
-`.so` (aucun fichier externe injecté). Exemples à copier :
+A mod = **one folder** under `src/mods/`, compiled into the framework
+`.so` (no external file injected). Examples to copy:
 
-| Dossier | Opération démontrée |
+| Folder | Demonstrated operation |
 |---|---|
-| `inspector/` | outil : arbre de scène (roots + hiérarchie + position, snapshot throttlé) |
-| `speedo/` | compteur custom : masque les textes vitesse du jeu, affiche le nôtre (restore) |
-| `gamelog/` | outil : `Player.log` du jeu en direct (filtre + erreurs, lecture seule) |
-| `hud/` | overlay pur egui : HUD décrits dans `hud.toml` (rechargé à chaud), aucun appel Unity |
+| `inspector/` | tool: scene tree (roots + hierarchy + position, throttled snapshot) |
+| `speedo/` | HUD restyle: edits the game's speedometer objects in realtime (Restore button) |
+| `map/` | same pattern for the minimap (shares `speedo::model`) |
+| `gamelog/` | tool: the game's live `Player.log` (filter + errors, read-only) |
+| `hud/` | pure egui overlay: HUDs described in `hud.toml` (hot-reloaded), live values read from game fields |
 
-## 1. Copier un dossier
+## 1. Copy a folder
 
 ```bash
-cp -r src/mods/inspector src/mods/mon_mod
+cp -r src/mods/inspector src/mods/my_mod
 ```
 
-Structure uniforme (tous les mods la suivent) :
+Uniform layout (every mod follows it):
 
-| Fichier | Contenu |
+| File | Contents |
 |---|---|
-| `mod.rs` | struct + `new` + `impl Mod` (délègue à `bind`/`ui`) + `register()` |
-| `model.rs` | données + helpers purs (+ tests) — aucun appel Unity |
-| `bind.rs` | Unity côté tick (`ensure`, walk, drain, restore) |
-| `ui.rs` | fenêtre côté present (`draw_window`, staging) |
-| `i18n.rs` | 7 langues, fallback EN |
+| `mod.rs` | struct + `new` + `impl Mod` (delegates to `bind`/`ui`) + `register()` |
+| `model.rs` | data + pure helpers (+ tests) — no Unity call |
+| `bind.rs` | tick-side Unity (`ensure`, walk, drain, restore) |
+| `ui.rs` | present-side window (`draw_window`, staging) |
+| `i18n.rs` | 7 languages, English fallback |
 
-## 2. Implémenter le trait `Mod` (`mod.rs`)
+## 2. Implement the `Mod` trait (`mod.rs`)
 
 ```rust
 use crate::mods::api::{Mod, TileIcon};
 
-pub struct MonMod { /* atomics + Mutex, jamais de &mut partagé */ }
+pub struct MyMod { /* atomics + Mutex, never a shared &mut */ }
 
-impl Mod for MonMod {
-    fn name(&self) -> &'static str { "Mon Mod" }       // unique !
-    fn menu_label_key(&self) -> &'static str { "mod_mon" } // clé stable
+impl Mod for MyMod {
+    fn name(&self) -> &'static str { "My Mod" }        // unique!
+    fn menu_label_key(&self) -> &'static str { "mod_my" } // stable key
     fn menu_icon(&self) -> TileIcon { TileIcon::Tag }
     fn describe_in(&self, lang: &str) -> &'static str {
-        self::i18n::describe(lang)                     // page About
+        self::i18n::describe(lang)                     // About page
     }
-    fn on_update(&mut self, dt: f32) { /* ~60 Hz, rapide, jamais bloquant */ }
-    fn on_enable(&mut self) { /* armer : drop handles, pending = true */ }
-    fn on_disable(&mut self) { /* RESTAURER l'état exact du jeu */ }
+    fn on_update(&mut self, dt: f32) { /* ~60 Hz, fast, never blocking */ }
+    fn on_enable(&mut self) { /* arm: drop handles, pending = true */ }
+    fn on_disable(&mut self) { /* RESTORE the exact game state */ }
 }
 ```
 
-Règles Unity (prouvées en jeu, ne pas improviser) :
+Unity rules (proven in game, do not improvise):
 
-- thread appelant déjà attaché (tick + render) ; `domain_checked` avant usage ;
-- classes/méthodes cachées (`UnityCache`), **objets jamais cachés** —
-  handles en `usize`, re-résolus à chaque usage, validés par lecture ;
-- cadences : recherche ~0.2 Hz sans handle, vérif ~1 Hz avec handle,
-  `pending` pour agir dès le tick suivant l'armement ;
-- **jamais d'écriture aveugle** : capturer l'original → écrire →
-  relire (read-back) → restaurer sur `on_disable` ;
-- verrous : binder le snapshot (`let cached = ...`) avant le `match`
-  (self-deadlock sinon).
+- calling thread already attached (tick + render); `domain_checked`
+  before use;
+- classes/methods cached (`UnityCache`), **objects never cached** —
+  handles as `usize`, re-resolved on every use, validated by a read;
+- cadences: search ~0.2 Hz without a handle, check ~1 Hz with one,
+  `pending` to act on the very next tick after arming;
+- **never a blind write**: capture the original → write → read back →
+  restore on `on_disable`;
+- locks: bind the snapshot (`let cached = ...`) before the `match`
+  (self-deadlock otherwise).
 
-## 3. Textes du mod (`i18n.rs`, 7 langues, fallback EN)
+## 3. Mod strings (`i18n.rs`, 7 languages, English fallback)
 
 ```rust
 pub fn tile_label(lang_code: &str) -> &'static str { match lang_code {
     "fr" => "Mon Mod", /* de es it pt ru */ _ => "My Mod",
 }}
-pub fn describe(lang_code: &str) -> &'static str { /* idem */ }
+pub fn describe(lang_code: &str) -> &'static str { /* same */ }
 ```
 
-Puis **une ligne** dans `src/i18n/mod.rs::mod_tile` :
+Then **one line** in `src/i18n/mod.rs::mod_tile`:
 
 ```rust
-"mod_mon" => Some(crate::mods::mon_mod::i18n::tile_label(code)),
+"mod_my" => Some(crate::mods::my_mod::i18n::tile_label(code)),
 ```
 
-Le menu ne connaît que la clé stable ; chaque lettre displayed vient
-du dossier du mod. Les fichiers framework (`en.rs`, `fr.rs`, …) ne
-sont jamais touchés pour un mod.
+The menu only knows the stable key; every displayed letter comes from
+the mod's folder. Framework files (`en.rs`, `fr.rs`, …) are never
+touched for a mod.
 
-## 4. Enregistrer (2 lignes)
+## 4. Register (2 lines)
 
-`src/mods.rs` : `pub mod mon_mod;`
-`src/lib.rs` (registrations) : `mods::mon_mod::register();`
+`src/mods.rs`: `pub mod my_mod;`
+`src/lib.rs` (registrations): `mods::my_mod::register();`
 
 ```rust
 pub fn register() {
-    crate::mod_api::register_mod(Box::new(MonMod::new())); // boot désarmé
+    crate::mod_api::register_mod(Box::new(MyMod::new())); // boots disarmed
 }
 ```
 
-## 5. Isolation — ce qui est garanti
+## 5. Isolation — what is guaranteed
 
-Chaque hook tourne sous `catch_unwind` : panique → mod mis en
-quarantaine (auto-désactivé, loggé), menu + autres mods vivants.
-Le verrou registre n'est jamais tenu pendant le code mod ; les mutex
-empoisonnés sont récupérés. Un mod ne peut pas spoof le menu
-(contexte egui non partagé avec la fenêtre).
+Every hook runs under `catch_unwind`: a panic → the mod is quarantined
+(auto-disabled, logged), menu + other mods stay alive. The registry
+lock is never held while mod code runs; poisoned mutexes are
+recovered. A mod cannot spoof the menu (egui context not shared with
+the menu window).
