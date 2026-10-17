@@ -661,6 +661,36 @@ Diagnostic line (zero keypresses needed):
   `DontDestroyOnLoad` regroupé au refresh manuel seul ;
   enfants inspecteur à la demande (fin des walks 3000 nœuds tronqués).
 
+## HUD perso — valeurs en direct (2026-10-16)
+
+- Mod `hud` : HUD décrits dans `~/.config/cxsfm/hud.toml` (rechargé à
+  chaud), rendu egui pur sur un calque d'arrière-plan, `is_pinned` =
+  visible menu fermé, `request_repaint_after(1/fps)` = fluide sans
+  battement 10 Hz. VALIDÉ en jeu : fluide, aucune perte de FPS.
+- Valeurs trouvées avec l'onglet Explorateur (lecture des champs par
+  copie mémoire, chemin re-parcouru depuis la racine à chaque clic) :
+  `UITachometer/m_currentSpeed` (suit l'unité choisie dans le jeu),
+  `m_gear`, `m_maxGear`, `m_readZoneRpm`, `m_minRpmFillAmount`,
+  `m_maxRpmFillAmount`, `m_rpmFillImage/m_FillAmount` (régime = taux de
+  remplissage de la jauge, pas des tr/min). Rapports affichés justes
+  sans offset.
+- CRASH PROUVÉ : lecteur v1 = instance gardée MAIS re-recherchée par
+  `FindObjectsOfType` toutes les ~2 s (+ `component_active`) →
+  SIGSEGV en roulant, jamais à l'arrêt. `FindObjectsOfType` parcourt la
+  liste native des objets sans verrou pendant que le jeu streame
+  ville/trafic. Même famille que « énumération répétée depuis le tick »
+  plus haut : à traiter comme INTERDIT en périodique.
+- Correctif VALIDÉ (~16 min de conduite, 0 SIGSEGV) : instance gardée
+  tant que lisible + `m_CachedPtr` vivant + classe d'exécution
+  identique (détecte une adresse recyclée) ; `FindObjectsOfType`
+  seulement après perte, ≤ 1 fois / 5 s ; lectures 30 Hz = copies de
+  champs brutes. Log : un seul `trouvé` par arrivée, `perdu` au quit.
+- Diagnostic : `diag: cxsfm/il2cpp base=…` au démarrage pour attribuer
+  les frames d'une pile `Player.log` (binaire strippé : module
+  seulement, pas de symboles).
+- `render/overlay: frame draw failed` + compteur `plain` qui monte
+  menu fermé = UI vide (HUD masqué faute de valeurs), PAS une panne.
+
 ## egui 0.29 → 0.36 migration (branche egui-036, 2026-10-10)
 
 - Bump : `egui 0.36.2` + `egui-ash-renderer 0.13.0` (`ash 0.38`
