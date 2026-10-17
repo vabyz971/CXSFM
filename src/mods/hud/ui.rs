@@ -7,8 +7,8 @@
 
 use super::HudMod;
 use super::model::{
-    Align, ExploreReq, Hud, HudConfig, Mode, Values, Widget, arc_points, bar_fraction, binding_path,
-    demo_values, format_template,
+    Align, ExploreReq, Hud, HudConfig, Mode, Values, Widget, arc_point, arc_points, bar_fraction,
+    binding_path, demo_values, format_template, rotate_about, tick_label, tick_layout,
 };
 use crate::mods::common::lock;
 use std::sync::atomic::Ordering;
@@ -64,6 +64,27 @@ fn draw_arc(p: &egui::Painter, c: egui::Pos2, r: f32, th: f32, a0: f32, a1: f32,
     }
 }
 
+fn pt(q: [f32; 2]) -> egui::Pos2 {
+    egui::pos2(q[0], q[1])
+}
+
+/// Filled rect turned `deg` clockwise around `pivot` (axis-aligned
+/// fast path when unrotated).
+fn fill_rotated(p: &egui::Painter, r: egui::Rect, pivot: egui::Pos2, deg: f32, col: egui::Color32) {
+    if col.a() == 0 || r.width() <= 0.0 || r.height() <= 0.0 {
+        return;
+    }
+    if deg == 0.0 {
+        p.rect_filled(r, 0.0, col);
+        return;
+    }
+    let corners: Vec<egui::Pos2> = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()]
+        .into_iter()
+        .map(|q| pt(rotate_about([q.x, q.y], [pivot.x, pivot.y], deg)))
+        .collect();
+    p.add(egui::Shape::convex_polygon(corners, col, egui::Stroke::NONE));
+}
+
 fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values) {
     let screen = ctx.content_rect();
     let rect = hud_rect(screen, h);
@@ -82,6 +103,8 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values) {
             Widget::Bar {
                 source,
                 from_right,
+                rotation,
+                opacity,
                 min,
                 max,
                 redline,
@@ -92,7 +115,10 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values) {
                 redline_color,
                 track_color,
             } => {
-                let r = egui::Rect::from_min_size(at(*pos), egui::vec2(size[0] * s, size[1] * s));
+                let pivot = at(*pos);
+                let r = egui::Rect::from_min_size(pivot, egui::vec2(size[0] * s, size[1] * s));
+                let k = |col: egui::Color32| col.gamma_multiply(*opacity);
+                let fill_r = |rect: egui::Rect, col: egui::Color32| fill_rotated(&p, rect, pivot, *rotation, k(col));
                 // Source or bound unavailable: skip this widget.
                 let (Some(value), Some(min), Some(max)) = (v.get(source), min.eval(v), max.eval(v)) else {
                     continue;
@@ -103,14 +129,14 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values) {
                 let hot = redline.is_some_and(|rl| value >= rl);
                 let fill = if hot { *redline_color } else { *color };
                 if *segments == 0 {
-                    p.rect_filled(r, 0.0, *track_color);
+                    fill_r(r, *track_color);
                     // Redline zone hinted on the track (dim, always on).
                     if let Some(rf) = red_frac {
                         let z = egui::Rect::from_min_max(
                             egui::pos2(r.min.x + r.width() * rf, r.min.y),
                             r.max,
                         );
-                        p.rect_filled(z, 0.0, redline_color.gamma_multiply(0.35));
+                        fill_r(z, redline_color.gamma_multiply(0.35));
                     }
                     let x = r.min.x + r.width() * frac;
                     let f = if *from_right {
@@ -118,7 +144,7 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values) {
                     } else {
                         egui::Rect::from_min_max(r.min, egui::pos2(x, r.max.y))
                     };
-                    p.rect_filled(f, 0.0, fill);
+                    fill_r(f, fill);
                 } else {
                     let n = *segments as f32;
                     let gap = 2.0 * s;
@@ -136,7 +162,7 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values) {
                         } else {
                             *track_color
                         };
-                        p.rect_filled(sr, 0.0, c);
+                        fill_r(sr, c);
                     }
                 }
             }
@@ -185,7 +211,85 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values) {
                     draw_arc(&p, c, r, th, a0, av, *filled, fill);
                 }
             }
-            Widget::Text { text, pos, size, align, color, mono } => {
+            Widget::Needle {
+                source,
+                min,
+                max,
+                redline,
+                pos,
+                start,
+                end,
+                rotation,
+                length,
+                inner,
+                tail,
+                width,
+                color,
+                redline_color,
+                opacity,
+            } => {
+                let (Some(value), Some(min), Some(max)) = (v.get(source), min.eval(v), max.eval(v)) else {
+                    continue;
+                };
+                let c = at(*pos);
+                let cc = [c.x, c.y];
+                let (a0, a1) = (start + rotation, end + rotation);
+                let angle = a0 + (a1 - a0) * bar_fraction(value, min, max);
+                let hot = redline.as_ref().and_then(|b| b.eval(v)).is_some_and(|rl| value >= rl);
+                let col = (if hot { *redline_color } else { *color }).gamma_multiply(*opacity);
+                let stroke = egui::Stroke::new(width * s, col);
+                p.line_segment([pt(arc_point(cc, inner * s, angle)), pt(arc_point(cc, length * s, angle))], stroke);
+                if *tail > 0.0 {
+                    p.line_segment([c, pt(arc_point(cc, tail * s, angle + 180.0))], stroke);
+                }
+            }
+            Widget::Ticks {
+                pos,
+                radius,
+                start,
+                end,
+                rotation,
+                count,
+                minor,
+                major_length,
+                minor_length,
+                major_width,
+                minor_width,
+                color,
+                minor_color,
+                labels,
+                label_min,
+                label_max,
+                label_decimals,
+                label_radius,
+                label_size,
+                label_color,
+                opacity,
+            } => {
+                let c = at(*pos);
+                let cc = [c.x, c.y];
+                let k = |col: egui::Color32| col.gamma_multiply(*opacity);
+                let label_r = label_radius.unwrap_or(radius - major_length - label_size * 0.9);
+                for t in tick_layout(start + rotation, end + rotation, *count, *minor) {
+                    let (len, w, col) = match t.major {
+                        Some(_) => (*major_length, *major_width, *color),
+                        None => (*minor_length, *minor_width, *minor_color),
+                    };
+                    let outer = pt(arc_point(cc, radius * s, t.angle));
+                    let inner = pt(arc_point(cc, (radius - len).max(0.0) * s, t.angle));
+                    p.line_segment([inner, outer], egui::Stroke::new(w * s, k(col)));
+                    if let (true, Some(i)) = (*labels, t.major) {
+                        p.text(
+                            pt(arc_point(cc, label_r * s, t.angle)),
+                            egui::Align2::CENTER_CENTER,
+                            tick_label(i, *count, *label_min, *label_max, *label_decimals),
+                            egui::FontId::proportional(label_size * s),
+                            k(*label_color),
+                        );
+                    }
+                }
+            }
+            Widget::Text { text, pos, size, align, color, mono, rotation, opacity } => {
                 let anchor = match align {
                     Align::Left => egui::Align2::LEFT_TOP,
                     Align::Center => egui::Align2::CENTER_TOP,
@@ -196,7 +300,15 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values) {
                 } else {
                     egui::FontId::proportional(size * s)
                 };
-                p.text(at(*pos), anchor, format_template(text, v), font, *color);
+                let col = color.gamma_multiply(*opacity);
+                let galley = p.layout_no_wrap(format_template(text, v), font, col);
+                // Unrotated placement by alignment, then turn around the
+                // alignment point (= `pos`).
+                let top_left = anchor.anchor_size(at(*pos), galley.size()).min;
+                p.add(
+                    egui::epaint::TextShape::new(top_left, galley, col)
+                        .with_angle_and_anchor(rotation.to_radians(), anchor),
+                );
             }
         }
     }
@@ -517,6 +629,35 @@ mod tests {
         assert!(max_x <= 100.0 + WIN_W + 40.0, "explorer overflows: max_x={max_x}");
     }
 
+    /// The README's `[sources]` + full dial example must parse with
+    /// zero warnings and render (keeps the doc honest).
+    #[test]
+    fn readme_example_parses_and_renders() {
+        let readme = include_str!("README.md");
+        let blocks: Vec<&str> = readme
+            .split("```toml")
+            .skip(1)
+            .filter_map(|b| b.split("```").next())
+            .collect();
+        let sources = blocks.iter().find(|b| b.contains("rpm_max")).expect("sources block");
+        let dial = blocks.iter().find(|b| b.contains("Compteur aiguille")).expect("dial block");
+        let text = format!("version = 2\nmode = \"demo\"\n{sources}\n{dial}");
+        let (cfg, w) = parse_config(&text).expect("README example must parse");
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(cfg.huds.len(), 1);
+        assert_eq!(cfg.huds[0].widgets.len(), 11);
+        let ctx = egui::Context::default();
+        egui_material_icons::initialize(&ctx);
+        ctx.begin_pass(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0))),
+            ..Default::default()
+        });
+        draw_hud(&ctx, 0, &cfg.huds[0], &demo_values(2.0));
+        let mut out = ctx.end_pass();
+        out.textures_delta.clear();
+        assert!(!ctx.tessellate(out.shapes, out.pixels_per_point).is_empty());
+    }
+
     /// Render smoke test: every widget kind tessellates without panic
     /// (same font setup as production).
     #[test]
@@ -529,7 +670,11 @@ mod tests {
              [[hud.widget]]\ntype = \"arc\"\n\
              [[hud.widget]]\ntype = \"arc\"\nsource = \"rpm\"\nmin = \"rpm_min\"\nmax = \"rpm_max\"\nredline = \"redline\"\nfill = \"end\"\n\
              [[hud.widget]]\ntype = \"arc\"\nsource = \"rpm\"\nmin = \"rpm_min\"\nmax = \"rpm_max\"\nfilled = true\nstart = -150\nend = 150\n\
-             [[hud.widget]]\ntype = \"arc\"\nfilled = true\nstart = 0\nend = 360\nopacity = 0.3",
+             [[hud.widget]]\ntype = \"arc\"\nfilled = true\nstart = 0\nend = 360\nopacity = 0.3\n\
+             [[hud.widget]]\ntype = \"needle\"\nsource = \"rpm\"\nmin = \"rpm_min\"\nmax = \"rpm_max\"\nredline = \"redline\"\ntail = 12\n\
+             [[hud.widget]]\ntype = \"ticks\"\nlabel_max = 8\nrotation = 15\n\
+             [[hud.widget]]\ntype = \"bar\"\nsource = \"rpm\"\nrotation = 30\nsegments = 5\n\
+             [[hud.widget]]\ntype = \"text\"\ntext = \"{speed}\"\nalign = \"right\"\nrotation = -12",
         )
         .unwrap();
         cfg.huds.extend(arcs.huds);

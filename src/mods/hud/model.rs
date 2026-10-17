@@ -99,6 +99,9 @@ pub(crate) enum Widget {
     Bar {
         source: String,
         from_right: bool,
+        /// Degrees clockwise around `pos` (the bar's top-left corner).
+        rotation: f32,
+        opacity: f32,
         min: Bound,
         max: Bound,
         redline: Option<Bound>,
@@ -132,7 +135,55 @@ pub(crate) enum Widget {
         redline_color: Color32,
         opacity: f32,
     },
-    /// Text with `{source}` / `{source:N}` placeholders.
+    /// Needle from `inner` to `length` (radii) around the centre
+    /// `pos`, pointing at the value's angle between `start` and `end`;
+    /// optional `tail` past the centre. Turns `redline_color` at or
+    /// past `redline`.
+    Needle {
+        source: String,
+        min: Bound,
+        max: Bound,
+        redline: Option<Bound>,
+        pos: [f32; 2],
+        start: f32,
+        end: f32,
+        rotation: f32,
+        length: f32,
+        inner: f32,
+        tail: f32,
+        width: f32,
+        color: Color32,
+        redline_color: Color32,
+        opacity: f32,
+    },
+    /// Dial graduations on a circle around `pos`: `count` major
+    /// intervals split in `minor` sub-intervals, ticks pointing inward
+    /// from `radius`, optional numeric labels `label_min..label_max`.
+    Ticks {
+        pos: [f32; 2],
+        radius: f32,
+        start: f32,
+        end: f32,
+        rotation: f32,
+        count: u32,
+        minor: u32,
+        major_length: f32,
+        minor_length: f32,
+        major_width: f32,
+        minor_width: f32,
+        color: Color32,
+        minor_color: Color32,
+        labels: bool,
+        label_min: f32,
+        label_max: f32,
+        label_decimals: usize,
+        label_radius: Option<f32>,
+        label_size: f32,
+        label_color: Color32,
+        opacity: f32,
+    },
+    /// Text with `{source}` / `{source:N}` placeholders. `rotation`
+    /// turns it around `pos` (its alignment point).
     Text {
         text: String,
         pos: [f32; 2],
@@ -140,6 +191,8 @@ pub(crate) enum Widget {
         align: Align,
         color: Color32,
         mono: bool,
+        rotation: f32,
+        opacity: f32,
     },
 }
 
@@ -309,6 +362,44 @@ pub(crate) fn arc_points(center: [f32; 2], radius: f32, a0: f32, a1: f32) -> Vec
         .collect()
 }
 
+/// Rotate `p` around `pivot` by `deg` degrees clockwise (screen).
+pub(crate) fn rotate_about(p: [f32; 2], pivot: [f32; 2], deg: f32) -> [f32; 2] {
+    if deg == 0.0 || !deg.is_finite() {
+        return p;
+    }
+    let (s, c) = deg.to_radians().sin_cos();
+    let (dx, dy) = (p[0] - pivot[0], p[1] - pivot[1]);
+    [pivot[0] + dx * c - dy * s, pivot[1] + dx * s + dy * c]
+}
+
+/// One graduation: its angle and, for major ticks, its index (0 =
+/// first major at `start`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Tick {
+    pub(crate) angle: f32,
+    pub(crate) major: Option<u32>,
+}
+
+/// Graduations from `start` to `end`: `count + 1` majors, `minor - 1`
+/// minors between consecutive majors.
+pub(crate) fn tick_layout(start: f32, end: f32, count: u32, minor: u32) -> Vec<Tick> {
+    let count = count.clamp(1, 100);
+    let minor = minor.clamp(1, 20);
+    let steps = count * minor;
+    (0..=steps)
+        .map(|i| Tick {
+            angle: start + (end - start) * i as f32 / steps as f32,
+            major: (i % minor == 0).then_some(i / minor),
+        })
+        .collect()
+}
+
+/// Label of major tick `i` of `count`: linear `lo..=hi`.
+pub(crate) fn tick_label(i: u32, count: u32, lo: f32, hi: f32, decimals: usize) -> String {
+    let t = i as f32 / count.max(1) as f32;
+    format!("{:.*}", decimals, lo + (hi - lo) * t)
+}
+
 /// Demo source: a looping launch (6 upshifts, then a short idle at N),
 /// in the same units as the live `UITachometer` values (km/h, RPM as
 /// the dial fill amount with its own min/max). Pure function of time.
@@ -443,6 +534,8 @@ fn parse_widget(t: &toml::Table, ctx: String, warnings: &mut Vec<String>) -> Opt
             Some(Widget::Bar {
                 source,
                 from_right,
+                rotation: f.f32("rotation", 0.0),
+                opacity: f.f32("opacity", 1.0).clamp(0.0, 1.0),
                 min: f.bound("min", Bound::Num(0.0)),
                 max: f.bound("max", Bound::Num(1.0)),
                 redline,
@@ -502,6 +595,77 @@ fn parse_widget(t: &toml::Table, ctx: String, warnings: &mut Vec<String>) -> Opt
                 opacity: f.f32("opacity", 1.0).clamp(0.0, 1.0),
             })
         }
+        "needle" => {
+            let source = f.str("source", "");
+            if source.is_empty() {
+                f.warnings.push(format!("{}: `source` manquante, widget ignoré", f.ctx));
+                return None;
+            }
+            let redline = match f.t.get("redline") {
+                None => None,
+                Some(v) => match bound(v) {
+                    Some(b) => Some(b),
+                    None => {
+                        f.warn("redline");
+                        None
+                    }
+                },
+            };
+            Some(Widget::Needle {
+                source,
+                min: f.bound("min", Bound::Num(0.0)),
+                max: f.bound("max", Bound::Num(1.0)),
+                redline,
+                pos: f.pair("pos", [50.0, 50.0]),
+                start: f.f32("start", -135.0),
+                end: f.f32("end", 135.0),
+                rotation: f.f32("rotation", 0.0),
+                length: f.f32("length", 50.0).clamp(0.0, 2000.0),
+                inner: f.f32("inner", 0.0).clamp(0.0, 2000.0),
+                tail: f.f32("tail", 0.0).clamp(0.0, 2000.0),
+                width: f.f32("width", 3.0).clamp(0.5, 200.0),
+                color: f.color("color", Color32::WHITE),
+                redline_color: f.color("redline_color", Color32::from_rgb(0xE0, 0x30, 0x30)),
+                opacity: f.f32("opacity", 1.0).clamp(0.0, 1.0),
+            })
+        }
+        "ticks" => {
+            let count = f.f32("count", 8.0).clamp(1.0, 100.0) as u32;
+            let label_radius = match f.t.get("label_radius") {
+                None => None,
+                Some(v) => match num(v) {
+                    Some(x) => Some(x),
+                    None => {
+                        f.warn("label_radius");
+                        None
+                    }
+                },
+            };
+            let color = f.color("color", Color32::from_white_alpha(160));
+            Some(Widget::Ticks {
+                pos: f.pair("pos", [50.0, 50.0]),
+                radius: f.f32("radius", 50.0).clamp(1.0, 2000.0),
+                start: f.f32("start", -135.0),
+                end: f.f32("end", 135.0),
+                rotation: f.f32("rotation", 0.0),
+                count,
+                minor: f.f32("minor", 4.0).clamp(1.0, 20.0) as u32,
+                major_length: f.f32("major_length", 10.0).clamp(0.0, 500.0),
+                minor_length: f.f32("minor_length", 5.0).clamp(0.0, 500.0),
+                major_width: f.f32("major_width", 2.0).clamp(0.5, 50.0),
+                minor_width: f.f32("minor_width", 1.0).clamp(0.5, 50.0),
+                minor_color: f.color("minor_color", color),
+                color,
+                labels: f.bool("labels", true),
+                label_min: f.f32("label_min", 0.0),
+                label_max: f.f32("label_max", count as f32),
+                label_decimals: f.f32("label_decimals", 0.0).clamp(0.0, 6.0) as usize,
+                label_radius,
+                label_size: f.f32("label_size", 14.0).clamp(4.0, 300.0),
+                label_color: f.color("label_color", Color32::from_white_alpha(160)),
+                opacity: f.f32("opacity", 1.0).clamp(0.0, 1.0),
+            })
+        }
         "text" => {
             let align = match f.str("align", "left").as_str() {
                 "left" => Align::Left,
@@ -519,6 +683,8 @@ fn parse_widget(t: &toml::Table, ctx: String, warnings: &mut Vec<String>) -> Opt
                 align,
                 color: f.color("color", Color32::WHITE),
                 mono: f.bool("mono", false),
+                rotation: f.f32("rotation", 0.0),
+                opacity: f.f32("opacity", 1.0).clamp(0.0, 1.0),
             })
         }
         other => {
@@ -666,6 +832,10 @@ pub(crate) const DEFAULT_CONFIG: &str = r##"# CXSFM — HUD personnalisés (rech
 #   type = "text" : text avec {nom} (0 décimale ; {gear} → R/N/1…) ou
 #                   {nom:2} (2 décimales), size, align = "left" | "center"
 #                   | "right", mono, color
+#   type = "needle" / "ticks" : aiguille et graduations de cadran.
+#   Tous les widgets : pos, rotation (degrés, 0 = haut, sens horaire),
+#   opacity. Doc complète + exemple de compteur à aiguille :
+#   src/mods/hud/README.md du dépôt CXSFM.
 # Couleurs : "#RRGGBB" ou "#RRGGBBAA".
 
 version = 2
@@ -1052,6 +1222,39 @@ anchor = "nowhere"
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn needle_and_ticks_parse() {
+        let text = "mode = \"demo\"\n[[hud]]\n\
+            [[hud.widget]]\ntype = \"needle\"\nsource = \"rpm\"\nlength = 120\ntail = 10\n\
+            [[hud.widget]]\ntype = \"needle\"\n\
+            [[hud.widget]]\ntype = \"ticks\"\ncount = 8\nminor = 4\nlabel_max = 8\nlabel_radius = 90\n\
+            [[hud.widget]]\ntype = \"text\"\ntext = \"x\"\nrotation = -10\nopacity = 0.5\n\
+            [[hud.widget]]\ntype = \"bar\"\nsource = \"rpm\"\nrotation = 90";
+        let (cfg, w) = parse_config(text).unwrap();
+        assert_eq!(w.len(), 1, "{w:?}"); // needle without source
+        let ws = &cfg.huds[0].widgets;
+        assert_eq!(ws.len(), 4);
+        assert!(matches!(&ws[0], Widget::Needle { length, tail, .. } if *length == 120.0 && *tail == 10.0));
+        assert!(matches!(&ws[1], Widget::Ticks { count: 8, minor: 4, label_radius: Some(r), .. } if *r == 90.0));
+        assert!(matches!(&ws[2], Widget::Text { rotation, opacity, .. } if *rotation == -10.0 && *opacity == 0.5));
+        assert!(matches!(&ws[3], Widget::Bar { rotation, .. } if *rotation == 90.0));
+    }
+
+    #[test]
+    fn rotation_and_ticks_geometry() {
+        let p = rotate_about([10.0, 0.0], [0.0, 0.0], 90.0);
+        assert!((p[0]).abs() < 1e-4 && (p[1] - 10.0).abs() < 1e-4, "{p:?}");
+        assert_eq!(rotate_about([3.0, 4.0], [1.0, 1.0], 0.0), [3.0, 4.0]);
+        let t = tick_layout(-120.0, 120.0, 8, 4);
+        assert_eq!(t.len(), 33);
+        assert_eq!(t.iter().filter(|x| x.major.is_some()).count(), 9);
+        assert_eq!((t[0].angle, t[0].major), (-120.0, Some(0)));
+        assert_eq!((t[32].angle, t[32].major), (120.0, Some(8)));
+        assert_eq!(t[1].major, None);
+        assert_eq!(tick_label(4, 8, 0.0, 8.0, 0), "4");
+        assert_eq!(tick_label(1, 4, 0.0, 1.0, 2), "0.25");
     }
 
     #[test]
