@@ -3,15 +3,19 @@
 //! RULE EXCEPTION (user-approved 2026-10-16, see AGENTS.md): the root
 //! instance (e.g. `UITachometer`) is KEPT between reads instead of
 //! being re-found each time — re-finding means `FindObjectsOfType`
-//! (managed call + allocation) at read rate, the profile that crashed
-//! the old gauge after ~1 min. Bounds on the exception:
-//! - re-found every [`REFIND_TICKS`] (~2 s) anyway, and at most that
-//!   often while missing (menus cost one call per 2 s, not per read);
-//! - before EVERY read: root header readable + `m_CachedPtr` alive;
-//!   every reference hop checked readable (+ alive for Unity objects);
+//! (managed call + allocation + an unlocked walk of Unity's native
+//! object list) at read rate, the profile that crashed the old gauge.
+//! Bounds on the exception:
+//! - before EVERY read: root header readable + `m_CachedPtr` alive +
+//!   runtime class still the root class (a recycled address holding
+//!   another object fails this); every reference hop checked readable
+//!   (+ alive for Unity objects);
+//! - `FindObjectsOfType` runs ONLY once the instance is gone, at most
+//!   every [`MISSING_RETRY_TICKS`] (~5 s). A periodic ~2 s re-find
+//!   while driving crashed the game (SIGSEGV while the car moves —
+//!   the game streams objects in and out; 2026-10-16), so it is gone;
 //! - reads are raw field copies (`il2cpp_field_get_value`): no getter,
-//!   no managed code, no allocation. Worst case on a recycled address:
-//!   wrong values for < 2 s, never a write, never an unmapped read.
+//!   no managed code, no allocation, never a write.
 
 use super::bind::is_unity_object;
 use super::model::{SourceDef, Values, decode_number, primitive_size, te};
@@ -19,8 +23,9 @@ use crate::il2cpp::{self, Il2cppApi};
 use crate::unity::UnityCache;
 use std::collections::HashMap;
 
-/// Root re-find cadence (ticks, ~2 s at 60 Hz).
-pub(crate) const REFIND_TICKS: u64 = 120;
+/// Re-find cadence while the root instance is missing (ticks, ~5 s
+/// at 60 Hz — same as the speedo/map HUD-root probe).
+pub(crate) const MISSING_RETRY_TICKS: u64 = 300;
 /// Class lookup retry cadence when a root class is unknown (~10 s).
 const CLASS_RETRY_TICKS: u64 = 600;
 
@@ -33,7 +38,6 @@ struct RootSlot {
     class_tried: u64,
     /// Live instance address (the bounded exception), 0 = none.
     inst: usize,
-    found: u64,
     tried: u64,
 }
 
@@ -99,8 +103,7 @@ impl LiveReader {
                     return None;
                 }
             }
-            let due = slot.inst == 0 || tick.saturating_sub(slot.found) >= REFIND_TICKS;
-            if due && (slot.tried == 0 || tick.saturating_sub(slot.tried) >= REFIND_TICKS) {
+            if slot.inst == 0 && (slot.tried == 0 || tick.saturating_sub(slot.tried) >= MISSING_RETRY_TICKS) {
                 slot.tried = tick.max(1);
                 let objs = crate::unity::find_objects_of_class(api, cache, slot.klass as Ptr);
                 let alive: Vec<Ptr> = objs
@@ -115,15 +118,23 @@ impl LiveReader {
                     .find(|&o| crate::unity::component_active(api, cache, o) == Some(true))
                     .or_else(|| alive.first().copied());
                 slot.inst = pick.map(|p| p as usize).unwrap_or(0);
-                slot.found = tick;
+                if slot.inst != 0 {
+                    crate::log_line(&format!("hud: {name} trouvé ({} vivant(s))", alive.len()));
+                }
             }
             if slot.inst == 0 {
                 return None;
             }
             let p = slot.inst as Ptr;
-            if !crate::memory::ptr_readable(slot.inst, 16) || crate::unity::object_alive(api, cache, p) != Some(true) {
-                // Gone: next re-find is still rate-limited by `tried`.
+            let valid = crate::memory::ptr_readable(slot.inst, 16)
+                && crate::unity::object_alive(api, cache, p) == Some(true)
+                && il2cpp::object_class(api, p).map(|k| k as usize) == Some(slot.klass);
+            if !valid {
+                // Gone (scene change): the next re-find waits for the
+                // missing-retry window, counted from now.
+                crate::log_line(&format!("hud: {name} perdu, nouvelle recherche dans ~5 s"));
                 slot.inst = 0;
+                slot.tried = tick.max(1);
                 return None;
             }
             Some(p)

@@ -73,8 +73,8 @@ pub fn root_found(lang_code: &str) -> &'static str {
 }
 pub fn root_missing(lang_code: &str) -> &'static str {
     match lang_code {
-        "fr" => "{root} : introuvable (hors course ? recherche toutes les 2 s)",
-        _ => "{root}: not found (not driving? retried every 2 s)",
+        "fr" => "{root} : introuvable (hors course ? nouvelle recherche toutes les 5 s)",
+        _ => "{root}: not found (not driving? retried every 5 s)",
     }
 }
 
