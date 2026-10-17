@@ -304,6 +304,8 @@ ce qui donne le même rendu.
 
 ## 5. Exemple complet : compteur à aiguille
 
+![preview_FH](preview_FH.png)
+
 Cadran gradué 0 → 8, zone rouge en fin de course, aiguille, rapport
 dans un rond vert au centre, grosse vitesse en bas à droite. Colle ce
 `[[hud]]` dans ton fichier (avec les `[sources]` du §3), passe l'autre
@@ -445,13 +447,15 @@ cadran ; `scale` du `[[hud]]` agrandit l'ensemble.
 
 ## 5 bis. Exemple : cluster digital (style LCD)
 
+![preview_NFSW](preview_NFSW.png)
+
 Grosse vitesse inclinée avec halo cyan, `KM/H`, rapport, régime en
 chiffres et barre de segments en rampe qui s'allument avec le régime.
 Utilise `rpm_tr` (source dérivée du §3).
 
 ```toml
 [[hud]]
-name = "NFS_World"
+name = "NFS_Word"
 enabled = true
 anchor = "bottom_right"
 offset = [-40.0, -40.0]

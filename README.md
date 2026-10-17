@@ -32,7 +32,11 @@ HUD version tag applied to the game's own nickname label](docs/overlay-proof.png
 - ✅ IL2CPP bridge: camera FOV, UI text read/write, scene inspection
 - ✅ Bundled mods: Scene Inspector (read-only), GameLog (Player.log),
   [Speedometer](src/mods/speedo/README.md) +
-  [Minimap](src/mods/map/README.md) (HUD restyle, restore-on-disable)
+  [Minimap](src/mods/map/README.md) (HUD restyle; edits kept on
+  disable, Restore button; saves auto-applied at launch),
+  [Custom HUD](src/mods/hud/README.md) (HUDs from a hot-reloaded
+  `hud.toml`: bars, arcs, needles, dial ticks, text; live game values
+  through field paths found with its Explorer tab)
 - ✅ Stability: stale-handle re-resolve, `object_alive` readability
   guard, no crash on scene change (garage ↔ race) or at quit
 - ⏸️ FPV Camera mod (parked until per-frame application is possible)
@@ -253,7 +257,8 @@ cxsfm/
         ├── inspector/     # Scene Inspector (model/bind/ui + i18n)
         ├── gamelog/       # Game Player.log viewer (model/bind/ui + i18n)
         ├── speedo/        # Speedometer restyle (model/bind/ui + i18n)
-        └── map/           # Minimap restyle (model/bind/ui + i18n)
+        ├── map/           # Minimap restyle (model/bind/ui + i18n)
+        └── hud/           # Custom HUD (model/bind/live/ui + i18n)
 ```
 
 ## Dependencies
