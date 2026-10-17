@@ -109,6 +109,29 @@ pub(crate) enum Widget {
         redline_color: Color32,
         track_color: Color32,
     },
+    /// Circle / arc (ring or filled disc/pie). Angles in degrees,
+    /// 0 = top, clockwise; `rotation` shifts both ends. Without a
+    /// source it is a static shape in `color`; with one, `track_color`
+    /// draws the whole arc and `color` the part up to the value
+    /// (`from_end`: from `end` back to the value), redline like `Bar`.
+    Arc {
+        source: Option<String>,
+        min: Bound,
+        max: Bound,
+        redline: Option<Bound>,
+        from_end: bool,
+        pos: [f32; 2],
+        radius: f32,
+        thickness: f32,
+        start: f32,
+        end: f32,
+        rotation: f32,
+        filled: bool,
+        color: Color32,
+        track_color: Color32,
+        redline_color: Color32,
+        opacity: f32,
+    },
     /// Text with `{source}` / `{source:N}` placeholders.
     Text {
         text: String,
@@ -266,6 +289,26 @@ pub(crate) fn bar_fraction(v: f32, min: f32, max: f32) -> f32 {
     ((v - min) / span).clamp(0.0, 1.0)
 }
 
+/// Point on a circle: angle in degrees, 0 = top, clockwise (screen
+/// y grows downward).
+pub(crate) fn arc_point(center: [f32; 2], radius: f32, deg: f32) -> [f32; 2] {
+    let a = deg.to_radians();
+    [center[0] + radius * a.sin(), center[1] - radius * a.cos()]
+}
+
+/// Polyline along an arc from `a0` to `a1` (degrees, either order),
+/// ~3° per step, at least 2 points; spans clamp to one full turn.
+pub(crate) fn arc_points(center: [f32; 2], radius: f32, a0: f32, a1: f32) -> Vec<[f32; 2]> {
+    let span = (a1 - a0).clamp(-360.0, 360.0);
+    if !span.is_finite() || !radius.is_finite() {
+        return Vec::new();
+    }
+    let steps = ((span.abs() / 3.0).ceil() as usize).clamp(1, 120);
+    (0..=steps)
+        .map(|i| arc_point(center, radius, a0 + span * i as f32 / steps as f32))
+        .collect()
+}
+
 /// Demo source: a looping launch (6 upshifts, then a short idle at N),
 /// in the same units as the live `UITachometer` values (km/h, RPM as
 /// the dial fill amount with its own min/max). Pure function of time.
@@ -409,6 +452,54 @@ fn parse_widget(t: &toml::Table, ctx: String, warnings: &mut Vec<String>) -> Opt
                 color: f.color("color", Color32::WHITE),
                 redline_color: f.color("redline_color", Color32::from_rgb(0xE0, 0x30, 0x30)),
                 track_color: f.color("track_color", Color32::from_white_alpha(40)),
+            })
+        }
+        "arc" => {
+            let source = match f.t.get("source") {
+                None => None,
+                Some(v) => match v.as_str() {
+                    Some(s) if !s.is_empty() => Some(s.to_string()),
+                    _ => {
+                        f.warn("source");
+                        None
+                    }
+                },
+            };
+            let redline = match f.t.get("redline") {
+                None => None,
+                Some(v) => match bound(v) {
+                    Some(b) => Some(b),
+                    None => {
+                        f.warn("redline");
+                        None
+                    }
+                },
+            };
+            let from_end = match f.str("fill", "start").as_str() {
+                "start" => false,
+                "end" => true,
+                _ => {
+                    f.warn("fill");
+                    false
+                }
+            };
+            Some(Widget::Arc {
+                source,
+                min: f.bound("min", Bound::Num(0.0)),
+                max: f.bound("max", Bound::Num(1.0)),
+                redline,
+                from_end,
+                pos: f.pair("pos", [50.0, 50.0]),
+                radius: f.f32("radius", 50.0).clamp(1.0, 2000.0),
+                thickness: f.f32("thickness", 6.0).clamp(0.5, 1000.0),
+                start: f.f32("start", -135.0),
+                end: f.f32("end", 135.0),
+                rotation: f.f32("rotation", 0.0),
+                filled: f.bool("filled", false),
+                color: f.color("color", Color32::WHITE),
+                track_color: f.color("track_color", Color32::from_white_alpha(40)),
+                redline_color: f.color("redline_color", Color32::from_rgb(0xE0, 0x30, 0x30)),
+                opacity: f.f32("opacity", 1.0).clamp(0.0, 1.0),
             })
         }
         "text" => {
@@ -565,6 +656,13 @@ pub(crate) const DEFAULT_CONFIG: &str = r##"# CXSFM — HUD personnalisés (rech
 #                   source, segments (0 = continu), fill = "left" (défaut)
 #                   | "right" (remplit depuis le bord droit jusqu'à la
 #                   valeur), color, redline_color, track_color
+#   type = "arc"  : cercle / arc. pos = centre, radius, thickness (largeur
+#                   de l'anneau), start / end en degrés (0 = haut, sens
+#                   horaire ; 0→360 = cercle complet, -90→90 = demi),
+#                   rotation, filled = true (disque / part pleine),
+#                   color, track_color, opacity. Optionnel : source +
+#                   min / max / redline / redline_color comme une barre,
+#                   fill = "start" (défaut) | "end".
 #   type = "text" : text avec {nom} (0 décimale ; {gear} → R/N/1…) ou
 #                   {nom:2} (2 décimales), size, align = "left" | "center"
 #                   | "right", mono, color
@@ -581,7 +679,8 @@ max_gear = "UITachometer/m_maxGear"
 rpm = "UITachometer/m_rpmFillImage/m_FillAmount"
 rpm_min = "UITachometer/m_minRpmFillAmount"
 rpm_max = "UITachometer/m_maxRpmFillAmount"
-redline = "UITachometer/m_readZoneRpm"
+# m_readZoneRpm se mesure depuis l'AUTRE bout de la jauge : 1 - valeur.
+redline = { path = "UITachometer/m_readZoneRpm", scale = -1.0, offset = 1.0 }
 
 [[hud]]
 name = "GT minimal"
@@ -936,6 +1035,37 @@ anchor = "nowhere"
         assert_eq!(cfg.huds[0].anchor, Anchor::BottomRight);
         assert_eq!(cfg.huds[0].widgets.len(), 1);
         assert_eq!(warnings.len(), 3, "{warnings:?}");
+    }
+
+    #[test]
+    fn arc_parses_with_defaults_and_options() {
+        let text = "mode = \"demo\"\n[[hud]]\n[[hud.widget]]\ntype = \"arc\"\n[[hud.widget]]\ntype = \"arc\"\nsource = \"rpm\"\nstart = 0\nend = 360\nfilled = true\nfill = \"end\"\nopacity = 0.5";
+        let (cfg, w) = parse_config(text).unwrap();
+        assert!(w.is_empty(), "{w:?}");
+        match (&cfg.huds[0].widgets[0], &cfg.huds[0].widgets[1]) {
+            (
+                Widget::Arc { source: None, start, end, filled: false, .. },
+                Widget::Arc { source: Some(s), filled: true, from_end: true, opacity, end: e2, .. },
+            ) => {
+                assert_eq!((*start, *end), (-135.0, 135.0));
+                assert_eq!((s.as_str(), *opacity, *e2), ("rpm", 0.5, 360.0));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn arc_geometry() {
+        let top = arc_point([0.0, 0.0], 10.0, 0.0);
+        assert!((top[0]).abs() < 1e-4 && (top[1] + 10.0).abs() < 1e-4);
+        let right = arc_point([0.0, 0.0], 10.0, 90.0);
+        assert!((right[0] - 10.0).abs() < 1e-4 && right[1].abs() < 1e-4);
+        let pts = arc_points([0.0, 0.0], 10.0, -90.0, 90.0);
+        assert!(pts.len() >= 3);
+        assert!((pts[0][0] + 10.0).abs() < 1e-4);
+        assert!((pts.last().unwrap()[0] - 10.0).abs() < 1e-4);
+        assert_eq!(arc_points([0.0, 0.0], 10.0, 0.0, 720.0).len(), 121);
+        assert!(arc_points([0.0, 0.0], f32::NAN, 0.0, 90.0).is_empty());
     }
 
     #[test]

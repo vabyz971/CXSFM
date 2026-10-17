@@ -7,8 +7,8 @@
 
 use super::HudMod;
 use super::model::{
-    Align, ExploreReq, Hud, HudConfig, Mode, Values, Widget, bar_fraction, binding_path, demo_values,
-    format_template,
+    Align, ExploreReq, Hud, HudConfig, Mode, Values, Widget, arc_points, bar_fraction, binding_path,
+    demo_values, format_template,
 };
 use crate::mods::common::lock;
 use std::sync::atomic::Ordering;
@@ -22,6 +22,46 @@ pub(crate) fn hud_rect(screen: egui::Rect, h: &Hud) -> egui::Rect {
         screen.min.y + fy * screen.height() + h.offset[1],
     );
     egui::Rect::from_min_size(egui::pos2(at.x - fx * size.x, at.y - fy * size.y), size)
+}
+
+/// One arc segment `a0 → a1` (degrees, 0 = top, clockwise): a ring of
+/// width `th` (anti-aliased polyline), or a filled pie/disc. Pies use a
+/// triangle fan so spans past 180° stay correct (a convex polygon
+/// would not).
+fn draw_arc(p: &egui::Painter, c: egui::Pos2, r: f32, th: f32, a0: f32, a1: f32, filled: bool, col: egui::Color32) {
+    let span = (a1 - a0).abs();
+    if col.a() == 0 || !(span > 0.01) {
+        return;
+    }
+    let full = span >= 359.9;
+    if filled && full {
+        p.circle_filled(c, r, col);
+        return;
+    }
+    if !filled && full {
+        p.circle_stroke(c, r, egui::Stroke::new(th, col));
+        return;
+    }
+    let pts: Vec<egui::Pos2> = arc_points([c.x, c.y], r, a0, a1)
+        .into_iter()
+        .map(|q| egui::pos2(q[0], q[1]))
+        .collect();
+    if pts.len() < 2 {
+        return;
+    }
+    if filled {
+        let mut mesh = egui::Mesh::default();
+        mesh.colored_vertex(c, col);
+        for q in &pts {
+            mesh.colored_vertex(*q, col);
+        }
+        for i in 1..pts.len() as u32 {
+            mesh.add_triangle(0, i, i + 1);
+        }
+        p.add(egui::Shape::mesh(mesh));
+    } else {
+        p.add(egui::Shape::line(pts, egui::Stroke::new(th, col)));
+    }
 }
 
 fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values) {
@@ -98,6 +138,51 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values) {
                         };
                         p.rect_filled(sr, 0.0, c);
                     }
+                }
+            }
+            Widget::Arc {
+                source,
+                min,
+                max,
+                redline,
+                from_end,
+                pos,
+                radius,
+                thickness,
+                start,
+                end,
+                rotation,
+                filled,
+                color,
+                track_color,
+                redline_color,
+                opacity,
+            } => {
+                let c = at(*pos);
+                let (r, th) = (radius * s, thickness * s);
+                let (a0, a1) = (start + rotation, end + rotation);
+                let k = |col: egui::Color32| col.gamma_multiply(*opacity);
+                let Some(src) = source else {
+                    draw_arc(&p, c, r, th, a0, a1, *filled, k(*color));
+                    continue;
+                };
+                let (Some(value), Some(min), Some(max)) = (v.get(src), min.eval(v), max.eval(v)) else {
+                    continue;
+                };
+                let frac = bar_fraction(value, min, max);
+                let redline = redline.as_ref().and_then(|b| b.eval(v));
+                let hot = redline.is_some_and(|rl| value >= rl);
+                draw_arc(&p, c, r, th, a0, a1, *filled, k(*track_color));
+                if let Some(rf) = redline.map(|rl| bar_fraction(rl, min, max)) {
+                    let ar = a0 + (a1 - a0) * rf;
+                    draw_arc(&p, c, r, th, ar, a1, *filled, k(redline_color.gamma_multiply(0.35)));
+                }
+                let av = a0 + (a1 - a0) * frac;
+                let fill = k(if hot { *redline_color } else { *color });
+                if *from_end {
+                    draw_arc(&p, c, r, th, av, a1, *filled, fill);
+                } else {
+                    draw_arc(&p, c, r, th, a0, av, *filled, fill);
                 }
             }
             Widget::Text { text, pos, size, align, color, mono } => {
@@ -436,7 +521,18 @@ mod tests {
     /// (same font setup as production).
     #[test]
     fn example_renders() {
-        let (cfg, _) = parse_config(DEFAULT_CONFIG).unwrap();
+        let (mut cfg, _) = parse_config(DEFAULT_CONFIG).unwrap();
+        // Every arc flavour: static ring, bound ring (from end), pie
+        // past 180°, full disc.
+        let (arcs, _) = parse_config(
+            "mode = \"demo\"\n[[hud]]\n\
+             [[hud.widget]]\ntype = \"arc\"\n\
+             [[hud.widget]]\ntype = \"arc\"\nsource = \"rpm\"\nmin = \"rpm_min\"\nmax = \"rpm_max\"\nredline = \"redline\"\nfill = \"end\"\n\
+             [[hud.widget]]\ntype = \"arc\"\nsource = \"rpm\"\nmin = \"rpm_min\"\nmax = \"rpm_max\"\nfilled = true\nstart = -150\nend = 150\n\
+             [[hud.widget]]\ntype = \"arc\"\nfilled = true\nstart = 0\nend = 360\nopacity = 0.3",
+        )
+        .unwrap();
+        cfg.huds.extend(arcs.huds);
         let ctx = egui::Context::default();
         egui_material_icons::initialize(&ctx);
         let input = egui::RawInput {
