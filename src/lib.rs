@@ -144,6 +144,36 @@ fn cxsym_init() {
         .spawn(deferred_init);
 }
 
+/// Load bases of our module and the IL2CPP runtime, logged once.
+///
+/// Player.log crash stacks are raw addresses (`#7 0x… in (Unknown)`);
+/// with these bases a frame can be attributed to cxsfm, GameAssembly or
+/// another module (and offset = addr − base for a symbolized build).
+fn log_module_bases(api: Option<&il2cpp::Il2cppApi>) {
+    fn base_of(addr: *const libc::c_void) -> Option<(usize, String)> {
+        let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+        // SAFETY: plain address lookup into the loader's tables.
+        if unsafe { libc::dladdr(addr, &mut info) } == 0 || info.dli_fbase.is_null() {
+            return None;
+        }
+        let path = if info.dli_fname.is_null() {
+            String::from("?")
+        } else {
+            // SAFETY: loader-owned NUL-terminated path.
+            unsafe { std::ffi::CStr::from_ptr(info.dli_fname) }.to_string_lossy().into_owned()
+        };
+        Some((info.dli_fbase as usize, path))
+    }
+    let ours = base_of(log_module_bases as *const libc::c_void);
+    let game = api.and_then(|a| base_of(a.domain_get as *const libc::c_void));
+    for (label, b) in [("cxsfm", ours), ("il2cpp", game)] {
+        match b {
+            Some((base, path)) => log_line(&format!("diag: {label} base={base:#x} ({path})")),
+            None => log_line(&format!("diag: {label} base inconnue")),
+        }
+    }
+}
+
 /// Background initialization, runs on its own thread seconds after load.
 fn deferred_init() {
     // Give the engine time to map its modules and init its allocators.
@@ -187,6 +217,7 @@ fn deferred_init() {
                             // Publish for mods; silently keeps the old
                             // value if somehow already set (never happens).
                             let _ = IL2CPP.set(api);
+                            log_module_bases(IL2CPP.get());
                             // Game language for the menu (icall; logs raw
                             // value so the SystemLanguage mapping stays
                             // verifiable). Thread is attached already.
