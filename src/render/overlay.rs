@@ -93,6 +93,28 @@ struct SwapchainState {
     /// invalidation (UI vanished or changed — other images re-record
     /// on their next present, converging within one swapchain cycle).
     recorded: Vec<bool>,
+    /// The fence wait timed out once: the overlay is paused on this
+    /// swapchain and NEVER blocks the game's present again; each
+    /// present polls the fence (non-blocking) and resumes when it
+    /// signals. Without this, a fence that never fires turns every
+    /// present into a 1 s wait (game frozen at ~1 fps, 2026-10-16).
+    stalled: bool,
+}
+
+/// Rate-limited per-stage failure log (present thread): the first 20,
+/// then every 1000th — enough to name the failing Vulkan step without
+/// flooding the file from a 100+ fps path.
+fn note_fail(stage: &str, detail: &str) {
+    static FAILS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = FAILS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    if n < 20 || n % 1000 == 0 {
+        crate::log_line(&format!("render/overlay: {stage} failed ({detail}) [#{}]", n + 1));
+    }
+}
+
+/// `map_err` adapter: log the stage + Vulkan result, yield `()`.
+fn vk_fail<E: std::fmt::Debug>(stage: &'static str) -> impl FnOnce(E) {
+    move |e| note_fail(stage, &format!("{e:?}"))
 }
 
 /// Global overlay state: swapchain handle -> renderer state, plus the
@@ -490,6 +512,7 @@ fn create_state(
             frame: 0,
             next_repaint: None,
             recorded,
+            stalled: false,
         })
     }
 }
@@ -780,9 +803,27 @@ pub fn draw_frame(
         // to just before queue_submit: any `?` between here and the
         // submit must leave the fence SIGNALED, or the next frame's
         // wait blocks forever on a fence that will never fire.
-        st.device
-            .wait_for_fences(&[st.fence], true, 1_000_000_000)
-            .map_err(|_| ())?;
+        if st.stalled {
+            // Paused: poll only, never wait (the game keeps its pace).
+            match st.device.get_fence_status(st.fence) {
+                Ok(true) => {
+                    st.stalled = false;
+                    for r in st.recorded.iter_mut() {
+                        *r = false;
+                    }
+                    crate::log_line("render/overlay: fence signaled again, overlay resumed");
+                }
+                _ => return Err(()),
+            }
+        }
+        if let Err(e) = st.device.wait_for_fences(&[st.fence], true, 1_000_000_000) {
+            st.stalled = true;
+            note_fail("wait_for_fences", &format!("{e:?}"));
+            crate::log_line(
+                "render/overlay: overlay paused on this swapchain (fence never signaled) — game present no longer waits",
+            );
+            return Err(());
+        }
         if let Some(u) = &fresh {
             // Free textures egui abandoned — EXCEPT ids (re-)set at
             // their free's emission frame or later (see field docs).
@@ -810,7 +851,7 @@ pub fn draw_frame(
                 for delta in deltas {
                     st.renderer
                         .set_texture(q, st.pool, *id, delta)
-                        .map_err(|_| ())?;
+                        .map_err(vk_fail("set_texture"))?;
                 }
             }
         }
@@ -829,7 +870,7 @@ pub fn draw_frame(
         // to PRESENT_SRC for the real present.
         st.device
             .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
-            .map_err(|_| ())?;
+            .map_err(vk_fail("reset_command_buffer"))?;
         // Record path ONLY (replay re-submits the cached buffer
         // untouched). No ONE_TIME_SUBMIT: that flag promises a single
         // submit per recording, and re-submitting such a buffer is
@@ -844,7 +885,7 @@ pub fn draw_frame(
         };
         st.device
              .begin_command_buffer(cmd, &begin_info)
-            .map_err(|_| ())?;
+            .map_err(vk_fail("begin_command_buffer"))?;
         let subresource = vk::ImageSubresourceRange {
             aspect_mask: vk::ImageAspectFlags::COLOR,
             base_mip_level: 0,
@@ -895,7 +936,7 @@ pub fn draw_frame(
         );
         st.renderer
             .cmd_draw(cmd, st.extent, u.pixels_per_point, &u.primitives)
-            .map_err(|_| ())?;
+            .map_err(vk_fail("cmd_draw"))?;
         st.device.cmd_end_render_pass(cmd);
         let to_present = vk::ImageMemoryBarrier {
             s_type: vk::StructureType::IMAGE_MEMORY_BARRIER,
@@ -919,7 +960,7 @@ pub fn draw_frame(
             &[],
             &[to_present],
         );
-        st.device.end_command_buffer(cmd).map_err(|_| ())?;
+        st.device.end_command_buffer(cmd).map_err(vk_fail("end_command_buffer"))?;
         } // end `if let Some(u)` — replay path skips recording entirely.
         // 5. Submit (freshly recorded or replayed) waiting on the
         // present's own semaphores (covers the game's prior work,
@@ -945,10 +986,28 @@ pub fn draw_frame(
         };
         st.device
             .reset_fences(&[st.fence])
-            .map_err(|_| ())?;
-        st.device
-            .queue_submit(q, &[submit], st.fence)
-            .map_err(|_| ())?;
+            .map_err(vk_fail("reset_fences"))?;
+        if let Err(e) = st.device.queue_submit(q, &[submit], st.fence) {
+            // The fence is now UNSIGNALED with nothing submitted to fire
+            // it: every later wait would time out (the ~1 fps freeze).
+            // Nothing references it, so swap in a fresh SIGNALED one.
+            note_fail("queue_submit", &format!("{e:?}"));
+            let fence_info = vk::FenceCreateInfo {
+                s_type: vk::StructureType::FENCE_CREATE_INFO,
+                p_next: std::ptr::null(),
+                flags: vk::FenceCreateFlags::SIGNALED,
+                ..Default::default()
+            };
+            match st.device.create_fence(&fence_info, None) {
+                Ok(f) => {
+                    st.device.destroy_fence(st.fence, None);
+                    st.fence = f;
+                }
+                // Cannot replace it: pause instead of waiting forever.
+                Err(_) => st.stalled = true,
+            }
+            return Err(());
+        }
         if let Some(u) = fresh {
             st.recorded[idx] = true;
             st.pending_frees = u.textures.free.iter().copied().map(|id| (id, frame)).collect();
