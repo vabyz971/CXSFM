@@ -396,7 +396,6 @@ impl SpeedoMod {
                     owner: want.path.clone(),
                     comp: want.comp,
                     active,
-                    tr_addr,
                     comp_addr: comp_opt,
                     pos,
                     euler,

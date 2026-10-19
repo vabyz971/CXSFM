@@ -103,7 +103,6 @@ pub(crate) struct ObjSnap {
     pub(crate) owner: String,
     pub(crate) comp: Option<CompKind>,
     pub(crate) active: bool,
-    pub(crate) tr_addr: usize,
     /// Graphic component address (diagnostic hint only — drains always
     /// re-resolve; never dereferenced).
     #[allow(dead_code)]
@@ -168,7 +167,6 @@ pub(crate) struct UiObj {
     pub(crate) owner: String,
     pub(crate) comp: Option<CompKind>,
     pub(crate) active: bool,
-    pub(crate) tr_addr: usize,
     /// Graphic component address (diagnostic hint only — drains always
     /// re-resolve; never dereferenced).
     #[allow(dead_code)]
@@ -428,7 +426,6 @@ mod tests {
             owner: "Map/X".to_string(),
             comp: Some(CompKind::Image),
             active: true,
-            tr_addr: 0,
             comp_addr: Some(0),
             pos: [1.0, 2.0, 3.0],
             euler: [0.0; 3],

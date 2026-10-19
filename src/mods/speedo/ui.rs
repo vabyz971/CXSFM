@@ -29,7 +29,6 @@ impl SpeedoMod {
                 owner: s.owner,
                 comp: s.comp,
                 active: s.active,
-                tr_addr: s.tr_addr,
                 comp_addr: s.comp_addr,
                 pos: s.pos,
                 euler: s.euler,
@@ -518,10 +517,6 @@ impl SpeedoMod {
 #[cfg(test)]
 mod tests {
     use super::mesh_max_x;
-    use super::super::SpeedoMod;
-    use super::super::model::{CompKind, UiObj};
-    use crate::mods::api::Mod;
-
 
     /// Layout regression: the window is fixed 760px wide, so no painted
     /// primitive may extend past it (catches unbounded rows that used
@@ -572,7 +567,6 @@ mod tests {
                 owner: owner.into(),
                 comp: Some(comp),
                 active: true,
-                tr_addr: 0,
                 comp_addr: Some(0),
                 pos: [26.0, -116.1, 0.0],
                 euler: [0.0; 3],

@@ -1295,10 +1295,8 @@ mod tests {
     #[test]
     fn link_walk_misses_without_link_node() {
         let head = FakeNode::new(LOADER_DEVICE_CREATE_INFO, std::ptr::null(), 1, std::ptr::null());
-        // SAFETY: owned fake, see above.
-        unsafe {
-            assert!(find_link_info(head.as_ptr(), LOADER_DEVICE_CREATE_INFO).is_none());
-            assert!(find_link_info(std::ptr::null(), LOADER_DEVICE_CREATE_INFO).is_none());
-        }
+        // `find_link_info` is safe (null-checked walk over an owned fake).
+        assert!(find_link_info(head.as_ptr(), LOADER_DEVICE_CREATE_INFO).is_none());
+        assert!(find_link_info(std::ptr::null(), LOADER_DEVICE_CREATE_INFO).is_none());
     }
 }

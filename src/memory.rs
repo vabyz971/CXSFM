@@ -9,12 +9,7 @@
 //! that return `Option<T>` or `Result<T, MemoryError>` for proper error handling.
 
 use std::fmt;
-use std::sync::LazyLock;
 use std::path::PathBuf;
-
-/// Global memory region iterator cache - uses modern `std::sync::LazyLock`
-static MEMORY_REGIONS: LazyLock<std::collections::HashMap<usize, MemoryRegion>> =
-    LazyLock::new(|| std::collections::HashMap::new());
 
 /// Error type for memory operations
 #[derive(Debug)]
@@ -482,8 +477,6 @@ pub struct AobScanner {
     pattern: Vec<u8>,
     /// Mask for pattern wildcards (true = ignore byte, false = check byte)
     mask: Vec<bool>,
-    /// Cache of previously scanned regions
-    region_cache: Vec<MemoryRegion>,
 }
 
 impl AobScanner {
@@ -497,7 +490,6 @@ impl AobScanner {
         Self {
             pattern,
             mask,
-            region_cache: Vec::new(),
         }
     }
 
@@ -776,36 +768,3 @@ pub fn ptr_readable(addr: usize, len: usize) -> bool {
     }
 }
 
-/// Extend implementation for range-based sliding window scan
-pub trait MemoryExt {
-    /// Scan with a sliding window over memory regions
-    fn windows(&self, size: usize) -> MemoryWindows<'_>;
-}
-
-pub struct MemoryWindows<'a> {
-    regions: &'a [MemoryRegion],
-    window_size: usize,
-}
-
-impl<'a> Iterator for MemoryWindows<'a> {
-    type Item = MemoryWindow<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        // Implementation would iterate through region windows
-        None
-    }
-}
-
-pub struct MemoryWindow<'a> {
-    pub base: usize,
-    pub data: &'a [u8],
-}
-
-impl MemoryExt for [u8] {
-    fn windows(&self, _size: usize) -> MemoryWindows<'_> {
-        MemoryWindows {
-            regions: &[],
-            window_size: _size,
-        }
-    }
-}
