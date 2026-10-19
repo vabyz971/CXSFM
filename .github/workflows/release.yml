@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-unknown-linux-gnu
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Verify binary
+        run: |
+          file target/release/libcxsfm.so
+          objdump -T target/release/libcxsfm.so | grep -oP "GLIBC_[0-9.]+" | sort -u
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          cp target/release/libcxsfm.so release-assets/
+          cp tools/cxsfm-setup.sh release-assets/
+          chmod +x release-assets/cxsfm-setup.sh
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: ${{ github.ref_name }} — Linux Vulkan Layer
+          body: |
+            ## CXSFM ${{ github.ref_name }}
+
+            **Platform:** Linux (x86_64) — Vulkan implicit layer for CarX Street
+
+            ### Assets
+            - `libcxsfm.so` — Injected Vulkan layer (GLIBC ≤ 2.35 compatible)
+            - `cxsfm-setup.sh` — Stages the layer to `~/.cache/cxsfm/`
+
+            ### Installation
+            ```bash
+            # 1. Download both files
+            # 2. Run setup script
+            ./cxsfm-setup.sh
+
+            # 3. Launch game with Steam launch options:
+            VK_ADD_LAYER_PATH="$HOME/.cache/cxsfm" VK_INSTANCE_LAYERS=VK_LAYER_CXSFM_overlay %command%
+            ```
+
+            ### Requirements
+            - CarX Street (Steam)
+            - Vulkan-capable GPU / driver
+            - GLIBC 2.35 or newer (Steam Runtime Sniper = 2.36)
+
+            ### Verification
+            Check `~/.cache/cxsfm/cxsfm.log` for:
+            ```
+            negotiated
+            render hook installed: Vulkan
+            first present intercepted
+            ```
+
+            ---
+            **Full changelog:** https://github.com/vabyz971/cxsfm/commits/${{ github.ref_name }}
+          files: |
+            release-assets/libcxsfm.so
+            release-assets/cxsfm-setup.sh
+          draft: false
+          prerelease: false
