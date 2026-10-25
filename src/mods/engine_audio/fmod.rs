@@ -74,38 +74,7 @@ pub struct Fmod {
     inst_get_param: FnGetParam,
 }
 
-/// Already-loaded `libfmodstudio` (never loads it): by soname first,
-/// then by the full path found in `/proc/self/maps`.
-fn open_loaded() -> Option<*mut c_void> {
-    // SAFETY: NUL-terminated literal; NOLOAD only looks up.
-    let h = unsafe { libc::dlopen(c"libfmodstudio.so".as_ptr(), libc::RTLD_NOW | libc::RTLD_NOLOAD) };
-    if !h.is_null() {
-        return Some(h);
-    }
-    let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
-    let line = maps.lines().find(|l| l.contains("libfmodstudio.so"))?;
-    let path = &line[line.find('/')?..];
-    let c = CString::new(path).ok()?;
-    // SAFETY: NUL-terminated path of a module that is mapped right now.
-    let h = unsafe { libc::dlopen(c.as_ptr(), libc::RTLD_NOW | libc::RTLD_NOLOAD) };
-    if h.is_null() { None } else { Some(h) }
-}
-
-/// Resolve `name` as `T` (a `fn` pointer type).
-///
-/// # Safety
-/// `T` must be the real C signature of the exported symbol.
-unsafe fn sym<T: Copy>(lib: *mut c_void, name: &CStr) -> Option<T> {
-    // SAFETY: valid module handle + NUL-terminated name.
-    let p = unsafe { libc::dlsym(lib, name.as_ptr()) };
-    if p.is_null() {
-        crate::log_line(&format!("engine_audio: missing FMOD symbol {}", name.to_string_lossy()));
-        return None;
-    }
-    // SAFETY: fn pointers and data pointers have the same size on every
-    // supported target; the caller vouches for the signature.
-    Some(unsafe { std::mem::transmute_copy::<*mut c_void, T>(&p) })
-}
+use crate::fmod_sys::{open_loaded, sym};
 
 fn ok(r: c_int) -> Option<()> {
     if r == FMOD_OK { Some(()) } else { None }
