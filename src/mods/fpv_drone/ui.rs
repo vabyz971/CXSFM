@@ -2,7 +2,7 @@
 
 use super::model::{
     Action, DRAG_RANGE, FOV_RANGE, GRAVITY_RANGE, GUST_RANGE, MAX_ANGLE_RANGE, Mode, Params, RADIUS_RANGE, RATE_RANGE,
-    TILT_RANGE, TWR_RANGE, WIND_RANGE, YAW_RATE_RANGE,
+    SOUND_RANGE, TILT_RANGE, TWR_RANGE, WIND_RANGE, YAW_RATE_RANGE,
 };
 use super::{FpvDroneMod, Shared};
 use crate::mods::common::lock;
@@ -56,6 +56,9 @@ fn flight_and_physics(ui: &mut egui::Ui, p: &mut Params) {
     ui.separator();
     slider(ui, &mut p.tilt_deg, TILT_RANGE, "camera tilt °");
     slider(ui, &mut p.fov, FOV_RANGE, "FOV °");
+    ui.separator();
+    ui.checkbox(&mut p.sound, "rotor sound (4 motors)");
+    slider(ui, &mut p.sound_volume, SOUND_RANGE, "drone volume");
     if ui.button("Reset settings").clicked() {
         *p = Params::default();
     }
@@ -134,10 +137,24 @@ impl FpvDroneMod {
                 .monospace()
                 .size(13.0),
             );
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("rotors").small());
+                for (name, v) in ["FL", "FR", "RL", "RR"].iter().zip(tel.motors) {
+                    ui.add(egui::ProgressBar::new(v.clamp(0.0, 1.0)).desired_width(60.0).text(*name));
+                }
+            });
             ui.add_space(4.0);
             egui::ScrollArea::vertical().max_height(480.0).auto_shrink([false, false]).show(ui, |ui| {
                 egui::CollapsingHeader::new("Flight & physics").default_open(true).show(ui, |ui| {
                     flight_and_physics(ui, &mut s.params);
+                });
+                egui::CollapsingHeader::new("Camera takeover").default_open(false).show(ui, |ui| {
+                    ui.checkbox(&mut s.cut_controller, "also switch off the game's CameraController");
+                    ui.label(
+                        egui::RichText::new("Off by default (only the Cinemachine brain is stopped). Applies at the next enable. Try it if the camera is still fought over.")
+                            .small()
+                            .weak(),
+                    );
                 });
                 egui::CollapsingHeader::new("Controls").default_open(true).show(ui, |ui| {
                     controls(ui, &mut s, tel.sticks);
@@ -160,6 +177,9 @@ impl FpvDroneMod {
         }
         if s.learn != orig.learn {
             shared.learn = s.learn;
+        }
+        if s.cut_controller != orig.cut_controller {
+            shared.cut_controller = s.cut_controller;
         }
     }
 }

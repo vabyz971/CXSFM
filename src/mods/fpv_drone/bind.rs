@@ -15,6 +15,7 @@
 //! exception (main-thread-only check) disables them after a few strikes
 //! and a flat fallback floor under the takeoff point takes over.
 
+use super::sound::Audio;
 use super::model::{BUTTONS, Bindings, Drone, Hit, Mode, Params, Sticks, learn_axis, learn_button, read_sticks};
 use super::{Shared, Telemetry};
 use crate::gamepad;
@@ -60,7 +61,16 @@ pub(crate) struct Rt {
     ray_tried: bool,
     ray_strikes: u32,
     prev_buttons: [bool; BUTTONS],
+    /// Camera changed under us (game menu, scene switch): the game has
+    /// its drivers back, we wait for the original camera (or the arm
+    /// button on the new one).
+    suspended: bool,
     learn_base: Option<([f32; 8], [bool; BUTTONS], u64)>,
+    audio: Audio,
+    /// The game's `FMOD.Studio.System` (0 = not found yet).
+    studio: usize,
+    studio_try: u64,
+    studio_fields_logged: bool,
 }
 
 /// Camera transform of a live camera component.
@@ -154,21 +164,41 @@ impl Rt {
                 note(tel, "waiting for a camera");
                 return;
             };
-            if !self.flying || self.cam != cam as usize {
-                if self.flying {
-                    crate::log_line("fpv_drone: main camera changed, taking over again");
+            let shared = *lock(sh);
+            let pad = gamepad::poll();
+            if self.flying && self.cam != cam as usize {
+                crate::log_line("fpv_drone: main camera changed (menu / scene?), suspended, game camera restored");
+                self.release(api, &cache);
+                self.suspended = true;
+                self.armed = false;
+            }
+            if self.suspended {
+                let b = shared.bindings.arm as usize;
+                let arm_pressed = b < BUTTONS && pad.buttons[b] && !self.prev_buttons[b];
+                self.prev_buttons = pad.buttons;
+                if self.cam == cam as usize || arm_pressed {
+                    // Back on the camera we left, or an explicit takeover
+                    // of the new one: pose of the new camera, disarmed.
+                    let keep = self.cam == cam as usize;
+                    if !self.start(api, &cache, cam, &shared, keep) {
+                        return;
+                    }
+                    self.suspended = false;
+                    crate::log_line("fpv_drone: resumed");
+                } else {
+                    note(tel, "suspended — camera changed (menu?). Returns by itself, or press arm to fly this camera");
+                    return;
                 }
-                if self.flying && self.tick.saturating_sub(self.last_try) < RETRY_EVERY {
+            } else if !self.flying {
+                if self.last_try != 0 && self.tick.saturating_sub(self.last_try) < RETRY_EVERY {
                     return;
                 }
                 self.last_try = self.tick;
-                if !self.start(api, &cache, cam) {
+                if !self.start(api, &cache, cam, &shared, false) {
                     return;
                 }
             }
             let Some(tr) = cam_transform(api, &cache, cam) else { return };
-            let shared = *lock(sh);
-            let pad = gamepad::poll();
             self.handle_learn(sh, &shared, &pad);
             self.handle_buttons(sh, &shared, &pad);
             let sticks = read_sticks(&shared.bindings, &pad.axes);
@@ -179,12 +209,44 @@ impl Rt {
             }
             self.publish(tel, &shared, &pad, &sticks, &p);
 
+            self.update_sound(&p);
             let Some(drone) = self.drone.as_ref() else { return };
             unity::tr_set_position(api, &cache, tr, drone.pos.to_array());
             unity::tr_set_rotation(api, &cache, tr, drone.rotation(&p));
             if (p.fov - self.last_fov).abs() > 0.01 && unity::set_fov(api, &cache, cam, p.fov) {
                 self.last_fov = p.fov;
             }
+        }
+    }
+
+    /// Four-rotor sound while armed; silence otherwise.
+    fn update_sound(&mut self, p: &Params) {
+        if !(p.sound && self.armed) {
+            self.audio.stop();
+            return;
+        }
+        let Some(motors) = self.drone.as_ref().map(|d| d.motors()) else { return };
+        if !self.audio.load() {
+            return;
+        }
+        if self.studio == 0 {
+            if self.studio_try != 0 && self.tick.saturating_sub(self.studio_try) < 180 {
+                return;
+            }
+            self.studio_try = self.tick;
+            let audio = &self.audio;
+            self.studio = crate::fmod_sys::discover_studio_system(
+                &mut self.unity,
+                &|hnd| audio.studio_valid(hnd),
+                &mut self.studio_fields_logged,
+            )
+            .unwrap_or(0);
+            if self.studio == 0 {
+                return;
+            }
+        }
+        if !self.audio.update(self.studio, &motors, p.sound_volume) {
+            self.studio = 0;
         }
     }
 
@@ -368,6 +430,7 @@ impl Rt {
             speed: d.vel.length(),
             alt: d.pos.y - start_y,
             throttle: d.thrust_fraction(p),
+            motors: d.motors(),
             impact: d.impact,
             collide,
             sticks: [s.throttle, s.yaw, s.pitch, s.roll],
@@ -378,60 +441,92 @@ impl Rt {
     ///
     /// # Safety
     /// Attached tick thread; `cam` alive-checked.
-    unsafe fn start(&mut self, api: &crate::il2cpp::Il2cppApi, cache: &UnityCache, cam: *mut std::ffi::c_void) -> bool {
+    unsafe fn start(
+        &mut self,
+        api: &crate::il2cpp::Il2cppApi,
+        cache: &UnityCache,
+        cam: *mut std::ffi::c_void,
+        shared: &Shared,
+        keep_pose: bool,
+    ) -> bool {
         // SAFETY: caller contract; all reads/writes alive-checked.
         unsafe {
             let Some(tr) = cam_transform(api, cache, cam) else { return false };
             let (Some(pos), Some(rot)) = (unity::tr_position(api, cache, tr), unity::tr_get_rotation(api, cache, tr)) else {
                 return false;
             };
-            self.start = Some((pos, rot));
-            self.drone = Some(Drone::from_pose(pos, rot));
-            self.armed = false;
-            if !self.flying {
-                self.base_fov = unity::get_fov(api, cache, cam);
+            if !keep_pose || self.drone.is_none() {
+                self.start = Some((pos, rot));
+                self.drone = Some(Drone::from_pose(pos, rot));
             }
+            self.armed = false;
+            self.base_fov = unity::get_fov(api, cache, cam);
             self.last_fov = f32::NAN;
             // Controllers of a previous camera are gone with it.
             self.cut.clear();
+            // Only the Cinemachine brain writes the camera pose; the
+            // game's own CameraController is left alone unless asked
+            // (switching it off is suspected of breaking LOD / the menu).
             let mut objs = unity::cm_brain_list(api, cache);
-            objs.extend(unity::cam_controller_list(api, cache));
+            if shared.cut_controller {
+                objs.extend(unity::cam_controller_list(api, cache));
+            }
+            let mut names = Vec::new();
             for o in objs.into_iter().take(MAX_CUT) {
                 if unity::object_alive(api, cache, o) != Some(true) {
                     continue;
                 }
                 if unity::beh_get_enabled(api, cache, o) == Some(true) && unity::beh_set_enabled(api, cache, o, false) {
                     self.cut.push((o as usize, true));
+                    let cls = crate::il2cpp::object_class(api, o)
+                        .and_then(|k| crate::il2cpp::class_name(api, k))
+                        .unwrap_or_default();
+                    names.push(cls);
                 }
             }
             self.cam = cam as usize;
             self.flying = true;
-            crate::log_line(&format!("fpv_drone: takeover, {} camera drivers off (disarmed)", self.cut.len()));
+            crate::log_line(&format!(
+                "fpv_drone: takeover, {} camera drivers off [{}] (disarmed)",
+                self.cut.len(),
+                names.join(", ")
+            ));
             true
         }
     }
 
     /// Give the camera back: drivers on again, FOV as found.
-    pub(crate) fn stop(&mut self) {
-        if self.flying {
-            if let (Some(api), Some(cache)) = (crate::il2cpp_api(), self.unity) {
-                // SAFETY: attached tick thread; each object alive-checked.
-                unsafe {
-                    for &(o, was_on) in &self.cut {
-                        let o = o as *mut std::ffi::c_void;
-                        if unity::object_alive(api, &cache, o) == Some(true) {
-                            unity::beh_set_enabled(api, &cache, o, was_on);
-                        }
-                    }
-                    if let (Some(fov), Some(cam)) = (self.base_fov, unity::main_camera(api, &cache)) {
-                        if unity::object_alive(api, &cache, cam) == Some(true) {
-                            unity::set_fov(api, &cache, cam, fov);
-                        }
-                    }
+    fn release(&mut self, api: &crate::il2cpp::Il2cppApi, cache: &UnityCache) {
+        // SAFETY: attached tick thread; each object alive-checked.
+        unsafe {
+            for &(o, was_on) in &self.cut {
+                let o = o as *mut std::ffi::c_void;
+                if unity::object_alive(api, cache, o) == Some(true) {
+                    unity::beh_set_enabled(api, cache, o, was_on);
+                }
+            }
+            // FOV only goes back on the camera it was taken from.
+            if let (Some(fov), Some(cam)) = (self.base_fov, unity::main_camera(api, cache)) {
+                if cam as usize == self.cam && unity::object_alive(api, cache, cam) == Some(true) {
+                    unity::set_fov(api, cache, cam, fov);
                 }
             }
         }
+        self.cut.clear();
         self.flying = false;
+        self.audio.stop();
+    }
+
+    /// Disable path: restore everything and forget the flight.
+    pub(crate) fn stop(&mut self) {
+        if self.flying {
+            if let (Some(api), Some(cache)) = (crate::il2cpp_api(), self.unity) {
+                self.release(api, &cache);
+            }
+        }
+        self.audio.stop();
+        self.flying = false;
+        self.suspended = false;
         self.armed = false;
         self.drone = None;
         self.start = None;

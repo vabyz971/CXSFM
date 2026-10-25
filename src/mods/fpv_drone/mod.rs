@@ -23,6 +23,7 @@ pub mod i18n;
 
 mod bind;
 pub(crate) mod model;
+mod sound;
 mod ui;
 
 use crate::mods::api::{Mod, TileIcon};
@@ -39,6 +40,9 @@ pub(crate) struct Shared {
     pub bindings: Bindings,
     /// Control currently waiting for the next pad movement.
     pub learn: Option<Action>,
+    /// Also switch off the game's `CameraController` at takeover
+    /// (default off; applies at the next takeover).
+    pub cut_controller: bool,
 }
 
 /// Tick → UI.
@@ -53,6 +57,8 @@ pub(crate) struct Telemetry {
     pub collide: &'static str,
     /// throttle, yaw, pitch, roll after the bindings.
     pub sticks: [f32; 4],
+    /// Rotor speeds 0…1: FL, FR, RL, RR.
+    pub motors: [f32; 4],
 }
 
 pub struct FpvDroneMod {
@@ -71,6 +77,7 @@ impl FpvDroneMod {
                 params: Params::default(),
                 bindings: Bindings::default(),
                 learn: None,
+                cut_controller: false,
             }),
             tel: Mutex::new(Telemetry::default()),
             rt: Mutex::new(bind::Rt::default()),

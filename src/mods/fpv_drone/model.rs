@@ -74,6 +74,9 @@ pub struct Params {
     /// Fixed camera up-tilt, degrees.
     pub tilt_deg: f32,
     pub fov: f32,
+    /// Motor sound (4 synthesized rotors) and its volume.
+    pub sound: bool,
+    pub sound_volume: f32,
 }
 
 impl Default for Params {
@@ -96,6 +99,8 @@ impl Default for Params {
             bounce: 0.3,
             tilt_deg: 25.0,
             fov: 110.0,
+            sound: true,
+            sound_volume: 0.6,
         }
     }
 }
@@ -111,6 +116,7 @@ pub const GUST_RANGE: (f32, f32) = (0.0, 10.0);
 pub const RADIUS_RANGE: (f32, f32) = (0.05, 1.0);
 pub const TILT_RANGE: (f32, f32) = (0.0, 60.0);
 pub const FOV_RANGE: (f32, f32) = (50.0, 140.0);
+pub const SOUND_RANGE: (f32, f32) = (0.0, 1.5);
 
 impl Params {
     /// Every field clamped to its range (NaN → default).
@@ -135,6 +141,8 @@ impl Params {
             bounce: c(self.bounce, (0.0, 0.9), d.bounce),
             tilt_deg: c(self.tilt_deg, TILT_RANGE, d.tilt_deg),
             fov: c(self.fov, FOV_RANGE, d.fov),
+            sound: self.sound,
+            sound_volume: c(self.sound_volume, SOUND_RANGE, d.sound_volume),
         }
     }
 }
@@ -338,6 +346,9 @@ pub struct Drone {
     time: f32,
     /// Last impact speed (m/s), for the UI.
     pub impact: f32,
+    /// Rotor speed 0…1 per motor: front-left, front-right, rear-left,
+    /// rear-right (X frame).
+    motor: [f32; 4],
 }
 
 impl Drone {
@@ -356,7 +367,13 @@ impl Drone {
             thrust: REF_G,
             time: 0.0,
             impact: 0.0,
+            motor: [0.5; 4],
         }
+    }
+
+    /// Rotor speeds 0…1 (FL, FR, RL, RR) for the sound and the UI.
+    pub fn motors(&self) -> [f32; 4] {
+        self.motor
     }
 
     /// Hover thrust, no motion (called when arming).
@@ -364,6 +381,7 @@ impl Drone {
         self.vel = Vec3::ZERO;
         self.omega = Vec3::ZERO;
         self.thrust = REF_G;
+        self.motor = [0.5; 4];
     }
 
     /// Throttle (0…1) → thrust in multiples of REF_G.
@@ -386,12 +404,21 @@ impl Drone {
         self.time += dt;
         self.impact = (self.impact - 4.0 * dt).max(0.0);
 
+        // What the attitude loop asks of the rotors: (pitch, yaw, roll),
+        // each −1…1 (pitch + = nose down, roll + = bank right).
+        let demand;
         match p.mode {
             Mode::Acro => {
                 let target = Vec3::new(
                     rate_curve(s.pitch, p.rate, p.expo),
                     p.yaw_rate.to_radians() * finite(s.yaw).clamp(-1.0, 1.0),
                     -rate_curve(s.roll, p.rate, p.expo),
+                );
+                let (rmax, ymax) = (p.rate.to_radians(), p.yaw_rate.to_radians());
+                demand = Vec3::new(
+                    (target.x - self.omega.x) / rmax,
+                    (target.y - self.omega.y) / ymax,
+                    -(target.z - self.omega.z) / rmax,
                 );
                 self.omega += (target - self.omega) * (1.0 - (-RATE_LAG * dt).exp());
                 self.q = (self.q * Quat::from_scaled_axis(self.omega * dt)).normalize();
@@ -402,6 +429,11 @@ impl Drone {
                 let max = p.max_angle.to_radians();
                 let want_pitch = finite(s.pitch).clamp(-1.0, 1.0) * max;
                 let want_z = -finite(s.roll).clamp(-1.0, 1.0) * max;
+                demand = Vec3::new(
+                    (want_pitch - pitch) / max,
+                    finite(s.yaw).clamp(-1.0, 1.0) * 0.5,
+                    -(want_z - z) / max,
+                );
                 let yaw = yaw + finite(s.yaw).clamp(-1.0, 1.0) * p.yaw_rate.to_radians() * dt;
                 self.q = Quat::from_euler(
                     EulerRot::YXZ,
@@ -416,6 +448,19 @@ impl Drone {
 
         let target = Self::thrust_g(s.throttle, &p) * REF_G;
         self.thrust += (target - self.thrust) * (1.0 - (-SPOOL_RATE * dt).exp());
+        let base = (self.thrust / (p.twr * REF_G)).clamp(0.0, 1.0).sqrt();
+        let d = demand.clamp(Vec3::splat(-1.0), Vec3::ONE);
+        let d = if d.is_finite() { d } else { Vec3::ZERO };
+        let mix = [
+            -d.x + d.z + d.y,
+            -d.x - d.z - d.y,
+            d.x + d.z - d.y,
+            d.x - d.z + d.y,
+        ];
+        for (m, x) in self.motor.iter_mut().zip(mix) {
+            let want = (base + 0.22 * x).clamp(0.08, 1.0);
+            *m += (want - *m) * (1.0 - (-25.0 * dt).exp());
+        }
         let rel = self.vel - wind_at(&p, self.time);
         let drag = (rel * DRAG_LINEAR + rel * rel.length() * DRAG_QUAD) * p.drag;
         let acc = self.q * Vec3::new(0.0, self.thrust, 0.0) - Vec3::Y * p.gravity - drag;
@@ -573,6 +618,31 @@ mod tests {
         d.vel = Vec3::new(0.0, -0.5, 0.0);
         d.contact(&Hit { point: Vec3::ZERO, normal: Vec3::Y }, &Params::default());
         assert!(d.vel.y.abs() < 1e-6);
+    }
+
+    #[test]
+    fn pitching_forward_spins_the_rear_rotors_faster() {
+        let mut d = level();
+        run(&mut d, &Sticks { pitch: 1.0, ..HOVER }, &Params::default(), 0.3);
+        let m = d.motors();
+        assert!(m[2] > m[0] && m[3] > m[1], "{m:?}");
+    }
+
+    #[test]
+    fn banking_right_spins_the_left_rotors_faster() {
+        let mut d = level();
+        run(&mut d, &Sticks { roll: 1.0, ..HOVER }, &Params::default(), 0.3);
+        let m = d.motors();
+        assert!(m[0] > m[1] && m[2] > m[3], "{m:?}");
+    }
+
+    #[test]
+    fn rotors_speed_up_with_throttle() {
+        let mut lo = level();
+        let mut hi = level();
+        run(&mut lo, &Sticks { throttle: 0.4, ..HOVER }, &Params::default(), 1.0);
+        run(&mut hi, &Sticks { throttle: 1.0, ..HOVER }, &Params::default(), 1.0);
+        assert!(hi.motors()[0] > lo.motors()[0] + 0.2);
     }
 
     #[test]
