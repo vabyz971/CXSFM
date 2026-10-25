@@ -143,8 +143,12 @@ pub struct GamepadState {
     /// SDL axes 2 (left) and 5 (right).
     pub lt: f32,
     pub rt: f32,
-    /// Buttons 0..8 (Xbox: 0=A, 4=LB, 5=RB).
-    pub buttons: [bool; 8],
+    /// Every axis by SDL index 0..8, -1.0..=1.0 with the stick
+    /// deadzone applied (a released trigger reads -1.0). Lets mods
+    /// remap controls for pads whose layout is not Xbox's.
+    pub axes: [f32; 8],
+    /// Buttons 0..16 (Xbox: 0=A, 1=B, 2=X, 3=Y, 4=LB, 5=RB).
+    pub buttons: [bool; 16],
 }
 
 /// Poll joystick 0 (tick thread). Opens lazily on first call.
@@ -183,7 +187,7 @@ pub fn poll() -> GamepadState {
         let joy = handle.0;
         drop(handle);
         (api.update)();
-        let mut buttons = [false; 8];
+        let mut buttons = [false; 16];
         for (i, b) in buttons.iter_mut().enumerate() {
             *b = (api.button)(joy, i as libc::c_int) != 0;
         }
@@ -195,6 +199,7 @@ pub fn poll() -> GamepadState {
             ry: norm((api.axis)(joy, 4)),
             lt: trigger((api.axis)(joy, 2)),
             rt: trigger((api.axis)(joy, 5)),
+            axes: std::array::from_fn(|i| norm((api.axis)(joy, i as libc::c_int))),
             buttons,
         }
     }

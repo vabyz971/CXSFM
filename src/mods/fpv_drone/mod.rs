@@ -1,14 +1,21 @@
-//! FPV drone mod: a free-flying camera on the gamepad, cosmetic only.
+//! FPV drone mod: a physically simulated quadcopter camera on the
+//! gamepad, cosmetic only.
 //!
-//! On enable the game's camera drivers (Cinemachine brain + camera
-//! controllers) are switched off once and `Camera.main` is flown from
-//! the tick: left stick move (ground plane), right stick look, RT/LT up/down, A boost.
-//! Disable puts every driver flag and the FOV back as found.
+//! A flight model (thrust, gravity, drag, wind, Angle and Acro attitude
+//! modes) drives `Camera.main`. On enable the game's camera drivers
+//! (Cinemachine brain + camera controllers) are switched off once; the
+//! drone starts DISARMED at the camera's pose. Disable puts every driver
+//! flag and the FOV back as found.
+//!
+//! Default pad (Xbox): left stick = throttle (Y) + roll (X), right
+//! stick = pitch (Y) + yaw (X), A = arm, Y = reset, X = Angle/Acro.
+//! Every control can be re-bound from the window ("Bind"), so any pad
+//! layout works.
 //!
 //! KNOWN LIMIT: the game still reads the same pad, so the car reacts to
-//! the sticks — enter photo mode first, then enable the mod.
-//! Writes come from the tick thread (not the render loop), so a little
-//! judder is possible (see docs/field-notes.md, FPV mod).
+//! the sticks — enter photo mode first, then enable the mod. Writes
+//! come from the tick thread, so a little judder is possible (see
+//! docs/field-notes.md, FPV mod).
 //!
 //! Layout: `model` (flight math, tests), `bind` (tick side), `ui`.
 
@@ -21,31 +28,53 @@ mod ui;
 use crate::mods::api::{Mod, TileIcon};
 use crate::mods::common::lock;
 use crate::mods::tool::ToolChrome;
-use model::Params;
+use model::{Action, Bindings, Params};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Everything the user edits (UI ⇄ tick, one brief lock each way).
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct Shared {
+    pub params: Params,
+    pub bindings: Bindings,
+    /// Control currently waiting for the next pad movement.
+    pub learn: Option<Action>,
+}
+
+/// Tick → UI.
+#[derive(Clone, Default)]
+pub(crate) struct Telemetry {
+    pub note: String,
+    pub armed: bool,
+    pub speed: f32,
+    pub alt: f32,
+    pub throttle: f32,
+    pub impact: f32,
+    pub collide: &'static str,
+    /// throttle, yaw, pitch, roll after the bindings.
+    pub sticks: [f32; 4],
+}
+
 pub struct FpvDroneMod {
     enabled: AtomicBool,
-    /// UI → tick.
-    pub(crate) shared: Mutex<Params>,
-    /// Tick → UI.
-    pub(crate) note: Mutex<String>,
+    pub(crate) shared: Mutex<Shared>,
+    pub(crate) tel: Mutex<Telemetry>,
     rt: Mutex<bind::Rt>,
     pub(crate) tool: ToolChrome,
-    /// Render-side edit buffer.
-    pub(crate) edit: Params,
 }
 
 impl FpvDroneMod {
     pub fn new() -> Self {
         Self {
             enabled: AtomicBool::new(false),
-            shared: Mutex::new(Params::default()),
-            note: Mutex::new(String::new()),
+            shared: Mutex::new(Shared {
+                params: Params::default(),
+                bindings: Bindings::default(),
+                learn: None,
+            }),
+            tel: Mutex::new(Telemetry::default()),
             rt: Mutex::new(bind::Rt::default()),
             tool: ToolChrome::new(),
-            edit: Params::default(),
         }
     }
 }
@@ -85,9 +114,7 @@ impl Mod for FpvDroneMod {
         if !self.enabled.load(Ordering::SeqCst) {
             return;
         }
-        // Bind-then-use: params copied before the runtime lock.
-        let p = *lock(&self.shared);
-        lock(&self.rt).fly(&p, delta_time, &self.note);
+        lock(&self.rt).fly(&self.shared, delta_time, &self.tel);
     }
 
     fn on_draw_ui(&mut self, ctx: &egui::Context) {
@@ -96,13 +123,14 @@ impl Mod for FpvDroneMod {
 
     fn on_enable(&mut self) {
         self.enabled.store(true, Ordering::SeqCst);
-        crate::log_line("fpv_drone: armed");
+        crate::log_line("fpv_drone: armed (mod on; drone starts disarmed)");
     }
 
     fn on_disable(&mut self) {
         self.enabled.store(false, Ordering::SeqCst);
         lock(&self.rt).stop();
-        lock(&self.note).clear();
+        lock(&self.shared).learn = None;
+        *lock(&self.tel) = Telemetry::default();
         crate::log_line("fpv_drone: off (camera drivers and FOV restored)");
     }
 }
