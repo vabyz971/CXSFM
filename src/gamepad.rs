@@ -125,6 +125,12 @@ fn norm(raw: i16) -> f32 {
     }
 }
 
+/// Trigger axis (-32768 released … 32767 pressed) → 0.0..=1.0.
+fn trigger(raw: i16) -> f32 {
+    let v = ((raw as f32 + 32768.0) / 65535.0).clamp(0.0, 1.0);
+    if v < 0.05 { 0.0 } else { v }
+}
+
 /// Snapshot of joystick 0 (all zeros/false when absent).
 #[derive(Clone, Copy, Default, Debug)]
 pub struct GamepadState {
@@ -133,6 +139,10 @@ pub struct GamepadState {
     pub ly: f32,
     pub rx: f32,
     pub ry: f32,
+    /// Triggers 0.0 (released) … 1.0 (fully pressed). Xbox layout:
+    /// SDL axes 2 (left) and 5 (right).
+    pub lt: f32,
+    pub rt: f32,
     /// Buttons 0..8 (Xbox: 0=A, 4=LB, 5=RB).
     pub buttons: [bool; 8],
 }
@@ -183,6 +193,8 @@ pub fn poll() -> GamepadState {
             ly: norm((api.axis)(joy, 1)),
             rx: norm((api.axis)(joy, 3)),
             ry: norm((api.axis)(joy, 4)),
+            lt: trigger((api.axis)(joy, 2)),
+            rt: trigger((api.axis)(joy, 5)),
             buttons,
         }
     }

@@ -254,6 +254,7 @@ fn deferred_init() {
         mods::map::register();
         mods::hud::register();
         mods::engine_audio::register();
+        mods::fpv_drone::register();
         log_line("mods registered, starting tick thread");
         spawn_tick_thread();
         headless_ui_check();

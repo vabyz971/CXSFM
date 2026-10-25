@@ -10,6 +10,7 @@ A mod = **one folder** under `src/mods/`, compiled into the framework
 | `map/` | same pattern for the minimap (shares `speedo::model`) |
 | `gamelog/` | tool: the game's live `Player.log` (filter + errors, read-only) |
 | `hud/` | pure egui overlay: HUDs described in `hud.toml` (hot-reloaded), live values read from game fields |
+| `fpv_drone/` | free FPV drone camera on the gamepad (one-shot camera takeover, restore on disable) |
 | `engine_audio/` | FMOD Studio audio: pitch/volume multipliers on the engine events (C API via `dlsym`, restore on disable) |
 
 ## 1. Copy a folder
