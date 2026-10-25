@@ -22,6 +22,7 @@ fn material_icon(icon: TileIcon) -> egui_material_icons::MaterialIcon {
         TileIcon::Cars => ICON_DIRECTIONS_CAR,
         TileIcon::Gamepad => ICON_SPORTS_ESPORTS,
         TileIcon::Gauge => ICON_SPEED,
+        TileIcon::Sound => ICON_VOLUME_UP,
     }
 }
 

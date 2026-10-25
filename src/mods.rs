@@ -13,6 +13,7 @@ pub mod common;
 pub mod loader;
 pub mod tool;
 pub mod fpv_camera;
+pub mod engine_audio;
 pub mod gamelog;
 pub mod hud;
 pub mod inspector;

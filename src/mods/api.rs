@@ -49,6 +49,8 @@ pub enum TileIcon {
     Gamepad,
     /// Gauge dial (custom speedometer).
     Gauge,
+    /// Speaker (engine sound).
+    Sound,
 }
 
 impl Default for TileIcon {
