@@ -5,7 +5,7 @@
 //! addresses are never dereferenced (scene churn frees wrappers —
 //! touching one is the delayed SIGSEGV this design was built to avoid).
 
-use crate::mods::speedo::model::{
+use crate::mods::speedometer::model::{
     CompKind, ObjSnap, OrigRec, SavedObj, color_get, color_set, write_reqs_for, OP_ACTIVE, OP_CGALPHA, OP_COLOR, OP_FONT, OP_POS, OP_ROT, OP_SCALE,
 };
 use super::MinimapMod;
@@ -833,7 +833,7 @@ impl MinimapMod {
                         None => {
                             let tr = entry.1 as *mut std::ffi::c_void;
                             let limit =
-                                crate::mods::speedo::model::ancestor_climb_limit(&r.owner);
+                                crate::mods::speedometer::model::ancestor_climb_limit(&r.owner);
                             match crate::unity::ancestor_canvasgroup(api, &cache, tr, limit) {
                                 Some(cg) => cg,
                                 None => continue,

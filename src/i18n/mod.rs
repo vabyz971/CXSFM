@@ -233,11 +233,11 @@ fn mod_tile(key: &str) -> Option<&'static str> {
     match key {
         "mod_inspector" => Some(crate::mods::inspector::i18n::tile_label(code)),
         "mod_gamelog" => Some(crate::mods::gamelog::i18n::tile_label(code)),
-        "mod_speedo" => Some(crate::mods::speedo::i18n::tile_label(code)),
+        "mod_speedometer" => Some(crate::mods::speedometer::i18n::tile_label(code)),
         "mod_map" => Some(crate::mods::map::i18n::tile_label(code)),
         "mod_engine_audio" => Some(crate::mods::engine_audio::i18n::tile_label(code)),
         "mod_fpv_drone" => Some(crate::mods::fpv_drone::i18n::tile_label(code)),
-        "mod_hud" => Some(crate::mods::hud::i18n::tile_label(code)),
+        "mod_custom_hud" => Some(crate::mods::custom_hud::i18n::tile_label(code)),
         _ => None,
     }
 }

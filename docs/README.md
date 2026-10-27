@@ -11,9 +11,9 @@ This directory contains the technical documentation for the CarX Street Framewor
 
 ## Mod READMEs
 
-- [Speedometer](../src/mods/speedo/README.md) - restyle the game's speedometer HUD
+- [Speedometer](../src/mods/speedometer/README.md) - restyle the game's speedometer HUD
 - [Minimap](../src/mods/map/README.md) - restyle the game's minimap HUD
-- [Custom HUD](../src/mods/hud/README.md) - HUDs from `hud.toml` (widgets, sources, examples)
+- [Custom HUD](../src/mods/custom_hud/README.md) - HUDs from `custom_hud.toml` (widgets, sources, examples)
 
 ## Quick Links
 

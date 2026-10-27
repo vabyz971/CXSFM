@@ -26,7 +26,7 @@ originals back. **Save** writes modified params to
 `~/.config/cxsfm/saves.toml`, **Load** applies them back in one pass.
 See [speedo's README](../speedo/README.md) for the card layout, the
 realtime drain and the safety design — this mod shares its data model
-(`speedo::model`) and behavior, only the roots (`UIHUDMinimap`,
+(`speedometer::model`) and behavior, only the roots (`UIHUDMinimap`,
 fallback `Map`) and the tile (globe, `mod_map`) differ.
 
 Values persist per object path in `~/.config/cxsfm/saves.toml`

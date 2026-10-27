@@ -22,7 +22,7 @@ recolored green through the mod.
 4. **Restore** (or disabling the mod) writes every first-seen original
    back: positions, scales, colors, opacities, active states.
 5. **Save** writes only your modified params to
-   `~/.config/cxsfm/saves.toml` (`[speedo."object/path"]` tables);
+   `~/.config/cxsfm/saves.toml` (`[speedometer."object/path"]` tables);
    **Load** applies them back in one pass. Hand-editable, paths only.
 6. Settings → auto-load toggle: applies your saves a few seconds
    after arriving in game (watches Player.log transitions + HUD

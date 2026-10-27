@@ -34,11 +34,11 @@ HUD version tag applied to the game's own nickname label](docs/overlay-proof.png
 - ✅ IL2CPP bridge: camera FOV, UI text read/write, scene inspection,
   field reflection (class search, field dumps, raw field reads)
 - ✅ Bundled mods: Scene Inspector (read-only), GameLog (Player.log),
-  [Speedometer](src/mods/speedo/README.md) +
+  [Speedometer](src/mods/speedometer/README.md) +
   [Minimap](src/mods/map/README.md) (HUD restyle; edits kept on
   disable, Restore button; saves auto-applied at launch),
-  [Custom HUD](src/mods/hud/README.md) (HUDs from a hot-reloaded
-  `hud.toml`: bars, arcs, needles, dial ticks, text with italic/glow;
+  [Custom HUD](src/mods/custom_hud/README.md) (HUDs from a hot-reloaded
+  `custom_hud.toml`: bars, arcs, needles, dial ticks, text with italic/glow;
   live game values through field paths found with its Explorer tab,
   ~16 min of driving validated without a crash)
 - ✅ Stability: stale-handle re-resolve, `object_alive` readability
@@ -70,7 +70,7 @@ findings log (input paths, layer bring-up, incidents and fixes).
 |---|---|
 | `~/.config/cxsfm/settings.toml` | framework settings (auto-load) |
 | `~/.config/cxsfm/saves.toml` | speedo/map saved edits, by object path (`.bak` kept on save) |
-| `~/.config/cxsfm/hud.toml` | Custom HUD layouts (hot-reloaded) — see [its README](src/mods/hud/README.md) |
+| `~/.config/cxsfm/custom_hud.toml` | Custom HUD layouts (hot-reloaded) — see [its README](src/mods/custom_hud/README.md) |
 | `~/.cache/cxsfm/cxsfm.log` | framework log (next to the staged layer; `CXSF_LOG` overrides) |
 
 - Diagnostics: the log starts with `diag: cxsfm base=…` / `il2cpp
@@ -292,7 +292,7 @@ cxsfm/
     │   └── overlay.rs  # egui-into-swapchain renderer
     ├── il2cpp.rs       # IL2CPP embedding bridge (+ field reflection)
     ├── unity/          # Unity helpers (object, camera, scene, text)
-    ├── config.rs       # settings.toml / saves.toml / hud.toml paths + IO
+    ├── config.rs       # settings.toml / saves.toml / custom_hud.toml paths + IO
     ├── i18n/           # Framework strings (7 languages)
     ├── menu.rs, ui/    # Tile menu + CarX theme
     ├── mainthread.rs   # methodPointer-swap infra (parked)

@@ -16,13 +16,13 @@ pub fn tile_label(lang_code: &str) -> &'static str {
 /// One-line description for the About page.
 pub fn describe(lang_code: &str) -> &'static str {
     match lang_code {
-        "fr" => "HUD personnalisés définis dans hud.toml (rechargé à chaud), façon GT minimaliste.",
-        "de" => "Eigene HUDs aus hud.toml (Live-Reload), minimalistischer GT-Stil.",
-        "es" => "HUD personalizados definidos en hud.toml (recarga en caliente), estilo GT minimalista.",
-        "it" => "HUD personalizzati definiti in hud.toml (ricarica a caldo), stile GT minimalista.",
-        "pt" => "HUD personalizados definidos em hud.toml (recarga a quente), estilo GT minimalista.",
-        "ru" => "Свои HUD из hud.toml (горячая перезагрузка), минималистичный стиль GT.",
-        _ => "Custom HUDs defined in hud.toml (hot-reloaded), minimalist GT style.",
+        "fr" => "HUD personnalisés définis dans custom_hud.toml (rechargé à chaud), façon GT minimaliste.",
+        "de" => "Eigene HUDs aus custom_hud.toml (Live-Reload), minimalistischer GT-Stil.",
+        "es" => "HUD personalizados definidos en custom_hud.toml (recarga en caliente), estilo GT minimalista.",
+        "it" => "HUD personalizzati definiti in custom_hud.toml (ricarica a caldo), stile GT minimalista.",
+        "pt" => "HUD personalizados definidos em custom_hud.toml (recarga a quente), estilo GT minimalista.",
+        "ru" => "Свои HUD из custom_hud.toml (горячая перезагрузка), минималистичный стиль GT.",
+        _ => "Custom HUDs defined in custom_hud.toml (hot-reloaded), minimalist GT style.",
     }
 }
 
@@ -117,8 +117,8 @@ pub fn log_loaded(lang_code: &str) -> &'static str {
 }
 pub fn log_error(lang_code: &str) -> &'static str {
     match lang_code {
-        "fr" => "{tag}: hud.toml invalide ({e}), config précédente conservée",
-        _ => "{tag}: invalid hud.toml ({e}), previous config kept",
+        "fr" => "{tag}: custom_hud.toml invalide ({e}), config précédente conservée",
+        _ => "{tag}: invalid custom_hud.toml ({e}), previous config kept",
     }
 }
 pub fn log_no_home(lang_code: &str) -> &'static str {

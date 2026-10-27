@@ -4,7 +4,7 @@
 //! and stage one-shot write requests; the tick drains them
 //! ([`super::MinimapMod::drain_batch`]). Nothing touches Unity directly.
 
-use crate::mods::speedo::model::{
+use crate::mods::speedometer::model::{
     CompKind, SavedObj, UiObj, diff_object, display_name, color_to_f32, f32_to_color, is_zero_scale,
     write_reqs_for,
 };
@@ -561,7 +561,7 @@ mod tests {
     fn layout_stays_within_window() {
         use super::super::MinimapMod;
         use crate::mods::api::Mod;
-        use crate::mods::speedo::model::{CompKind, UiObj};
+        use crate::mods::speedometer::model::{CompKind, UiObj};
 
         fn obj(owner: &str, comp: CompKind) -> UiObj {
             UiObj {

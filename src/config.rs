@@ -4,7 +4,7 @@
 //! (`$XDG_CONFIG_HOME/cxsfm/saves.toml`, else `~/.config/cxsfm/`),
 //! are hand-editable (TOML comments survive — we never rewrite user
 //! text, only whole-file replace on Save), and store values BY OBJECT
-//! PATH (`[speedo."Speedometer/Background/ImgBg"]`). Never addresses,
+//! PATH (`[speedometer."Speedometer/Background/ImgBg"]`). Never addresses,
 //! never originals (those are re-read from the game every session).
 //!
 //! All file IO happens on the tick thread (Save/Load buttons only
@@ -15,7 +15,7 @@
 //! This module also hosts the session-wide auto-load switch (Settings
 //! checkbox, persisted to `settings.toml` next to the saves).
 
-use crate::mods::speedo::model::SavedObj;
+use crate::mods::speedometer::model::SavedObj;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -52,11 +52,11 @@ pub(crate) fn settings_path() -> Option<PathBuf> {
     Some(dir)
 }
 
-/// Custom HUD layouts (`hud.toml`, same dir — hot-reloaded by the
+/// Custom HUD layouts (`custom_hud.toml`, same dir — hot-reloaded by the
 /// hud mod, example written on first enable).
 pub(crate) fn hud_path() -> Option<PathBuf> {
     let mut dir = settings_dir()?;
-    dir.push("hud.toml");
+    dir.push("custom_hud.toml");
     Some(dir)
 }
 
@@ -404,7 +404,7 @@ pub(crate) fn parse_saves(text: &str) -> (Vec<(String, String, SavedObj)>, usize
 #[cfg(test)]
 mod tests {
     use super::{build_saves, merge_saves, parse_saves, parse_settings, settings_toml};
-    use crate::mods::speedo::model::SavedObj;
+    use crate::mods::speedometer::model::SavedObj;
 
     fn sample() -> Vec<(String, String, SavedObj)> {
         vec![
@@ -418,7 +418,7 @@ mod tests {
                 },
             ),
             (
-                "speedo".to_string(),
+                "speedometer".to_string(),
                 "Speed/Text (TMP) Gear \"quoted\"".to_string(),
                 SavedObj {
                     scale: Some([1.2, 1.2, 1.0]),
@@ -442,7 +442,7 @@ mod tests {
         assert_eq!(road.2.active, Some(false));
         let gear = entries
             .iter()
-            .find(|(m, _, _)| m == "speedo")
+            .find(|(m, _, _)| m == "speedometer")
             .expect("gear entry");
         assert_eq!(gear.2.scale, Some([1.2, 1.2, 1.0]));
     }
@@ -458,22 +458,22 @@ mod tests {
 
     #[test]
     fn merge_keeps_other_mods() {
-        let old = "[speedo.\"A\"]\nactive = false\n[map.\"B\"]\nopacity = 0.2\n";
+        let old = "[speedometer.\"A\"]\nactive = false\n[map.\"B\"]\nopacity = 0.2\n";
         let entries = vec![(
             "C".to_string(),
-            crate::mods::speedo::model::SavedObj {
+            crate::mods::speedometer::model::SavedObj {
                 scale: Some([0.0, 0.0, 0.0]),
-                ..crate::mods::speedo::model::SavedObj::default()
+                ..crate::mods::speedometer::model::SavedObj::default()
             },
         )];
-        let (text, kept, fresh) = merge_saves(old, "speedo", &entries);
+        let (text, kept, fresh) = merge_saves(old, "speedometer", &entries);
         assert!(!fresh);
         assert_eq!(kept, 1);
         let (back, skipped) = parse_saves(&text);
         assert_eq!(skipped, 0);
-        // speedo/A replaced by C, map/B preserved.
-        assert!(back.iter().any(|(m, p, _)| m == "speedo" && p == "C"));
-        assert!(!back.iter().any(|(m, p, _)| m == "speedo" && p == "A"));
+        // speedometer/A replaced by C, map/B preserved.
+        assert!(back.iter().any(|(m, p, _)| m == "speedometer" && p == "C"));
+        assert!(!back.iter().any(|(m, p, _)| m == "speedometer" && p == "A"));
         assert!(back.iter().any(|(m, p, _)| m == "map" && p == "B"));
     }
 

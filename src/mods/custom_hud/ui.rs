@@ -666,7 +666,7 @@ const LIST_H: f32 = 340.0;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mods::hud::model::{DEFAULT_CONFIG, parse_config};
+    use crate::mods::custom_hud::model::{DEFAULT_CONFIG, parse_config};
 
     #[test]
     fn example_huds_sit_inside_1080p() {

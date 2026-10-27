@@ -419,7 +419,7 @@ impl SpeedoMod {
         self.status_ok.store(n as u64, Ordering::SeqCst);
         self.status_total.store(total as u64, Ordering::SeqCst);
         let ms = t0.elapsed().as_millis();
-        crate::log_line(&format!("speedo: objets {n}/{total} ({ms} ms)"));
+        crate::log_line(&format!("speedometer: objets {n}/{total} ({ms} ms)"));
     }
 
     /// Fresh re-resolve of a dashboard target (tick thread only).
@@ -840,7 +840,7 @@ impl SpeedoMod {
                         None => {
                             let tr = entry.1 as *mut std::ffi::c_void;
                             let limit =
-                                crate::mods::speedo::model::ancestor_climb_limit(&r.owner);
+                                crate::mods::speedometer::model::ancestor_climb_limit(&r.owner);
                             match crate::unity::ancestor_canvasgroup(api, &cache, tr, limit) {
                                 Some(cg) => cg,
                                 None => continue,
@@ -942,7 +942,7 @@ impl SpeedoMod {
         // Quiet on clean realtime drains; problems always surface.
         if skipped_stale > 0 || ok != total {
             crate::log_line(&format!(
-                "speedo: application {ok}/{total} (stale ignorés: {skipped_stale})"
+                "speedometer: application {ok}/{total} (stale ignorés: {skipped_stale})"
             ));
         }
         // Load-then-refresh: buffers must mirror the just-written game
@@ -1015,7 +1015,7 @@ impl SpeedoMod {
                 }
             }
         }
-        crate::log_line(&format!("speedo: restaurés {ok}/{total} (disparus: {gone})"));
+        crate::log_line(&format!("speedometer: restaurés {ok}/{total} (disparus: {gone})"));
         // Fresh UI next arming (scene may have changed meanwhile).
         *lock(&self.snaps) = Vec::new();
         self.snap_ver.fetch_add(1, Ordering::SeqCst);

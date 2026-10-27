@@ -1,6 +1,6 @@
-//! Custom HUDs, minimalist GT style, laid out in `hud.toml`.
+//! Custom HUDs, minimalist GT style, laid out in `custom_hud.toml`.
 //!
-//! `$XDG_CONFIG_HOME/cxsfm/hud.toml` (else `~/.config/cxsfm/`) holds
+//! `$XDG_CONFIG_HOME/cxsfm/custom_hud.toml` (else `~/.config/cxsfm/`) holds
 //! any number of `[[hud]]` blocks (see `model::DEFAULT_CONFIG`, written
 //! on first enable when the file is missing). The tick re-reads it when
 //! its fingerprint changes (~1 s), so edits show up in game without a
@@ -29,7 +29,7 @@ pub(crate) mod model;
 mod ui;
 
 /// Log tag.
-pub(crate) const MOD_ID: &str = "hud";
+pub(crate) const MOD_ID: &str = "custom_hud";
 
 use crate::mods::api::{Mod, TileIcon};
 use crate::mods::common::lock;
@@ -107,7 +107,7 @@ impl HudMod {
         }
     }
 
-    /// Tick thread: (re)load `hud.toml` when forced or changed. Writes
+    /// Tick thread: (re)load `custom_hud.toml` when forced or changed. Writes
     /// the example first when the file does not exist.
     fn reload(&self, force: bool) {
         let code = crate::i18n::current().code();
@@ -206,7 +206,7 @@ impl Mod for HudMod {
     }
 
     fn menu_label_key(&self) -> &'static str {
-        "mod_hud"
+        "mod_custom_hud"
     }
 
     fn version(&self) -> &'static str {

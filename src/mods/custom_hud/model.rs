@@ -1011,7 +1011,7 @@ fn parse_states(root: &toml::Table, warnings: &mut Vec<String>) -> Vec<StateDef>
     out
 }
 
-/// Parse a whole `hud.toml`. `Err` = syntax error (keep the previous
+/// Parse a whole `custom_hud.toml`. `Err` = syntax error (keep the previous
 /// layout); `Ok` carries the per-key warnings.
 pub(crate) fn parse_config(text: &str) -> Result<(HudConfig, Vec<String>), String> {
     let root: toml::Table = text.parse().map_err(|e: toml::de::Error| e.message().to_string())?;
@@ -1092,14 +1092,14 @@ pub(crate) fn parse_config(text: &str) -> Result<(HudConfig, Vec<String>), Strin
     }
     if mode == Mode::Live && sources.is_empty() && !huds.is_empty() {
         warnings.push(
-            "mode live sans [sources] : aucune valeur, HUD masqués (ajoute [sources] ou supprime hud.toml pour régénérer l'exemple)"
+            "mode live sans [sources] : aucune valeur, HUD masqués (ajoute [sources] ou supprime custom_hud.toml pour régénérer l'exemple)"
                 .into(),
         );
     }
     Ok((HudConfig { fps, mode, sources, derived, states, huds }, warnings))
 }
 
-/// Example written on first enable when no `hud.toml` exists.
+/// Example written on first enable when no `custom_hud.toml` exists.
 pub(crate) const DEFAULT_CONFIG: &str = r##"# CXSFM — HUD personnalisés (rechargé à chaud : enregistre, regarde en jeu).
 #
 # mode = "live" lit le jeu via [sources] ; "demo" anime des valeurs
@@ -1134,7 +1134,7 @@ pub(crate) const DEFAULT_CONFIG: &str = r##"# CXSFM — HUD personnalisés (rech
 #   type = "needle" / "ticks" : aiguille et graduations de cadran.
 #   Tous les widgets : pos, rotation (degrés, 0 = haut, sens horaire),
 #   opacity, alert = "état" + alert_color (couleur partagée, [states]). Doc complète + exemple de compteur à aiguille :
-#   src/mods/hud/README.md du dépôt CXSFM.
+#   src/mods/custom_hud/README.md du dépôt CXSFM.
 # Couleurs : "#RRGGBB" ou "#RRGGBBAA".
 
 version = 2
@@ -1378,7 +1378,7 @@ pub(crate) fn decode_struct(class_name: &str, b: &[u8]) -> String {
 }
 
 /// Binding path of a field, the syntax phase 3 will accept in
-/// `hud.toml`: `Root/ref/ref/field`.
+/// `custom_hud.toml`: `Root/ref/ref/field`.
 pub(crate) fn binding_path(root: &str, path: &[String], field: &str) -> String {
     let mut s = root.to_string();
     for seg in path.iter().map(String::as_str).chain(std::iter::once(field)) {

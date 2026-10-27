@@ -6,10 +6,10 @@ A mod = **one folder** under `src/mods/`, compiled into the framework
 | Folder | Demonstrated operation |
 |---|---|
 | `inspector/` | tool: scene tree (roots + hierarchy + position, throttled snapshot) |
-| `speedo/` | HUD restyle: edits the game's speedometer objects in realtime (Restore button) |
-| `map/` | same pattern for the minimap (shares `speedo::model`) |
+| `speedometer/` | HUD restyle: edits the game's speedometer objects in realtime (Restore button) |
+| `map/` | same pattern for the minimap (shares `speedometer::model`) |
 | `gamelog/` | tool: the game's live `Player.log` (filter + errors, read-only) |
-| `hud/` | pure egui overlay: HUDs described in `hud.toml` (hot-reloaded), live values read from game fields |
+| `custom_hud/` | pure egui overlay: HUDs described in `custom_hud.toml` (hot-reloaded), live values read from game fields |
 | `fpv_drone/` | free FPV drone camera on the gamepad (one-shot camera takeover, restore on disable) |
 | `engine_audio/` | FMOD Studio audio: pitch/volume multipliers on the engine events (C API via `dlsym`, restore on disable) |
 

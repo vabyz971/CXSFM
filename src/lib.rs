@@ -251,9 +251,9 @@ fn deferred_init() {
         // for the render-hook future.
         mods::inspector::register();
         mods::gamelog::register();
-        mods::speedo::register();
+        mods::speedometer::register();
         mods::map::register();
-        mods::hud::register();
+        mods::custom_hud::register();
         mods::engine_audio::register();
         mods::fpv_drone::register();
         log_line("mods registered, starting tick thread");

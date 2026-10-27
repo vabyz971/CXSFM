@@ -21,7 +21,7 @@
 //!
 //! Layout mirrors `speedo`: `bind` (tick-side Unity), `ui`
 //! (render-side window); data types are shared from
-//! [`crate::mods::speedo::model`]. Same proven rules (see speedo):
+//! [`crate::mods::speedometer::model`]. Same proven rules (see speedo):
 //! explicit triggers only, alive-checks everywhere, originals on
 //! Restore only (disable keeps the edits), no Mutex across Unity calls.
 
@@ -37,7 +37,7 @@ use crate::mods::api::{Mod, TileIcon};
 use crate::mods::common::lock;
 use crate::mods::tool::ToolChrome;
 use crate::unity::UnityCache;
-use crate::mods::speedo::model::{ObjSnap, OrigRec, SavedObj, UiObj, WriteReq};
+use crate::mods::speedometer::model::{ObjSnap, OrigRec, SavedObj, UiObj, WriteReq};
 use std::collections::HashSet;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

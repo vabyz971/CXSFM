@@ -91,7 +91,7 @@ Diagnostic line (zero keypresses needed):
   "matched". Fix: resolve overridden members on the concrete class
   (`get_method` walks up from there, so it hits the override first) —
   `m_tmp_get/set_color` on `TextMeshProUGUI`, routed by `CompKind`
-  (`speedo::model::color_get/color_set`, shared with map). TMP text
+  (`speedometer::model::color_get/color_set`, shared with map). TMP text
   color now changes on screen (speedo + map).
 
 ## FPV mod — PARKED
@@ -244,7 +244,7 @@ Diagnostic line (zero keypresses needed):
   Adopted from this: speedo fallback roots when `UIHUDCarDashboard`
   is unmounted (same names), two-candidate path resolve.
 - MINIMAP MOD 2026-10-15 (`src/mods/map`, same interface as speedo,
-  shared `speedo::model` types): roots `UIHUDMinimap` → `Map/...`
+  shared `speedometer::model` types): roots `UIHUDMinimap` → `Map/...`
   (`ImgFrame`, `Mask/Base/RoadImage`, `PlayerIconContainer`,
   `NorthIcon`…), fallback `Map`; hide = `SetActive`, opacity =
   `CanvasGroup` (existing group else color alpha) — all straight from
@@ -660,7 +660,7 @@ Diagnostic line (zero keypresses needed):
 
 ## Custom HUD — live values (2026-10-16)
 
-- `hud` mod: HUDs described in `~/.config/cxsfm/hud.toml`
+- `hud` mod: HUDs described in `~/.config/cxsfm/custom_hud.toml`
   (hot-reloaded), pure egui on a background layer, `is_pinned` =
   visible with the menu closed, `request_repaint_after(1/fps)` = smooth
   without the 10 Hz heartbeat. VALIDATED in game: smooth, no FPS loss.

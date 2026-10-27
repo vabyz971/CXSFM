@@ -5,7 +5,7 @@ HUDs drawn by CXSFM on top of the game, described in a TOML file and
 ~1 s. Cosmetic only: the mod **reads** game values, it never writes
 anything into the game.
 
-- File: `~/.config/cxsfm/hud.toml` (created with an example the first
+- File: `~/.config/cxsfm/custom_hud.toml` (created with an example the first
   time the **Custom HUD** tile is enabled).
 - Mod window (menu open): file path, active HUDs, config errors and
   warnings, live values, and the **Explorer** tab to find new values.
@@ -532,7 +532,7 @@ size = [360.0, 200.0]
   not found` when not driving (normal, retried every 5 s); otherwise
   read the config warnings.
 - **"live mode without [sources]"**: add a `[sources]` section (§3),
-  or delete `hud.toml` to regenerate the example.
+  or delete `custom_hud.toml` to regenerate the example.
 - **A value stays `{name}` on screen**: name missing from `[sources]`,
   or a typo.
 - **A bar/arc/needle is missing**: its source or a bound (`min`/`max`

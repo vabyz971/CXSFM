@@ -44,8 +44,8 @@ mod bind;
 pub(crate) mod model;
 mod ui;
 
-/// This mod's key inside save files (`[speedo."path"]`).
-pub(crate) const MOD_ID: &str = "speedo";
+/// This mod's key inside save files (`[speedometer."path"]`).
+pub(crate) const MOD_ID: &str = "speedometer";
 
 use crate::mods::api::{Mod, TileIcon};
 use crate::mods::common::lock;
@@ -168,11 +168,11 @@ impl Mod for SpeedoMod {
     }
 
     fn mod_id(&self) -> &'static str {
-        "speedo"
+        "speedometer"
     }
 
     fn menu_label_key(&self) -> &'static str {
-        "mod_speedo"
+        "mod_speedometer"
     }
 
     fn version(&self) -> &'static str {
@@ -275,7 +275,7 @@ impl Mod for SpeedoMod {
     fn on_enable(&mut self) {
         self.enabled.store(true, Ordering::SeqCst);
         self.pending.store(true, Ordering::SeqCst);
-        crate::log_line("speedo: inspection des objets (one-shot)");
+        crate::log_line("speedometer: inspection des objets (one-shot)");
     }
 
     fn on_disable(&mut self) {
@@ -289,7 +289,7 @@ impl Mod for SpeedoMod {
         if self.apply_now.swap(false, Ordering::SeqCst) {
             self.drain_batch();
         }
-        crate::log_line("speedo: off (changements conservés)");
+        crate::log_line("speedometer: off (changements conservés)");
     }
 }
 

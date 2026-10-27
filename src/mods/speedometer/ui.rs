@@ -348,7 +348,7 @@ impl SpeedoMod {
                             egui::Layout::top_down(egui::Align::LEFT),
                             |ui| {
                         egui::ScrollArea::vertical()
-                            .id_salt("speedo_list")
+                            .id_salt("speedometer_list")
                             .show(ui, |ui| {
                                 for (sec, idxs) in &sections {
                                     let sec_name =
@@ -470,7 +470,7 @@ impl SpeedoMod {
                             egui::Layout::top_down(egui::Align::LEFT),
                             |ui| {
                         egui::ScrollArea::vertical()
-                            .id_salt("speedo_params")
+                            .id_salt("speedometer_params")
                             .show(ui, |ui| {
                                 ui.set_min_width(320.0);
                                 let mut edited_owner: Option<String> = None;

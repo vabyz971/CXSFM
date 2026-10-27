@@ -27,7 +27,7 @@ nix develop --command bash -c 'cargo test --lib'
   scene, text/TMP, transforms) + `UnityCache` of resolved methods.
 - `src/mods/{api,loader,tool,…}` — `Mod` trait, registry with panic
   quarantine, window chrome (pin/opacity), bundled mods
-  (`inspector`, `gamelog`, `speedo`, `map`, `hud`, `fpv_camera` parked).
+  (`inspector`, `gamelog`, `speedometer`, `map`, `custom_hud`, `fpv_camera` parked).
 - `src/mainthread.rs` — `MethodInfo.methodPointer` swap infrastructure
   (phase 1: probes, no mod migrated).
 - `src/hotkey.rs` — F8 = UI visibility + capture (SDL + X11; Unity path
@@ -45,7 +45,7 @@ nix develop --command bash -c 'cargo test --lib'
   `invoke` on them = silent failure although the write happened.
 - **`object_alive` before ANY Unity access** (read as well as write);
   stored pointers forbidden — re-resolve by path/name on every use.
-  Only exception (user agreement 2026-10-16): `hud/live.rs` keeps the
+  Only exception (user agreement 2026-10-16): `custom_hud/live.rs` keeps the
   root instance (e.g. `UITachometer`) between two reads — readable
   memory + `m_CachedPtr` + same class checked before EVERY read, reads
   = raw field copies (no getter, no write). `FindObjectsOfType` only
@@ -67,7 +67,7 @@ nix develop --command bash -c 'cargo test --lib'
   2.36) — check after every toolchain bump:
   `objdump -T target/release/libcxsfm.so | grep -oP "GLIBC_[0-9.]+"`.
 - **Never** any gameplay/economy/physics/network change.
-- Mods **disarmed at boot**, restore on disable — except speedo/map:
+- Mods **disarmed at boot**, restore on disable — except speedometer/map:
   their edits stay on disable (user request), back to originals through
   the Restore button; with auto-load (Settings opt-in), their saves are
   re-applied even with the tile closed (`Mod::on_background_update`).
