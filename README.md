@@ -6,7 +6,7 @@
 [![Rust Edition](https://img.shields.io/badge/Rust-2024-orange.svg)](https://doc.rust-lang.org/edition-guide/editions/2024.html)
 [![egui](https://img.shields.io/badge/egui-0.36-FF0000)](https://github.com/emilk/egui)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)](https://github.com/CXSFM/cxsfm)
-[![Version](https://img.shields.io/badge/version-0.6.0-informational)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-0.7.0-informational)](Cargo.toml)
 
 ## What is CXSFM?
 
