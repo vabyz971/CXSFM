@@ -6,6 +6,7 @@
 //! these modules, not by callers.
 
 pub mod chrome;
+pub mod fonts;
 pub mod layout;
 pub mod pages;
 pub mod theme;

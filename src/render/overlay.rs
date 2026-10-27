@@ -500,7 +500,7 @@ fn create_state(
         // Icon font for tile glyphs (once per swapchain context —
         // `add_font` rebuilds the atlas, never call it per frame).
         let egui_ctx = egui::Context::default();
-        egui_material_icons::initialize(&egui_ctx);
+        crate::ui::fonts::install(&egui_ctx);
         Ok(SwapchainState {
             dev,
             device,
