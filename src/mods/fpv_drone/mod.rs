@@ -61,6 +61,9 @@ pub(crate) struct Telemetry {
     pub motors: [f32; 4],
 }
 
+/// Mod version (shown on the phone; bump with its features).
+pub const VERSION: &str = "0.5.0";
+
 pub struct FpvDroneMod {
     enabled: AtomicBool,
     pub(crate) shared: Mutex<Shared>,
@@ -103,6 +106,10 @@ impl Mod for FpvDroneMod {
 
     fn menu_label_key(&self) -> &'static str {
         "mod_fpv_drone"
+    }
+
+    fn version(&self) -> &'static str {
+        VERSION
     }
 
     fn menu_icon(&self) -> TileIcon {

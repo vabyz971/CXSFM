@@ -154,6 +154,13 @@ pub trait Mod: Send + Sync {
         ""
     }
 
+    /// Version shown on the phone (hover line). Defaults to the
+    /// framework version; override when a mod versions on its own.
+    #[inline]
+    fn version(&self) -> &'static str {
+        env!("CARGO_PKG_VERSION")
+    }
+
     /// Vector icon drawn on the menu tile.
     #[inline]
     fn menu_icon(&self) -> TileIcon {
@@ -182,4 +189,6 @@ pub struct ModTile {
     pub label_key: &'static str,
     /// Vector icon for the tile.
     pub icon: TileIcon,
+    /// Mod version (see [`Mod::version`]).
+    pub version: &'static str,
 }

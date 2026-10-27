@@ -31,6 +31,9 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Mod version (shown on the phone; bump with its features).
+pub const VERSION: &str = "1.0.0";
+
 /// Scene inspector: snapshot on tick, tree on render.
 pub struct InspectorMod {
     pub(crate) enabled: AtomicBool,
@@ -86,6 +89,10 @@ impl Mod for InspectorMod {
 
     fn menu_label_key(&self) -> &'static str {
         "mod_inspector"
+    }
+
+    fn version(&self) -> &'static str {
+        VERSION
     }
 
     fn menu_icon(&self) -> TileIcon {

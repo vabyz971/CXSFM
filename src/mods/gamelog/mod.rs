@@ -64,6 +64,9 @@ pub(crate) fn arrival() -> (u64, u64) {
     )
 }
 
+/// Mod version (shown on the phone; bump with its features).
+pub const VERSION: &str = "1.0.0";
+
 /// Game-log tool: tail on tick, filter on render.
 pub struct GameLogMod {
     pub(crate) enabled: AtomicBool,
@@ -118,6 +121,10 @@ impl Mod for GameLogMod {
 
     fn menu_label_key(&self) -> &'static str {
         "mod_gamelog"
+    }
+
+    fn version(&self) -> &'static str {
+        VERSION
     }
 
     fn menu_icon(&self) -> TileIcon {

@@ -65,6 +65,8 @@ struct EntryState {
     /// Last good tile presentation (used when the getters panic).
     cached_label: &'static str,
     cached_icon: TileIcon,
+    /// Version, read once at registration.
+    version: &'static str,
     /// Last good About description.
     cached_desc: &'static str,
     /// Last good pin flag.
@@ -161,7 +163,8 @@ impl ModRegistry {
         // an override could — validate now, cache the good values.
         let (label, label_bad) = guard(&name, "menu_label_key", || mod_obj.menu_label_key());
         let (icon, icon_bad) = guard(&name, "menu_icon", || mod_obj.menu_icon());
-        if label_bad || icon_bad {
+        let (version, version_bad) = guard(&name, "version", || mod_obj.version());
+        if label_bad || icon_bad || version_bad {
             crate::log_line(&format!("mods: '{name}' panicked during registration"));
             return;
         }
@@ -173,6 +176,7 @@ impl ModRegistry {
                 quarantined: false,
                 cached_label: label,
                 cached_icon: icon,
+                version,
                 cached_desc: "",
                 cached_pinned: false,
                 rev: crate::i18n::lang_rev(),
@@ -298,6 +302,7 @@ impl ModRegistry {
                             enabled: s.desired,
                             label_key: s.cached_label,
                             icon: s.cached_icon,
+                            version: s.version,
                         };
                     }
                 }
@@ -323,6 +328,7 @@ impl ModRegistry {
                     enabled: s.desired,
                     label_key: s.cached_label,
                     icon: s.cached_icon,
+                    version: s.version,
                 }
             })
             .collect()

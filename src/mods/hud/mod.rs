@@ -51,6 +51,9 @@ pub(crate) struct Status {
     pub(crate) warnings: Vec<String>,
 }
 
+/// Mod version (shown on the phone; bump with its features).
+pub const VERSION: &str = "0.2.0";
+
 pub struct HudMod {
     pub(crate) enabled: AtomicBool,
     pub(crate) tick: AtomicU64,
@@ -204,6 +207,10 @@ impl Mod for HudMod {
 
     fn menu_label_key(&self) -> &'static str {
         "mod_hud"
+    }
+
+    fn version(&self) -> &'static str {
+        VERSION
     }
 
     fn menu_icon(&self) -> TileIcon {

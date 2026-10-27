@@ -56,6 +56,9 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+/// Mod version (shown on the phone; bump with its features).
+pub const VERSION: &str = "0.5.4";
+
 pub struct SpeedoMod {
     pub(crate) enabled: AtomicBool,
     pub(crate) unity: Mutex<Option<UnityCache>>,
@@ -170,6 +173,10 @@ impl Mod for SpeedoMod {
 
     fn menu_label_key(&self) -> &'static str {
         "mod_speedo"
+    }
+
+    fn version(&self) -> &'static str {
+        VERSION
     }
 
     fn menu_icon(&self) -> TileIcon {

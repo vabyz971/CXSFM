@@ -25,6 +25,9 @@ use model::{Settings, Status};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Mod version (shown on the phone; bump with its features).
+pub const VERSION: &str = "0.2.0";
+
 pub struct EngineAudioMod {
     enabled: AtomicBool,
     /// UI → tick (brief clone/store, never held across work).
@@ -67,6 +70,10 @@ impl Mod for EngineAudioMod {
 
     fn menu_label_key(&self) -> &'static str {
         "mod_engine_audio"
+    }
+
+    fn version(&self) -> &'static str {
+        VERSION
     }
 
     fn menu_icon(&self) -> TileIcon {
