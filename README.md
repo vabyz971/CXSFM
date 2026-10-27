@@ -33,18 +33,29 @@ HUD version tag applied to the game's own nickname label](docs/overlay-proof.png
   (Unity `Input` path dropped: it segfaulted at teardown)
 - ✅ IL2CPP bridge: camera FOV, UI text read/write, scene inspection,
   field reflection (class search, field dumps, raw field reads)
-- ✅ Bundled mods: Scene Inspector (read-only), GameLog (Player.log),
-  [Speedometer](src/mods/speedometer/README.md) +
-  [Minimap](src/mods/map/README.md) (HUD restyle; edits kept on
-  disable, Restore button; saves auto-applied at launch),
-  [Custom HUD](src/mods/custom_hud/README.md) (HUDs from a hot-reloaded
-  `custom_hud.toml`: bars, arcs, needles, dial ticks, text with italic/glow;
-  live game values through field paths found with its Explorer tab,
-  ~16 min of driving validated without a crash)
+- ✅ Phone-style menu (the in-game phone look): rounded colored tiles
+  per mod, per-mod version + description on hover, close button on
+  active mods, Settings / About / Quit tiles; game fonts (Bebas Neue +
+  Rajdhani, SIL OFL)
+- ✅ Gamepad navigation ("mod mode", **L3 + R3**) — own thread, so a slow
+  mod update never delays the menu
+- ✅ Bundled mods (version shown on the phone):
+
+| Mod | Version | What it does |
+|---|---|---|
+| Scene Inspector | 1.0.0 | read-only scene tree |
+| Game Log | 1.0.0 | `Player.log` viewer |
+| [Speedometer](src/mods/speedometer/README.md) | 0.5.4 | HUD restyle; edits kept on disable, Restore button, saves auto-applied at launch |
+| [Minimap](src/mods/map/README.md) | 0.2.0 | same pattern for the minimap |
+| [Custom HUD](src/mods/custom_hud/README.md) | 0.2.0 | HUDs from a hot-reloaded `custom_hud.toml`: bars, arcs, needles, dial ticks, text with italic/glow; live game values through field paths found with its Explorer tab (~16 min of driving validated) |
+| Engine Sound | 0.2.0 | pitch / volume of the FMOD engine events (cosmetic audio), full-screen settings |
+| FPV Drone | 0.5.0 | free quadcopter camera on the pad (physics, collisions, rebindable controls, four-rotor sound), full-screen settings driven by `fpv_drone.toml` |
+
 - ✅ Stability: stale-handle re-resolve, `object_alive` readability
   guard, no crash on scene change (garage ↔ race); the overlay can no
   longer freeze the game's present (a dead fence pauses the overlay
-  instead)
+  instead) and no longer replays stale draw ranges over new vertices
+  after a page change
 - ⚠️ Quit: CarX's own exit is fragile (vanilla SIGSEGVs in its exit
   handlers). CXSFM detaches its threads from IL2CPP before the runtime
   shuts down; if a quit still hangs, run `tools/cxsfm-hang-dump.sh`
@@ -58,18 +69,28 @@ findings log (input paths, layer bring-up, incidents and fixes).
 
 ## Using CXSFM
 
-- **F8** opens/closes the menu and captures input while it is open.
-  Mods are tiles: enabling a tile arms the mod (all mods boot
-  disarmed); windows can be pinned to stay visible with the menu
-  closed.
-- **Settings → auto-load**: speedo/map saves are re-applied a few
+- **F8** opens/closes the menu (the phone) and captures input while it
+  is open. Mods are tiles: enabling a tile arms the mod (all mods boot
+  disarmed); the **×** on an active tile turns it off; **Quit** closes
+  the menu (mods keep running). Windows can be pinned to stay visible
+  with the menu closed.
+- **Full-screen mods** (FPV Drone, Engine Sound): their tile opens a
+  game-style Settings screen (tabs, rows, help panel). **ESC BACK**
+  (footer, or B on the pad) returns to the phone with the mod still
+  on; **POWER** turns it off.
+- **Gamepad**: **L3 + R3** enters/leaves mod mode (opens the menu);
+  D-pad / left stick move, A select, B back, X reset/open window,
+  Y alternate action, LB/RB tabs. The game still reads the pad too —
+  use it from a menu or photo mode.
+- **Settings → auto-load**: speedometer/map saves are re-applied a few
   seconds after arriving in game, even with their tiles closed.
 - Files (outside the game install dir, hand-editable):
 
 | File | Content |
 |---|---|
 | `~/.config/cxsfm/settings.toml` | framework settings (auto-load) |
-| `~/.config/cxsfm/saves.toml` | speedo/map saved edits, by object path (`.bak` kept on save) |
+| `~/.config/cxsfm/saves.toml` | speedometer/map saved edits, by object path (`[speedometer."path"]`, `.bak` kept on save) |
+| `~/.config/cxsfm/fpv_drone.toml` | which FPV Drone parameters the simple view shows, with limits |
 | `~/.config/cxsfm/custom_hud.toml` | Custom HUD layouts (hot-reloaded) — see [its README](src/mods/custom_hud/README.md) |
 | `~/.cache/cxsfm/cxsfm.log` | framework log (next to the staged layer; `CXSF_LOG` overrides) |
 
@@ -246,11 +267,18 @@ impl Mod for MyMod {
     fn on_disable(&mut self) {}  // restore what you changed
     // Keep drawing with the menu closed (view-only).
     fn is_pinned(&self) -> bool { false }
+    // Version shown on the phone (defaults to the framework version).
+    fn version(&self) -> &'static str { "0.1.0" }
 }
 ```
 
 Every hook runs under `catch_unwind`: a panicking mod is quarantined,
 the menu and the other mods keep running.
+
+A mod that wants a full-screen game-style settings screen declares it
+at registration and draws it with `ui::screen::show` while
+`ui::screen::is_open(NAME)`; its tile then opens the screen instead of
+toggling (see `mods/fpv_drone` and `mods/engine_audio`).
 
 ### Registering a Mod
 
@@ -269,6 +297,7 @@ cxsfm/
 ├── OBJECTIVES.md        # Roadmap
 ├── flake.nix            # Pinned Nix toolchain
 ├── AGENTS.md            # Rules for coding agents (proven in-game constraints)
+├── assets/fonts/        # Bebas Neue + Rajdhani (SIL OFL)
 ├── docs/
 │   ├── README.md        # Documentation overview
 │   ├── architecture.md  # System architecture
@@ -294,7 +323,12 @@ cxsfm/
     ├── unity/          # Unity helpers (object, camera, scene, text)
     ├── config.rs       # settings.toml / saves.toml / custom_hud.toml paths + IO
     ├── i18n/           # Framework strings (7 languages)
-    ├── menu.rs, ui/    # Tile menu + CarX theme
+    ├── menu.rs         # Menu page state + window orchestration
+    ├── ui/             # phone (main menu), screen (full-screen frame),
+    │                   # game (rows/tabs/key hints), pages (Settings/About),
+    │                   # paramfile (fpv_drone.toml), fonts, theme, chrome
+    ├── gamepad.rs      # SDL joystick polling (game's own SDL2)
+    ├── padnav.rs       # Pad -> menu events (mod mode, L3+R3), own thread
     ├── mainthread.rs   # methodPointer-swap infra (parked)
     ├── hotkey.rs       # SDL/X11 hotkeys + X11 input capture
     ├── memory.rs       # Maps/AOB scanning utilities
@@ -307,9 +341,11 @@ cxsfm/
         ├── fpv_camera.rs  # FPV camera mod (parked)
         ├── inspector/     # Scene Inspector (model/bind/ui + i18n)
         ├── gamelog/       # Game Player.log viewer (model/bind/ui + i18n)
-        ├── speedo/        # Speedometer restyle (model/bind/ui + i18n)
+        ├── speedometer/   # Speedometer restyle (model/bind/ui + i18n)
         ├── map/           # Minimap restyle (model/bind/ui + i18n)
-        └── hud/           # Custom HUD (model/bind/live/ui + i18n)
+        ├── custom_hud/    # Custom HUD (model/bind/live/ui + i18n)
+        ├── engine_audio/  # Engine Sound (FMOD pitch/volume)
+        └── fpv_drone/     # FPV Drone (physics, sound, settings screen)
 ```
 
 ## Dependencies
