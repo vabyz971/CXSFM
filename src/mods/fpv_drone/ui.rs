@@ -1,15 +1,41 @@
-//! FPV drone window: flight, physics, camera, controls, telemetry.
+//! FPV drone screen in the game's settings style (full screen): tabs,
+//! dark rows, description panel, key hints, pad navigation. When the
+//! menu is closed and the mod is pinned, a compact telemetry window
+//! stays on screen instead.
+//!
+//! The simple view only lists the parameters designated in
+//! `fpv_drone.toml`; "Advanced settings" shows everything behind a
+//! warning (see `ui::paramfile`).
 
-use super::model::{
-    Action, DRAG_RANGE, FOV_RANGE, GRAVITY_RANGE, GUST_RANGE, MAX_ANGLE_RANGE, Mode, Params, RADIUS_RANGE, RATE_RANGE,
-    SOUND_RANGE, TILT_RANGE, TWR_RANGE, WIND_RANGE, YAW_RATE_RANGE,
-};
-use super::{FpvDroneMod, Shared};
+use super::model::{Action, Bindings};
+use super::spec::{self, CONTROLS_TAB, Kind, SPECS, TABS};
+use super::{FpvDroneMod, Shared, Telemetry};
 use crate::mods::common::lock;
+use crate::padnav;
+use crate::ui::game::{self, Nav};
+use crate::ui::paramfile::{Policy, effective_range};
 
-const AXIS_NAMES: [&str; 8] = ["0 · LX", "1 · LY", "2 · LT", "3 · RX", "4 · RY", "5 · RT", "6", "7"];
-const BUTTON_NAMES: [&str; 16] =
-    ["A", "B", "X", "Y", "LB", "RB", "Back", "Start", "L3", "R3", "10", "11", "12", "13", "14", "15"];
+/// Compact in-game telemetry window width.
+const WIN_W: f32 = 430.0;
+const NAME: &str = "FPV Drone";
+
+/// Render-side state of the window.
+pub(crate) struct UiState {
+    tab: usize,
+    advanced: bool,
+    /// Created on the first draw (no file IO at boot).
+    policy: Option<Policy>,
+}
+
+impl UiState {
+    pub(crate) fn new() -> Self {
+        Self {
+            tab: 0,
+            advanced: false,
+            policy: None,
+        }
+    }
+}
 
 fn action_label(a: Action) -> &'static str {
     match a {
@@ -23,78 +49,100 @@ fn action_label(a: Action) -> &'static str {
     }
 }
 
-fn slider(ui: &mut egui::Ui, v: &mut f32, r: (f32, f32), text: &str) {
-    ui.add(egui::Slider::new(v, r.0..=r.1).text(text));
-}
+const AXIS_NAMES: [&str; 8] = ["AXIS 0 · LX", "AXIS 1 · LY", "AXIS 2 · LT", "AXIS 3 · RX", "AXIS 4 · RY", "AXIS 5 · RT", "AXIS 6", "AXIS 7"];
+const BUTTON_NAMES: [&str; 16] =
+    ["A", "B", "X", "Y", "LB", "RB", "BACK", "START", "L3", "R3", "10", "11", "12", "13", "14", "15"];
 
-fn flight_and_physics(ui: &mut egui::Ui, p: &mut Params) {
-    egui::ComboBox::from_label("mode")
-        .selected_text(if p.mode == Mode::Angle { "Angle (self-level)" } else { "Acro (rates)" })
-        .show_ui(ui, |ui| {
-            ui.selectable_value(&mut p.mode, Mode::Angle, "Angle (self-level)");
-            ui.selectable_value(&mut p.mode, Mode::Acro, "Acro (rates)");
-        });
-    if p.mode == Mode::Angle {
-        slider(ui, &mut p.max_angle, MAX_ANGLE_RANGE, "max tilt °");
-    } else {
-        slider(ui, &mut p.rate, RATE_RANGE, "roll/pitch rate °/s");
-        slider(ui, &mut p.expo, (0.0, 1.0), "expo");
-    }
-    slider(ui, &mut p.yaw_rate, YAW_RATE_RANGE, "yaw rate °/s");
-    slider(ui, &mut p.twr, TWR_RANGE, "thrust / weight");
-    ui.checkbox(&mut p.throttle_mid, "hover at stick centre (spring pad)");
-    ui.separator();
-    slider(ui, &mut p.gravity, GRAVITY_RANGE, "gravity m/s²");
-    slider(ui, &mut p.drag, DRAG_RANGE, "air drag ×");
-    slider(ui, &mut p.wind_speed, WIND_RANGE, "wind m/s");
-    slider(ui, &mut p.wind_dir, (0.0, 360.0), "wind blows toward °");
-    slider(ui, &mut p.gust, GUST_RANGE, "gusts m/s");
-    ui.separator();
-    ui.checkbox(&mut p.collisions, "collisions");
-    slider(ui, &mut p.radius, RADIUS_RANGE, "radius m");
-    slider(ui, &mut p.bounce, (0.0, 0.9), "bounce");
-    ui.separator();
-    slider(ui, &mut p.tilt_deg, TILT_RANGE, "camera tilt °");
-    slider(ui, &mut p.fov, FOV_RANGE, "FOV °");
-    ui.separator();
-    ui.checkbox(&mut p.sound, "rotor sound (4 motors)");
-    slider(ui, &mut p.sound_volume, SOUND_RANGE, "drone volume");
-    if ui.button("Reset settings").clicked() {
-        *p = Params::default();
+fn binding_text(b: &Bindings, a: Action) -> String {
+    match (b.axis(a), b.button(a)) {
+        (Some(x), _) => AXIS_NAMES[(x.idx as usize).min(7)].to_string(),
+        (_, Some(i)) => format!("BUTTON {}", BUTTON_NAMES[(i as usize).min(15)]),
+        _ => String::new(),
     }
 }
 
-fn controls(ui: &mut egui::Ui, s: &mut Shared, sticks: [f32; 4]) {
-    ui.label(egui::RichText::new("Bind, then move the control in its positive direction (throttle up, yaw/roll right, pitch forward) or press the button.").small().weak());
+/// Parameter rows of one tab.
+fn param_rows(ui: &mut egui::Ui, nav: &mut Nav, st: &UiState, s: &mut Shared, tab: usize) {
+    let Some(policy) = st.policy.as_ref() else { return };
+    let dflt = Shared { params: Default::default(), bindings: Default::default(), learn: None, cut_controller: false };
+    let mut last_section = "";
+    for spec in SPECS.iter().filter(|p| p.tab == tab) {
+        if !(st.advanced || policy.shown(spec.key)) {
+            continue;
+        }
+        if spec.section != last_section {
+            game::section(ui, spec.section);
+            last_section = spec.section;
+        }
+        let id = format!("fd_{}", spec.key);
+        let cur = spec::get(s, spec.key);
+        let (mut out, mut new) = match spec.kind {
+            Kind::Slider { min, max, step, dec, unit } => {
+                let lim = policy.limits(spec.key);
+                // Simple view honours the file's limits; advanced uses
+                // the full built-in range.
+                let (lo, hi) = if st.advanced { (min, max) } else { effective_range((min, max), lim) };
+                let step = if st.advanced { step } else { lim.step.unwrap_or(step) };
+                let mut v = cur.clamp(lo, hi);
+                let out = game::slider_row(ui, nav, &id, spec.label, &mut v, (lo, hi), step, dec, unit, spec.help);
+                (out, v)
+            }
+            Kind::Toggle => {
+                let mut on = cur >= 0.5;
+                let out = game::toggle_row(ui, nav, &id, spec.label, &mut on, spec.help);
+                (out, on as u8 as f32)
+            }
+            Kind::Choice(opts) => {
+                let mut i = cur as usize;
+                let out = game::choice_row(ui, nav, &id, spec.label, &mut i, opts, spec.help);
+                (out, i as f32)
+            }
+        };
+        if out.reset {
+            new = spec::get(&dflt, spec.key);
+            out.changed = true;
+        }
+        if out.changed {
+            spec::set(s, spec.key, new);
+        }
+    }
+}
+
+/// Control rows: axis/button bindings with learn mode.
+fn control_rows(ui: &mut egui::Ui, nav: &mut Nav, s: &mut Shared, sticks: [f32; 4]) {
+    game::section(ui, "Bindings");
+    game::dim(
+        ui,
+        &format!(
+            "live: throttle {:.2} · yaw {:+.2} · pitch {:+.2} · roll {:+.2}",
+            sticks[0], sticks[1], sticks[2], sticks[3]
+        ),
+    );
     for a in Action::ALL {
-        ui.horizontal(|ui| {
-            ui.label(action_label(a));
-            let learning = s.learn == Some(a);
-            let text = if learning {
-                "move / press…".to_string()
-            } else if let Some(b) = s.bindings.axis(a) {
-                format!("axis {}", AXIS_NAMES[(b.idx as usize).min(7)])
-            } else {
-                let i = s.bindings.button(a).unwrap_or(0) as usize;
-                format!("button {}", BUTTON_NAMES[i.min(15)])
-            };
-            if ui.button(text).clicked() {
-                s.learn = if learning { None } else { Some(a) };
+        let learning = s.learn == Some(a);
+        let text = if learning { "MOVE / PRESS…".to_string() } else { binding_text(&s.bindings, a) };
+        let id = format!("fd_bind_{a:?}");
+        let help = if a.is_axis() {
+            "A: bind. Then move the stick/trigger in its positive direction (throttle up, yaw right, pitch forward, roll right)."
+        } else {
+            "A: bind. Then press the button you want."
+        };
+        let out = game::button_row(ui, nav, &id, action_label(a), &text, if learning { "CANCEL" } else { "A  BIND" }, help);
+        if out.accept {
+            s.learn = if learning { None } else { Some(a) };
+        }
+        if let Some(ax) = s.bindings.axis_mut(a) {
+            let mut inv = ax.invert;
+            let id = format!("fd_inv_{a:?}");
+            let o = game::toggle_row(ui, nav, &id, "   Invert", &mut inv, "Flip the direction of this axis.");
+            if o.changed {
+                ax.invert = inv;
             }
-            if let Some(b) = s.bindings.axis_mut(a) {
-                ui.checkbox(&mut b.invert, "invert");
-                let v = match a {
-                    Action::Throttle => sticks[0],
-                    Action::Yaw => (sticks[1] + 1.0) * 0.5,
-                    Action::Pitch => (sticks[2] + 1.0) * 0.5,
-                    _ => (sticks[3] + 1.0) * 0.5,
-                };
-                ui.add(egui::ProgressBar::new(v.clamp(0.0, 1.0)).desired_width(70.0));
-            }
-        });
+        }
     }
-    if ui.button("Default controls").clicked() {
-        s.bindings = Default::default();
+    let out = game::button_row(ui, nav, "fd_bind_default", "Default controls", "", "A  RESET", "Back to the Xbox layout: left stick throttle + roll, right stick pitch + yaw.");
+    if out.accept {
+        s.bindings = Bindings::default();
         s.learn = None;
     }
 }
@@ -104,67 +152,16 @@ impl FpvDroneMod {
         let tel = lock(&self.tel).clone();
         let orig = *lock(&self.shared);
         let mut s = orig;
-        let mut win = egui::Window::new("FPV Drone")
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .fixed_size(egui::Vec2::new(430.0, 600.0))
-            .frame(self.tool.frame(ctx));
-        if let Some(p) = self.tool.pos {
-            win = win.current_pos(p);
-        }
-        let win = win.show(ctx, |ui| {
-            self.tool.enter(ui);
-            self.tool.header(ui, "FPV Drone");
-            if self.tool.hide_controls {
-                return;
-            }
-            let note = if tel.note.is_empty() { "idle" } else { &tel.note };
-            let color = if tel.armed { crate::ui::theme::STATE_OK } else { egui::Color32::WHITE };
-            ui.label(egui::RichText::new(note).strong().color(color));
-            if let Some(a) = s.learn {
-                ui.label(egui::RichText::new(format!("Bind: {}", a.hint())).color(crate::ui::theme::STATE_ERR));
-            }
-            ui.label(
-                egui::RichText::new(format!(
-                    "{:.1} m/s · alt {:+.1} m · thrust {:.0}% · collisions: {}{}",
-                    tel.speed,
-                    tel.alt,
-                    tel.throttle * 100.0,
-                    if tel.collide.is_empty() { "—" } else { tel.collide },
-                    if tel.impact > 0.5 { format!(" · impact {:.1} m/s", tel.impact) } else { String::new() }
-                ))
-                .monospace()
-                .size(13.0),
-            );
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("rotors").small());
-                for (name, v) in ["FL", "FR", "RL", "RR"].iter().zip(tel.motors) {
-                    ui.add(egui::ProgressBar::new(v.clamp(0.0, 1.0)).desired_width(60.0).text(*name));
-                }
-            });
-            ui.add_space(4.0);
-            egui::ScrollArea::vertical().max_height(480.0).auto_shrink([false, false]).show(ui, |ui| {
-                egui::CollapsingHeader::new("Flight & physics").default_open(true).show(ui, |ui| {
-                    flight_and_physics(ui, &mut s.params);
-                });
-                egui::CollapsingHeader::new("Camera takeover").default_open(false).show(ui, |ui| {
-                    ui.checkbox(&mut s.cut_controller, "also switch off the game's CameraController");
-                    ui.label(
-                        egui::RichText::new("Off by default (only the Cinemachine brain is stopped). Applies at the next enable. Try it if the camera is still fought over.")
-                            .small()
-                            .weak(),
-                    );
-                });
-                egui::CollapsingHeader::new("Controls").default_open(true).show(ui, |ui| {
-                    controls(ui, &mut s, tel.sticks);
-                });
-            });
-            ui.label(egui::RichText::new("The car also reads the pad: use photo mode.").small().weak());
-        });
-        if let Some(r) = win {
-            self.tool.pos = Some(r.response.rect.min);
-            self.tool.context_menu(&r.response);
+        self.ui
+            .policy
+            .get_or_insert_with(|| Policy::new(spec::FILE, "FPV Drone", &spec::default_shown(), &spec::catalog()))
+            .refresh();
+        // Live telemetry without input events.
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        if !crate::hotkey::ui_visible() {
+            self.draw_compact(ctx, &tel);
+        } else if crate::ui::screen::is_open(NAME) {
+            self.draw_screen(ctx, &tel, &mut s);
         }
         // Field-wise write-back: only what the UI changed this frame,
         // so the tick's own writes (learned binding, mode button) survive.
@@ -182,4 +179,132 @@ impl FpvDroneMod {
             shared.cut_controller = s.cut_controller;
         }
     }
+
+    /// Pinned telemetry over the game (menu closed).
+    fn draw_compact(&mut self, ctx: &egui::Context, tel: &Telemetry) {
+        let mut win = egui::Window::new(NAME)
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size(egui::Vec2::new(WIN_W, 0.0))
+            .frame(self.tool.frame(ctx));
+        if let Some(p) = self.tool.pos {
+            win = win.current_pos(p);
+        }
+        let win = win.show(ctx, |ui| {
+            self.tool.enter(ui);
+            self.tool.header(ui, "FPV DRONE");
+            if self.tool.hide_controls {
+                return;
+            }
+            telemetry(ui, tel);
+        });
+        if let Some(r) = win {
+            self.tool.pos = Some(r.response.rect.min);
+            self.tool.context_menu(&r.response);
+        }
+    }
+
+    /// Full-screen settings (menu open, tile opened).
+    fn draw_screen(&mut self, ctx: &egui::Context, tel: &Telemetry, s: &mut Shared) {
+        let owner = crate::ui::screen::pad_id(NAME);
+        let hints: &[(&str, &str)] = if padnav::has_focus(&owner) {
+            &[("A", "select"), ("X", "default"), ("Y", "advanced"), ("LB/RB", "tab")]
+        } else {
+            &[("L3+R3", "pad mode")]
+        };
+        let exit = crate::ui::screen::show(ctx, NAME, "FPV Drone", true, hints, |ui, rg| {
+            let mut nav = Nav::begin(ui, &mut self.nav, &owner);
+            if nav.window_events() & padnav::ALT != 0 {
+                self.ui.advanced = !self.ui.advanced;
+            }
+            let mut tab = self.ui.tab;
+            crate::ui::screen::region(ui, rg.tabs, |ui| {
+                game::tabs(ui, &nav, &TABS, &mut tab);
+            });
+            if tab != self.ui.tab {
+                self.ui.tab = tab;
+                nav.reset_focus();
+            }
+            // Rows (left).
+            crate::ui::screen::region(ui, rg.left, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    if tab == CONTROLS_TAB {
+                        control_rows(ui, &mut nav, s, tel.sticks);
+                    } else {
+                        param_rows(ui, &mut nav, &self.ui, s, tab);
+                    }
+                    ui.add_space(8.0);
+                    let mut adv = self.ui.advanced;
+                    let o = game::toggle_row(
+                        ui,
+                        &mut nav,
+                        "fd_advanced",
+                        "Advanced settings",
+                        &mut adv,
+                        "Shows every parameter, not only the ones listed in fpv_drone.toml. Wrong values can freeze or crash the game.",
+                    );
+                    if o.changed {
+                        self.ui.advanced = adv;
+                    }
+                    let mut pin = self.tool.pin;
+                    let o = game::toggle_row(
+                        ui,
+                        &mut nav,
+                        "fd_pin",
+                        "Telemetry over the game",
+                        &mut pin,
+                        "Keeps a small telemetry window on screen when the menu is closed.",
+                    );
+                    if o.changed {
+                        self.tool.pin = pin;
+                    }
+                });
+            });
+            // Help + telemetry (right).
+            crate::ui::screen::region(ui, rg.right.shrink(18.0), |ui| {
+                if let Some(a) = s.learn {
+                    game::warning(ui, &format!("BIND {}: move or press the control (A on the row cancels)", a.hint().to_uppercase()));
+                    ui.add_space(6.0);
+                }
+                if self.ui.advanced {
+                    game::warning(ui, "ADVANCED — wrong values here can freeze or crash the game");
+                    ui.add_space(6.0);
+                }
+                game::help_text(ui, nav.help.as_deref().unwrap_or("Select a setting to read what it does."));
+                ui.add_space(14.0);
+                game::dim(ui, "Edit fpv_drone.toml to choose which settings the simple view shows.");
+                ui.add_space(14.0);
+                telemetry(ui, tel);
+            });
+            nav.finish();
+        });
+        if exit.power_off {
+            crate::mod_api::get_mod_manager().set_mod_enabled(NAME, false);
+        }
+    }
+}
+
+/// Status line, numbers and motor bars.
+fn telemetry(ui: &mut egui::Ui, tel: &Telemetry) {
+    let note = if tel.note.is_empty() { "idle" } else { &tel.note };
+    let color = if tel.armed { crate::ui::theme::STATE_OK } else { egui::Color32::WHITE };
+    ui.label(egui::RichText::new(note).strong().size(20.0).color(color));
+    ui.label(
+        egui::RichText::new(format!(
+            "{:.1} m/s · alt {:+.1} m · thrust {:.0}% · collisions: {}{}",
+            tel.speed,
+            tel.alt,
+            tel.throttle * 100.0,
+            if tel.collide.is_empty() { "—" } else { tel.collide },
+            if tel.impact > 0.5 { format!(" · impact {:.1} m/s", tel.impact) } else { String::new() }
+        ))
+        .monospace()
+        .size(13.5),
+    );
+    ui.horizontal(|ui| {
+        for (name, v) in ["FL", "FR", "RL", "RR"].iter().zip(tel.motors) {
+            ui.add(egui::ProgressBar::new(v.clamp(0.0, 1.0)).desired_width(70.0).text(*name));
+        }
+    });
 }

@@ -51,6 +51,8 @@ pub enum TileIcon {
     Gauge,
     /// Speaker (engine sound).
     Sound,
+    /// Power symbol (quit the mod menu).
+    Power,
 }
 
 impl Default for TileIcon {

@@ -1,9 +1,8 @@
 //! Mod menu window: navigation state + orchestration.
 //!
-//! One window replaces the old manager/status pair: a header (version,
-//! title, HELP), a grid of icon tiles (one per registered mod, then
-//! Settings and About), and a red footer warning that game controls
-//! are locked while the menu is up. All strings go through `i18n`.
+//! One window replaces the old manager/status pair: the in-game phone
+//! (see `ui::phone`) with one icon tile per registered mod, then
+//! Settings and About. All strings go through `i18n`.
 //!
 //! Visuals live in [`crate::ui`] (theme, tiles, chrome, pages); this
 //! module owns only the current [`Page`] and the window itself.
@@ -45,7 +44,27 @@ impl Page {
 static PAGE: AtomicU8 = AtomicU8::new(0);
 
 pub(crate) fn set_page(p: Page) {
-    PAGE.store(p.encode(), Ordering::SeqCst);
+    if PAGE.swap(p.encode(), Ordering::SeqCst) != p.encode() {
+        kick();
+    }
+}
+
+/// Frames still to repaint after a layout switch (page / screen).
+static REPAINT_BURST: AtomicU8 = AtomicU8::new(0);
+
+/// Ask for a few extra repaints. egui lays a new page out over more
+/// than one pass, and the overlay only re-runs on input or on a
+/// repaint request: without this the first frames after a switch stay
+/// half-drawn until the mouse moves.
+pub(crate) fn kick() {
+    REPAINT_BURST.store(4, Ordering::SeqCst);
+}
+
+fn pump(ctx: &egui::Context) {
+    if REPAINT_BURST.load(Ordering::SeqCst) > 0 {
+        REPAINT_BURST.fetch_sub(1, Ordering::SeqCst);
+        ctx.request_repaint();
+    }
 }
 
 fn page() -> Page {
@@ -54,6 +73,11 @@ fn page() -> Page {
 
 /// Draw the whole menu (called from the render hook when visible).
 pub fn draw_menu_ui(ctx: &egui::Context) {
+    draw_menu_inner(ctx);
+    pump(ctx);
+}
+
+fn draw_menu_inner(ctx: &egui::Context) {
     if !crate::hotkey::ui_visible() {
         return;
     }
@@ -78,42 +102,48 @@ pub fn draw_menu_ui(ctx: &egui::Context) {
         });
     }
 
-    // Resizable + responsive: the grid derives its columns from the
-    // available width (up to 4, wrapping below; compact past 8 mods)
-    // and every block is centered, so margins stay symmetric at any
-    // size. Drag still works from anywhere (background handle, tiles,
-    // window fallback); the corner resize handle keeps priority.
+    // The phone: fixed size scaled to the screen height, drag from
+    // anywhere (background handle + tile forwarding). Frameless — the
+    // bezel is painted by `ui::phone`.
+    // A full-screen mod screen replaces the phone (and its key hints,
+    // the screen has its own footer) until BACK.
+    if crate::ui::screen::any_open() {
+        return;
+    }
+    let sc = crate::ui::phone::scale(ctx);
     let mut win = egui::Window::new("cxsfm_menu")
         .title_bar(false)
-        .resizable(true)
-        .min_size(egui::Vec2::new(300.0, 240.0))
+        .resizable(false)
         .collapsible(false)
-        .default_pos(egui::pos2(160.0, 120.0));
+        .frame(egui::Frame::NONE)
+        .fixed_size(crate::ui::phone::size(sc))
+        .default_pos(egui::pos2(56.0 * sc, 48.0 * sc));
     // Pinned position after the first drag.
     if let Some(p) = chrome::pinned_pos() {
         win = win.current_pos(p);
     }
     let inner = win.show(ctx, |ui| {
         chrome::background_drag(ui);
-        chrome::header(ui, || set_page(Page::About));
-        ui.separator();
-        // One layout per frame: pages and footer share the same block
-        // width so grid and bars stay aligned.
-        let layout = crate::ui::pages::content_layout(ui);
-        match page() {
-            Page::Main => crate::ui::pages::page_main(ui, &layout),
-            Page::Settings => crate::ui::pages::page_settings(ui, layout.block_w),
-            Page::About => crate::ui::pages::page_about(ui, layout.block_w),
-        }
-        ui.separator();
-        chrome::footer(ui, layout.block_w);
+        let (phone, _) = ui.allocate_exact_size(crate::ui::phone::size(sc), egui::Sense::hover());
+        crate::ui::phone::draw(ui, phone, sc, page());
     });
-    // Full-window drag fallback: the pre-content handle covers header
-    // / gaps / footer margins, tiles forward their own drags, and the
-    // window response covers any remaining background — even on tall
-    // windows where the pre-wrap rect no longer spans the frame.
     if let Some(r) = inner {
         chrome::forward_drag(&r.response);
         chrome::note_window_rect(r.response.rect);
     }
+    // Game-style key hints, bottom-left of the screen.
+    egui::Area::new(egui::Id::new("cxsfm_key_hints"))
+        .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(24.0, -24.0))
+        .interactable(false)
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                crate::ui::game::key_hint(ui, "F8", "close");
+                if crate::padnav::active() {
+                    crate::ui::game::key_hint(ui, "A", "select");
+                    crate::ui::game::key_hint(ui, "X", "open window");
+                    crate::ui::game::key_hint(ui, "B", "back");
+                    crate::ui::game::key_hint(ui, "L3+R3", "leave");
+                }
+            });
+        });
 }

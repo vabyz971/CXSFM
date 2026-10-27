@@ -20,7 +20,6 @@ mod ui;
 
 use crate::mods::api::{Mod, TileIcon};
 use crate::mods::common::lock;
-use crate::mods::tool::ToolChrome;
 use model::{Settings, Status};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,7 +34,8 @@ pub struct EngineAudioMod {
     /// Tick → UI.
     pub(crate) status: Mutex<Status>,
     rt: Mutex<bind::Runtime>,
-    pub(crate) tool: ToolChrome,
+    /// Pad focus of the rows panel.
+    pub(crate) nav: crate::ui::game::NavState,
     /// Render-side edit buffer (pushed to `shared` on change).
     pub(crate) edit: Settings,
 }
@@ -47,7 +47,7 @@ impl EngineAudioMod {
             shared: Mutex::new(Settings::default()),
             status: Mutex::new(Status::default()),
             rt: Mutex::new(bind::Runtime::default()),
-            tool: ToolChrome::new(),
+            nav: Default::default(),
             edit: Settings::default(),
         }
     }
@@ -84,10 +84,6 @@ impl Mod for EngineAudioMod {
         self::i18n::describe(lang_code)
     }
 
-    fn is_pinned(&self) -> bool {
-        self.tool.pin
-    }
-
     fn on_update(&mut self, _delta_time: f32) {
         if !self.enabled.load(Ordering::SeqCst) {
             return;
@@ -110,11 +106,13 @@ impl Mod for EngineAudioMod {
         self.enabled.store(false, Ordering::SeqCst);
         lock(&self.rt).restore();
         *lock(&self.status) = Status::default();
+        crate::ui::screen::close();
         crate::log_line("engine_audio: off (pitch/volume restored)");
     }
 }
 
 /// Register disarmed: boots quiet, user opts in from the menu tile.
 pub fn register() {
+    crate::ui::screen::declare("Engine Sound");
     crate::mod_api::register_mod(Box::new(EngineAudioMod::new()));
 }

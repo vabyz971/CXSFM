@@ -24,6 +24,7 @@ pub mod i18n;
 mod bind;
 pub(crate) mod model;
 mod sound;
+mod spec;
 mod ui;
 
 use crate::mods::api::{Mod, TileIcon};
@@ -70,6 +71,8 @@ pub struct FpvDroneMod {
     pub(crate) tel: Mutex<Telemetry>,
     rt: Mutex<bind::Rt>,
     pub(crate) tool: ToolChrome,
+    pub(crate) ui: ui::UiState,
+    pub(crate) nav: crate::ui::game::NavState,
 }
 
 impl FpvDroneMod {
@@ -85,6 +88,8 @@ impl FpvDroneMod {
             tel: Mutex::new(Telemetry::default()),
             rt: Mutex::new(bind::Rt::default()),
             tool: ToolChrome::new(),
+            ui: ui::UiState::new(),
+            nav: Default::default(),
         }
     }
 }
@@ -145,11 +150,13 @@ impl Mod for FpvDroneMod {
         lock(&self.rt).stop();
         lock(&self.shared).learn = None;
         *lock(&self.tel) = Telemetry::default();
+        crate::ui::screen::close();
         crate::log_line("fpv_drone: off (camera drivers and FOV restored)");
     }
 }
 
 /// Register disarmed: boots quiet, user opts in from the menu tile.
 pub fn register() {
+    crate::ui::screen::declare("FPV Drone");
     crate::mod_api::register_mod(Box::new(FpvDroneMod::new()));
 }

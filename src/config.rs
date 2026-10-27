@@ -60,6 +60,13 @@ pub(crate) fn hud_path() -> Option<PathBuf> {
     Some(dir)
 }
 
+/// A per-mod file in the config dir (`<name>`, e.g. `fpv_drone.toml`).
+pub(crate) fn mod_config_path(name: &str) -> Option<PathBuf> {
+    let mut dir = settings_dir()?;
+    dir.push(name);
+    Some(dir)
+}
+
 fn settings_dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)

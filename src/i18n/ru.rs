@@ -9,6 +9,7 @@ pub fn strings(key: &str) -> &'static str {
         "mod_fpv" => "FPV-камера",
         "tile_settings" => "Настройки",
         "tile_about" => "О проекте",
+        "tile_quit" => "Выход",
         "parked" => "пауза",
         "settings_language" => "Язык",
         "settings_auto" => "Авто (игра)",
