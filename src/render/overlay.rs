@@ -93,6 +93,14 @@ struct SwapchainState {
     /// invalidation (UI vanished or changed — other images re-record
     /// on their next present, converging within one swapchain cycle).
     recorded: Vec<bool>,
+    /// Fingerprint of the last tessellated UI (see [`ui_fingerprint`]).
+    /// The renderer's vertex/index buffers are SHARED by every image
+    /// and rewritten at each record, so a recording replays whatever
+    /// the buffers hold NOW: a re-record that changed the mesh (egui
+    /// settling a new page over several passes) must drop the other
+    /// images' recordings, or they replay old draw ranges over new
+    /// vertices (giant garbled triangles, GPU faults).
+    last_fingerprint: u64,
     /// The fence wait timed out once: the overlay is paused on this
     /// swapchain and NEVER blocks the game's present again; each
     /// present polls the fence (non-blocking) and resumes when it
@@ -512,6 +520,7 @@ fn create_state(
             frame: 0,
             next_repaint: None,
             recorded,
+            last_fingerprint: 0,
             stalled: false,
         })
     }
@@ -531,6 +540,41 @@ struct UiOutput {
     repaint_delay: std::time::Duration,
     /// Pixels per point used for tessellation (must match `cmd_draw`).
     pixels_per_point: f32,
+}
+
+/// Cheap order-sensitive hash of everything the GPU draw depends on:
+/// clip rects, texture ids, every vertex (position, uv, color) and
+/// index. Equal fingerprints mean an existing recording is still valid
+/// against the shared buffers.
+fn ui_fingerprint(prims: &[egui::ClippedPrimitive]) -> u64 {
+    fn mix(h: &mut u64, v: u64) {
+        *h = (*h ^ v).wrapping_mul(0x0000_0100_0000_01B3).rotate_left(23);
+    }
+    let mut h: u64 = 0xCBF2_9CE4_8422_2325;
+    mix(&mut h, prims.len() as u64);
+    for p in prims {
+        for f in [p.clip_rect.min.x, p.clip_rect.min.y, p.clip_rect.max.x, p.clip_rect.max.y] {
+            mix(&mut h, f.to_bits() as u64);
+        }
+        if let egui::epaint::Primitive::Mesh(m) = &p.primitive {
+            mix(&mut h, match m.texture_id {
+                egui::TextureId::Managed(i) => i,
+                egui::TextureId::User(i) => i | (1 << 63),
+            });
+            mix(&mut h, m.indices.len() as u64);
+            for i in &m.indices {
+                mix(&mut h, *i as u64);
+            }
+            for v in &m.vertices {
+                mix(&mut h, (v.pos.x.to_bits() as u64) << 32 | v.pos.y.to_bits() as u64);
+                mix(&mut h, (v.uv.x.to_bits() as u64) << 32 | v.uv.y.to_bits() as u64);
+                mix(&mut h, u32::from_le_bytes(v.color.to_array()) as u64);
+            }
+        } else {
+            mix(&mut h, 0xCA11_BAC4);
+        }
+    }
+    h
 }
 
 /// Monotonic seconds for `RawInput::time` (animations, double-click).
@@ -730,6 +774,16 @@ pub fn draw_frame(
                         std::time::Instant::now() + std::time::Duration::from_secs(3600)
                     }),
             );
+            // Mesh changed since the last run: every other recording
+            // is stale against the shared buffers (this image is
+            // re-recorded right below and re-marked afterwards).
+            let fp = ui_fingerprint(&ui.primitives);
+            if fp != st.last_fingerprint {
+                st.last_fingerprint = fp;
+                for r in st.recorded.iter_mut() {
+                    *r = false;
+                }
+            }
             Some(ui)
         } else {
             None
