@@ -1,14 +1,220 @@
 //! Inspector render-side UI: tree + detail panes.
 //!
 //! Present thread only (`&mut` access). Reads the tick's snapshot
-//! under a brief lock; child expansion queues tick-side loads.
+//! under a brief lock; child expansion queues tick-side loads. The
+//! detail pane lists the selection's components and the field table
+//! of the opened one; edits and reloads are queued for the tick (no
+//! Unity call here).
 
-use super::model::{collect_matches, node_at, SceneNode};
+use super::model::{collect_matches, node_at, Detail, Edit, Req, Row, SceneNode, Target};
 use super::InspectorMod;
 use crate::mods::common::lock;
 use crate::ui::theme::{STATE_ERR as RED, STATE_OK as GREEN, STATE_WARN as ORANGE, TEXT_BRIGHT as BRIGHT, TEXT_DIM as DIM};
 use std::collections::HashSet;
+use std::sync::Mutex;
 use std::sync::atomic::Ordering;
+
+/// Detail-pane UI state (render thread only).
+#[derive(Default)]
+pub(crate) struct DetUi {
+    /// What the pane shows (sent with every request).
+    target: Option<Target>,
+    /// Selection the target was built for.
+    for_path: Option<Vec<usize>>,
+    /// Re-read the view every second.
+    live: bool,
+    last_live: Option<std::time::Instant>,
+}
+
+fn push(req: &Mutex<Vec<Req>>, r: Req) {
+    let mut q = lock(req);
+    // Coalesce reloads: only the newest one matters.
+    if matches!(r, Req::Load(_)) {
+        q.retain(|x| !matches!(x, Req::Load(_)));
+    }
+    q.push(r);
+}
+
+/// Editable value widget; returns the payload to write when committed.
+fn edit_widget(ui: &mut egui::Ui, row: &mut Row) -> Option<Vec<u8>> {
+    // Commit on release / Enter, not every drag pixel (each write
+    // re-walks the object on the tick).
+    let done = |r: &egui::Response| r.drag_stopped() || (r.changed() && !r.dragged());
+    let commit = match &mut row.edit {
+        Edit::None => {
+            ui.monospace(&row.value);
+            false
+        }
+        Edit::Bool(b) => ui.checkbox(b, "").changed(),
+        Edit::Int { v, size, signed } => {
+            let (lo, hi) = match (*size, *signed) {
+                (1, true) => (i8::MIN as i64, i8::MAX as i64),
+                (1, false) => (0, u8::MAX as i64),
+                (2, true) => (i16::MIN as i64, i16::MAX as i64),
+                (2, false) => (0, u16::MAX as i64),
+                (4, true) => (i32::MIN as i64, i32::MAX as i64),
+                (4, false) => (0, u32::MAX as i64),
+                _ => (i64::MIN, i64::MAX),
+            };
+            let r = ui.add(egui::DragValue::new(v).range(lo..=hi).speed(0.2));
+            done(&r)
+        }
+        Edit::Float { v, .. } => {
+            let r = ui.add(egui::DragValue::new(v).speed(0.01).max_decimals(4));
+            done(&r)
+        }
+        Edit::Floats(f) if row.type_name == "Color" && f.len() == 4 => {
+            let mut c = [f[0], f[1], f[2], f[3]];
+            let changed = ui.color_edit_button_rgba_unmultiplied(&mut c).changed();
+            let mut any = false;
+            for (x, nc) in f.iter_mut().zip(c) {
+                *x = nc;
+            }
+            for x in f.iter_mut() {
+                let r = ui.add(egui::DragValue::new(x).speed(0.01).max_decimals(3));
+                any |= done(&r);
+            }
+            changed || any
+        }
+        Edit::Floats(f) => {
+            let mut any = false;
+            for x in f.iter_mut() {
+                let r = ui.add(egui::DragValue::new(x).speed(0.01).max_decimals(3));
+                any |= done(&r);
+            }
+            any
+        }
+    };
+    if commit { row.edit.encode() } else { None }
+}
+
+/// Components + field table of the selected node.
+fn detail_pane(
+    ui: &mut egui::Ui,
+    node: &SceneNode,
+    path: &[usize],
+    detail: &Mutex<Option<Detail>>,
+    req: &Mutex<Vec<Req>>,
+    st: &mut DetUi,
+) {
+    if node.tr == 0 || node.id < 0 {
+        return;
+    }
+    // New selection: list its components.
+    if st.for_path.as_deref() != Some(path) || st.target.as_ref().is_none_or(|t| t.id != node.id) {
+        let t = Target { tr: node.tr, id: node.id, comp: None, chain: Vec::new() };
+        st.for_path = Some(path.to_vec());
+        st.target = Some(t.clone());
+        *lock(detail) = None;
+        push(req, Req::Load(t));
+    }
+    let Some(target) = st.target.clone() else { return };
+    // Live view: re-read once a second, never while a value is held.
+    if st.live
+        && !ui.input(|i| i.pointer.any_down())
+        && st.last_live.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(1))
+    {
+        st.last_live = Some(std::time::Instant::now());
+        push(req, Req::Load(target.clone()));
+    }
+    if st.live {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+    }
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Components").strong().color(BRIGHT));
+        if ui.button("Reread").clicked() {
+            push(req, Req::Load(target.clone()));
+        }
+        ui.checkbox(&mut st.live, "live (1 s)");
+    });
+    let mut guard = lock(detail);
+    let Some(d) = guard.as_mut().filter(|d| d.id == node.id) else {
+        ui.weak("reading…");
+        return;
+    };
+    if let Some(e) = &d.error {
+        ui.label(egui::RichText::new(e).color(RED));
+    }
+    let mut next: Option<Target> = None;
+    for (i, c) in d.comps.iter().enumerate() {
+        ui.horizontal(|ui| {
+            if let Some(mut on) = c.enabled
+                && ui.checkbox(&mut on, "").changed()
+            {
+                push(req, Req::Enable { target: Target { comp: Some(i), chain: Vec::new(), ..target.clone() }, on });
+            }
+            let label = if c.namespace.is_empty() { c.class.clone() } else { format!("{}  ({})", c.class, c.namespace) };
+            if ui.selectable_label(target.comp == Some(i) && target.chain.is_empty(), label).clicked() {
+                next = Some(Target { comp: Some(i), chain: Vec::new(), ..target.clone() });
+            }
+        });
+    }
+    if let Some(v) = d.view.as_mut().filter(|v| Some(v.comp) == target.comp) {
+        ui.separator();
+        // Breadcrumb: component › field › [i] …
+        ui.horizontal_wrapped(|ui| {
+            let comp_name = d.comps.get(v.comp).map_or("?".to_string(), |c| c.class.clone());
+            if ui.link(comp_name).clicked() {
+                next = Some(Target { chain: Vec::new(), ..target.clone() });
+            }
+            for k in 0..v.chain.len() {
+                ui.label("›");
+                if ui.link(v.chain[k].label()).clicked() {
+                    next = Some(Target { chain: v.chain[..=k].to_vec(), ..target.clone() });
+                }
+            }
+        });
+        ui.label(egui::RichText::new(&v.class).monospace().color(DIM));
+        if let Some(n) = &v.note {
+            ui.label(egui::RichText::new(n).color(ORANGE));
+        }
+        if v.rows.iter().any(|r| r.edit != Edit::None) {
+            ui.label(
+                egui::RichText::new("Edits are raw field writes: the game may overwrite them, and disabling the mod does not undo them.")
+                    .small()
+                    .color(DIM),
+            );
+        }
+        let mut write: Option<(String, Vec<u8>)> = None;
+        egui::Grid::new("inspector_fields").striped(true).num_columns(4).show(ui, |ui| {
+            for row in v.rows.iter_mut() {
+                ui.label(egui::RichText::new(&row.name).color(BRIGHT));
+                ui.label(egui::RichText::new(&row.type_name).color(DIM).small());
+                ui.horizontal(|ui| {
+                    if let Some(bytes) = edit_widget(ui, row) {
+                        write = Some((row.name.clone(), bytes));
+                    }
+                });
+                if let Some(seg) = &row.follow {
+                    if ui.small_button("open").clicked() {
+                        let mut chain = v.chain.clone();
+                        chain.push(seg.clone());
+                        next = Some(Target { chain, ..target.clone() });
+                    }
+                } else {
+                    ui.label("");
+                }
+                ui.end_row();
+            }
+        });
+        if let Some((field, bytes)) = write {
+            push(req, Req::Write { target: Target { chain: v.chain.clone(), ..target.clone() }, field, bytes });
+        }
+        if !v.methods.is_empty() {
+            egui::CollapsingHeader::new(format!("Methods ({})", v.methods.len())).id_salt("inspector_methods").show(ui, |ui| {
+                for m in &v.methods {
+                    ui.monospace(m);
+                }
+            });
+        }
+    }
+    drop(guard);
+    if let Some(t) = next {
+        st.target = Some(t.clone());
+        push(req, Req::Load(t));
+    }
+}
 
 /// One tree row (+ recursion when open). Unloaded nodes with a known
 /// child count request a tick-side load via `want` (drained in
@@ -96,7 +302,7 @@ impl InspectorMod {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .fixed_size(egui::Vec2::new(700.0, 560.0))
+            .fixed_size(egui::Vec2::new(1100.0, 720.0))
             .frame(self.tool.frame(ctx));
         if let Some(p) = self.tool.pos {
             win = win.current_pos(p);
@@ -250,6 +456,7 @@ impl InspectorMod {
                                         ui.monospace(v);
                                     });
                                 }
+                                detail_pane(ui, n, &path, &self.detail, &self.detail_req, &mut self.det_ui);
                                 if !n.children.is_empty() {
                                     ui.separator();
                                     ui.weak("direct children (click to jump):");

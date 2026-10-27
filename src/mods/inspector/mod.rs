@@ -14,12 +14,18 @@
 //! parked — `SetActive` fires game lifecycle callbacks from a foreign
 //! thread and crashed the game (see log).
 //!
-//! Layout mirrors `speedo`/`map`: `model` (data + pure helpers),
-//! `bind` (tick-side Unity), `ui` (render-side window).
+//! Selecting a node lists its components (`GetComponents`); a
+//! component opens as a field table (raw field reads), reference
+//! fields and arrays can be followed, and primitive / vector / color
+//! fields edited (raw stores) — see `detail`.
+//!
+//! Layout mirrors `speedometer`/`map`: `model` (data + pure helpers),
+//! `bind` + `detail` (tick-side Unity), `ui` (render-side window).
 
 pub mod i18n;
 
 mod bind;
+mod detail;
 pub(crate) mod model;
 mod ui;
 
@@ -32,7 +38,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Mod version (shown on the phone; bump with its features).
-pub const VERSION: &str = "1.0.0";
+pub const VERSION: &str = "1.1.0";
 
 /// Scene inspector: snapshot on tick, tree on render.
 pub struct InspectorMod {
@@ -50,6 +56,12 @@ pub struct InspectorMod {
     pub(crate) search: String,
     pub(crate) open: HashSet<Vec<usize>>,
     pub(crate) selected: Option<Vec<usize>>,
+    /// Components / field view of the selection (tick → UI).
+    pub(crate) detail: Mutex<Option<model::Detail>>,
+    /// UI → tick requests (drained every tick).
+    pub(crate) detail_req: Mutex<Vec<model::Req>>,
+    pub(crate) comp_api: Mutex<Option<detail::CompApi>>,
+    pub(crate) det_ui: ui::DetUi,
 }
 
 impl InspectorMod {
@@ -64,6 +76,10 @@ impl InspectorMod {
             search: String::new(),
             open: HashSet::new(),
             selected: None,
+            detail: Mutex::new(None),
+            detail_req: Mutex::new(Vec::new()),
+            comp_api: Mutex::new(None),
+            det_ui: ui::DetUi::default(),
         }
     }
 
@@ -123,6 +139,11 @@ impl Mod for InspectorMod {
         if !want.is_empty() {
             self.load_children(want);
         }
+        // Component / field requests (selection, edits, live view).
+        let reqs = std::mem::take(&mut *lock(&self.detail_req));
+        for r in reqs {
+            self.detail_tick(r);
+        }
     }
 
     fn on_draw_ui(&mut self, ctx: &egui::Context) {
@@ -138,7 +159,7 @@ impl Mod for InspectorMod {
 
     fn on_disable(&mut self) {
         self.enabled.store(false, Ordering::SeqCst);
-        crate::log_line("inspector: off (read-only — nothing to restore)");
+        crate::log_line("inspector: off (field edits are not undone)");
     }
 }
 

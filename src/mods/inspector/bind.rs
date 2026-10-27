@@ -13,7 +13,7 @@ use super::InspectorMod;
 use crate::unity::UnityCache;
 
 impl InspectorMod {
-    fn ensure_unity(&self) -> bool {
+    pub(crate) fn ensure_unity(&self) -> bool {
         if self.unity.lock().unwrap().is_some() {
             return true;
         }

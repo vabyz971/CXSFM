@@ -151,6 +151,12 @@ pub type ObjectGetClassFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> *mut 
 pub type ClassValueSizeFn = unsafe extern "C" fn(*mut std::ffi::c_void, *mut u32) -> i32;
 /// `bool il2cpp_class_is_valuetype(const Il2CppClass*)`
 pub type ClassIsValuetypeFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> bool;
+/// `const Il2CppType* il2cpp_method_get_param(const MethodInfo*, uint32_t index)`
+pub type MethodGetParamFn = unsafe extern "C" fn(*mut std::ffi::c_void, u32) -> *mut std::ffi::c_void;
+/// `Il2CppClass* il2cpp_class_get_element_class(Il2CppClass*)` (arrays)
+pub type ClassGetElementClassFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> *mut std::ffi::c_void;
+/// `bool il2cpp_class_is_enum(const Il2CppClass*)`
+pub type ClassIsEnumFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> bool;
 
 /// Failure modes of IL2CPP resolution and probing.
 #[derive(Debug)]
@@ -259,6 +265,10 @@ pub struct Il2cppApi {
     pub object_get_class: Option<ObjectGetClassFn>,
     pub class_value_size: Option<ClassValueSizeFn>,
     pub class_is_valuetype: Option<ClassIsValuetypeFn>,
+    /// Overload disambiguation + array element types (inspector).
+    pub method_get_param: Option<MethodGetParamFn>,
+    pub class_get_element_class: Option<ClassGetElementClassFn>,
+    pub class_is_enum: Option<ClassIsEnumFn>,
 }
 
 impl Il2cppApi {
@@ -600,6 +610,10 @@ pub fn resolve() -> Result<Il2cppApi, Il2cppError> {
     let class_value_size: Option<ClassValueSizeFn> = sym_opt!("il2cpp_class_value_size", ClassValueSizeFn);
     let class_is_valuetype: Option<ClassIsValuetypeFn> =
         sym_opt!("il2cpp_class_is_valuetype", ClassIsValuetypeFn);
+    let method_get_param: Option<MethodGetParamFn> = sym_opt!("il2cpp_method_get_param", MethodGetParamFn);
+    let class_get_element_class: Option<ClassGetElementClassFn> =
+        sym_opt!("il2cpp_class_get_element_class", ClassGetElementClassFn);
+    let class_is_enum: Option<ClassIsEnumFn> = sym_opt!("il2cpp_class_is_enum", ClassIsEnumFn);
 
     Ok(Il2cppApi {
         domain_get,
@@ -642,6 +656,9 @@ pub fn resolve() -> Result<Il2cppApi, Il2cppError> {
         object_get_class,
         class_value_size,
         class_is_valuetype,
+        method_get_param,
+        class_get_element_class,
+        class_is_enum,
     })
 }
 
@@ -1432,4 +1449,96 @@ pub unsafe fn image_name(api: &Il2cppApi, image: *mut std::ffi::c_void) -> Optio
     }
     // SAFETY: live image; process-lifetime string.
     c_name(unsafe { f(image) } as *const libc::c_char)
+}
+
+/// `Il2CppTypeEnum` of parameter `index` of a method (`None` when the
+/// runtime does not export the lookup).
+///
+/// # Safety
+/// Same contract as [`find_class`].
+pub unsafe fn method_param_type(api: &Il2cppApi, method: *mut std::ffi::c_void, index: u32) -> Option<i32> {
+    let (get_param, type_get_type) = (api.method_get_param?, api.type_get_type?);
+    if method.is_null() {
+        return None;
+    }
+    // SAFETY: live method; metadata reads only.
+    unsafe {
+        let t = get_param(method, index);
+        if t.is_null() { None } else { Some(type_get_type(t)) }
+    }
+}
+
+/// Overload pick: method `name` with `argc` parameters whose first
+/// parameter has type enum `first` (e.g. `GetComponents(Type)` vs the
+/// generic `GetComponents<T>(List<T>)`, both 1-argument).
+///
+/// # Safety
+/// Same contract as [`find_class`].
+pub unsafe fn get_method_overload(
+    api: &Il2cppApi,
+    klass: *mut std::ffi::c_void,
+    name: &str,
+    argc: u32,
+    first: i32,
+) -> Option<*mut std::ffi::c_void> {
+    // SAFETY: caller contract; metadata reads only.
+    unsafe {
+        class_methods(api, klass).into_iter().find(|&m| {
+            method_name(api, m).as_deref() == Some(name)
+                && method_param_count(api, m) == Some(argc)
+                && (argc == 0 || method_param_type(api, m, 0) == Some(first))
+        })
+    }
+}
+
+/// Element class of an array class.
+///
+/// # Safety
+/// Same contract as [`find_class`].
+pub unsafe fn class_element_class(api: &Il2cppApi, klass: *mut std::ffi::c_void) -> Option<*mut std::ffi::c_void> {
+    let f = api.class_get_element_class?;
+    if klass.is_null() {
+        return None;
+    }
+    // SAFETY: live class; pure metadata read.
+    let k = unsafe { f(klass) };
+    if k.is_null() { None } else { Some(k) }
+}
+
+/// Copy `bytes` into an instance field (raw store, no setter runs).
+/// `bytes.len()` must equal the field size: the runtime copies the
+/// field size from the pointer, whatever we pass.
+///
+/// # Safety
+/// Same contract as [`find_class`]; `field` belongs to `obj`'s class
+/// chain, is not static, and its size is `bytes.len()`.
+pub unsafe fn field_set_raw(
+    api: &Il2cppApi,
+    obj: *mut std::ffi::c_void,
+    field: *mut std::ffi::c_void,
+    bytes: &[u8],
+) -> bool {
+    let Some(set_value) = api.field_set_value else {
+        return false;
+    };
+    if field.is_null() || bytes.is_empty() || !crate::memory::ptr_readable(obj as usize, 16) {
+        return false;
+    }
+    let mut buf = bytes.to_vec();
+    // SAFETY: caller guarantees the size matches the field.
+    unsafe { set_value(obj, field, buf.as_mut_ptr() as *mut std::ffi::c_void) };
+    true
+}
+
+/// Is the class an enum?
+///
+/// # Safety
+/// Same contract as [`find_class`].
+pub unsafe fn class_is_enum(api: &Il2cppApi, klass: *mut std::ffi::c_void) -> Option<bool> {
+    let f = api.class_is_enum?;
+    if klass.is_null() {
+        return None;
+    }
+    // SAFETY: live class; pure metadata read.
+    Some(unsafe { f(klass) })
 }
