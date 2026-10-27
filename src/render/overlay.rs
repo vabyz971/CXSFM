@@ -599,6 +599,8 @@ fn run_ui(
     // `end_pass` returns the same `FullOutput` (`shapes`,
     // `textures_delta`, `pixels_per_point`, `viewport_output`).
     ctx.begin_pass(input);
+    // Freeze this frame's pad events before any window reads them.
+    crate::padnav::begin_frame();
     crate::mod_api::draw_status_ui(ctx);
     crate::mod_api::draw_manager_ui(ctx);
     // Tool windows draw whenever the menu is open; pinned ones
@@ -748,7 +750,11 @@ pub fn draw_frame(
         // Per-image dirty: an image replays only its OWN recording.
         let idx = image_index as usize;
         let img_recorded = st.recorded.get(idx).copied().unwrap_or(false);
-        let content_changed = !events.is_empty() || repaint_due || enabled_changed || pinned_beat;
+        let content_changed = !events.is_empty()
+            || repaint_due
+            || enabled_changed
+            || pinned_beat
+            || crate::padnav::has_pending();
         let dirty = content_changed || !img_recorded;
         // A real content change invalidates EVERY image (their
         // recordings hold the old UI); each re-records on its next

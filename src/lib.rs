@@ -59,6 +59,7 @@ pub mod mods;
 pub mod config;
 pub mod fmod_sys;
 pub mod gamepad;
+pub mod padnav;
 pub mod il2cpp;
 pub mod hotkey;
 pub mod mainthread;
@@ -504,6 +505,8 @@ fn spawn_tick_thread() {
             // Pre-start the X11 event thread (grab window ready before
             // the first F8/F9 press — no activation delay).
             hotkey::ensure_capture_thread();
+            // Pad navigation (SDL only, IL2CPP-free) has its own thread.
+            padnav::spawn_thread();
             loop {
                 std::thread::sleep(Duration::from_millis(16));
                 let dt = last.elapsed().as_secs_f32().min(0.1);

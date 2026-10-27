@@ -20,6 +20,8 @@ type JoystickCloseFn = unsafe extern "C" fn(*mut std::ffi::c_void);
 type JoystickGetAxisFn = unsafe extern "C" fn(*mut std::ffi::c_void, libc::c_int) -> i16;
 /// `uint8_t SDL_JoystickGetButton(void*, int)`.
 type JoystickGetButtonFn = unsafe extern "C" fn(*mut std::ffi::c_void, libc::c_int) -> u8;
+/// `uint8_t SDL_JoystickGetHat(void*, int)` (bitmask 1=up 2=right 4=down 8=left).
+type JoystickGetHatFn = unsafe extern "C" fn(*mut std::ffi::c_void, libc::c_int) -> u8;
 /// `void SDL_JoystickUpdate(void)`.
 type JoystickUpdateFn = unsafe extern "C" fn();
 /// `int SDL_InitSubSystem(uint32_t)` (`SDL_INIT_JOYSTICK = 0x200`).
@@ -36,6 +38,8 @@ struct GamepadApi {
     button: JoystickGetButtonFn,
     update: JoystickUpdateFn,
     name: Option<JoystickNameFn>,
+    /// Optional: pads without a hat report their d-pad as buttons.
+    hat: Option<JoystickGetHatFn>,
 }
 
 /// Resolved once; `None` when SDL has no joystick API in scope.
@@ -108,6 +112,7 @@ fn api() -> Option<&'static GamepadApi> {
                 button,
                 update,
                 name,
+                hat: sym("SDL_JoystickGetHat").map(|p| std::mem::transmute(p)),
             })
         }
     })
@@ -147,6 +152,10 @@ pub struct GamepadState {
     /// deadzone applied (a released trigger reads -1.0). Lets mods
     /// remap controls for pads whose layout is not Xbox's.
     pub axes: [f32; 8],
+    /// D-pad as a hat bitmask (1 up, 2 right, 4 down, 8 left); falls
+    /// back to buttons 11–14 (SDL game-controller order) when the pad
+    /// has no hat.
+    pub hat: u8,
     /// Buttons 0..16 (Xbox: 0=A, 1=B, 2=X, 3=Y, 4=LB, 5=RB).
     pub buttons: [bool; 16],
 }
@@ -191,7 +200,16 @@ pub fn poll() -> GamepadState {
         for (i, b) in buttons.iter_mut().enumerate() {
             *b = (api.button)(joy, i as libc::c_int) != 0;
         }
+        let mut hat = api.hat.map_or(0, |f| f(joy, 0));
+        if hat == 0 {
+            for (i, bit) in [(11usize, 1u8), (12, 4), (13, 8), (14, 2)] {
+                if buttons.get(i).copied().unwrap_or(false) {
+                    hat |= bit;
+                }
+            }
+        }
         GamepadState {
+            hat,
             connected: true,
             lx: norm((api.axis)(joy, 0)),
             ly: norm((api.axis)(joy, 1)),
