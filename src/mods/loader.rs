@@ -73,6 +73,9 @@ struct EntryState {
     cached_pinned: bool,
     /// `i18n::LANG_REV` at caching time (labels follow the language).
     rev: u64,
+    /// Same for the About description (computed lazily: needs a
+    /// language, so it starts stale).
+    desc_rev: u64,
 }
 
 /// One registered plugin: immutable name, split locks (see module docs).
@@ -180,6 +183,7 @@ impl ModRegistry {
                 cached_desc: "",
                 cached_pinned: false,
                 rev: crate::i18n::lang_rev(),
+                desc_rev: u64::MAX,
             }),
             inner: Mutex::new(mod_obj),
         }));
@@ -233,7 +237,7 @@ impl ModRegistry {
             .map(|handle| {
                 {
                     let s = lock(&handle.state);
-                    if s.rev == rev || s.quarantined {
+                    if s.desc_rev == rev || s.quarantined {
                         return (handle.name.clone(), s.desired, s.cached_desc);
                     }
                 }
@@ -248,7 +252,7 @@ impl ModRegistry {
                         s.desired = false;
                     } else {
                         s.cached_desc = desc;
-                        s.rev = rev;
+                        s.desc_rev = rev;
                     }
                 }
                 let s = lock(&handle.state);
