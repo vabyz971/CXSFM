@@ -711,3 +711,25 @@ Diagnostic line (zero keypresses needed):
   `Event::MouseWheel` + `phase: TouchPhase::Move`.
 - Pixel behaviour preserved (Middle strokes, same rects);
   `cargo test` 20/20. Still to validate in game (overlay + F8).
+
+## Gamepad: never drive the game's SDL from our threads (2026-10-26)
+
+- Symptom: with the pad thread (`padnav`, ~120 Hz) and FPV Drone both
+  polling, the game aborted a few seconds into a flight:
+  `malloc(): unaligned tcache chunk detected` / `tcache_double_free_verify`.
+  Symbolized with an unstripped rebuild of the exact binary (same
+  `.text`): the double free was inside the game's SDL2, called from
+  `cxsfm::gamepad::poll` → `SDL_JoystickUpdate` on our pad thread.
+  Later victims (`XQueryKeymap`, `FpvDroneMod::on_update`) only
+  detected the already-corrupted heap.
+- Serializing our two callers with a lock did not help. Dropping
+  `SDL_JoystickUpdate` stopped the crash but froze the pad: the game
+  never pumps that joystick itself.
+- Fix: `gamepad` reads the pad straight from evdev
+  (`/dev/input/event*`, read-only, non-blocking, `uaccess` ACL), with
+  no SDL call at all. Buttons/axes keep SDL's Linux order and
+  -32768..32767 scale, so bindings and pad mode are unchanged.
+  Validated: 3 min of drone flight + menu, no crash; log shows
+  `gamepad: opened … (evdev, 11 buttons, 6 axes)`.
+- Rule: no SDL joystick call from a framework thread; read input
+  through the kernel, never through the game's input stack.
