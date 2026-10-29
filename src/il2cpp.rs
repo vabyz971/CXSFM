@@ -1063,7 +1063,9 @@ pub unsafe fn read_string(
     }
     // SAFETY: live string; length bounds the chars read below.
     let (n, chars) = unsafe { (string_length(s), string_chars(s)) };
-    if chars.is_null() || n <= 0 {
+    // A corrupt length must never turn into a huge read: cap it, and
+    // check the whole UTF-16 payload is readable first.
+    if chars.is_null() || n <= 0 || n > 16_384 || !crate::memory::ptr_readable(chars as usize, n as usize * 2) {
         return None;
     }
     let slice = unsafe { std::slice::from_raw_parts(chars, n as usize) };
