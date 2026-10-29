@@ -15,7 +15,9 @@
 //!   while driving crashed the game (SIGSEGV while the car moves —
 //!   the game streams objects in and out; 2026-10-16), so it is gone;
 //! - reads are raw field copies (`il2cpp_field_get_value`): no getter,
-//!   no managed code, no allocation, never a write.
+//!   no managed code, no allocation, never a write. A `string` value
+//!   field is copied out of the managed string (UTF-16 → UTF-8,
+//!   capped at [`MAX_TEXT`] characters) and becomes a text source.
 
 use super::bind::is_unity_object;
 use super::model::{SourceDef, Values, decode_number, primitive_size, te};
@@ -28,6 +30,14 @@ use std::collections::HashMap;
 pub(crate) const MISSING_RETRY_TICKS: u64 = 300;
 /// Class lookup retry cadence when a root class is unknown (~10 s).
 const CLASS_RETRY_TICKS: u64 = 600;
+/// Text sources longer than this are cut (characters).
+const MAX_TEXT: usize = 512;
+
+/// One source reading.
+enum Reading {
+    Num(f32),
+    Text(String),
+}
 
 type Ptr = *mut std::ffi::c_void;
 
@@ -48,6 +58,8 @@ struct FieldSlot {
     te: i32,
     size: usize,
     reference: bool,
+    /// `System.String` value field (text source).
+    string: bool,
 }
 
 /// Tick-only reader state (behind a mutex for `Sync`, never contended).
@@ -163,7 +175,8 @@ impl LiveReader {
                     } else {
                         primitive_size(d.type_enum)
                     }?;
-                    (size <= 8).then_some(FieldSlot { field: d.field as usize, te: d.type_enum, size, reference })
+                    let string = d.type_enum == te::STRING;
+                    (size <= 8).then_some(FieldSlot { field: d.field as usize, te: d.type_enum, size, reference, string })
                 })
         };
         self.fields.insert(key, slot);
@@ -182,7 +195,7 @@ impl LiveReader {
         cache: &UnityCache,
         root: Ptr,
         s: &SourceDef,
-    ) -> Result<f32, String> {
+    ) -> Result<Reading, String> {
         let mut obj = root;
         // SAFETY: every hop checked readable (+ alive when Unity).
         unsafe {
@@ -210,13 +223,24 @@ impl LiveReader {
             let f = self
                 .field(api, cls, &s.field)
                 .filter(|f| !f.reference)
-                .ok_or_else(|| format!("`{}` : champ numérique introuvable", s.field))?;
+                .ok_or_else(|| format!("`{}` : champ numérique ou texte introuvable", s.field))?;
             let mut buf = [0u8; 8];
             if !il2cpp::field_get_raw(api, obj, f.field as Ptr, &mut buf) {
                 return Err(format!("lecture de `{}` impossible", s.field));
             }
+            if f.string {
+                let p = usize::from_le_bytes(buf) as Ptr;
+                if p.is_null() {
+                    return Ok(Reading::Text(String::new()));
+                }
+                if !crate::memory::ptr_readable(p as usize, 32) {
+                    return Err(format!("`{}` : texte illisible", s.field));
+                }
+                let t: String = il2cpp::read_string(api, p).unwrap_or_default().chars().take(MAX_TEXT).collect();
+                return Ok(Reading::Text(t));
+            }
             let raw = decode_number(f.te, &buf[..f.size]).ok_or_else(|| format!("`{}` : type non numérique", s.field))?;
-            Ok(raw * s.scale + s.offset)
+            Ok(Reading::Num(raw * s.scale + s.offset))
         }
     }
 
@@ -248,7 +272,8 @@ impl LiveReader {
                     continue;
                 };
                 match self.read_source(api, cache, root, s) {
-                    Ok(v) => values.set(&s.name, v),
+                    Ok(Reading::Num(v)) => values.set(&s.name, v),
+                    Ok(Reading::Text(t)) => values.set_text(&s.name, t),
                     Err(e) => status.errors.push((s.name.clone(), e)),
                 }
             }

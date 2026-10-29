@@ -1,4 +1,4 @@
-# Custom HUD (hud)
+# Custom HUD (custom_hud)
 
 HUDs drawn by CXSFM on top of the game, described in a TOML file and
 **hot-reloaded**: save the file, the result shows up in game within
@@ -91,6 +91,11 @@ rpm_max_k = { from = "rpm_max", in = ["rpm_min", "redline"], out = [0, 7], clamp
   displayed value = `value × scale + offset` (invert, convert a unit,
   shift a gear index…).
 - `speed_mph` always exists too (derived from `speed` in km/h).
+- **Text sources**: when the path ends on a `string` field (a label of
+  the game's interface, e.g. a TMP text's `m_text`), the source holds
+  that text (at most 512 characters). Show it with `{name}` in a `text`
+  or `label` widget; `scale`/`offset` do not apply to it, and it cannot
+  drive bars, arcs, needles or states.
   `m_currentSpeed` already follows the unit chosen in the game.
 - **Finding a path**: **Explorer** tab → search a class (e.g.
   `Tachometer`) → click it → its fields show with their values; `→`
@@ -299,6 +304,56 @@ Values in the text:
 
 egui has no italic font: `skew` leans the glyphs themselves, which
 gives the same look.
+
+### `label` — full text widget (text sources, limits, fonts)
+
+Everything `text` does, plus what game interface strings need: limits
+on the number of characters, font family, bold, outline, background,
+letter spacing, wrapping.
+
+```toml
+  [[hud.widget]]
+  type = "label"
+  source = "track"         # = text = "{track}" (text or number source)
+  pos = [0.0, 0.0]
+  size = 22
+  font = "serif"           # sans | mono | serif | title
+  bold = true
+  max_chars = 16           # keep 16 characters…
+  keep = "start"           # …from the start ("end" = the last ones)
+  ellipsis = "…"           # added where the text was cut
+  case = "upper"           # keep | upper | lower
+  outline = 2
+  background = "#00000080"
+  padding = [8, 4]
+  corner = 4
+```
+
+| Key | Role | Default |
+|---|---|---|
+| `text` | text with `{name}` (numbers and **text sources**) | `""` |
+| `source` | shorthand for `text = "{source}"` | none |
+| `skip_start`, `skip_end` | characters dropped at the start / end first (fixed prefix, unit…) | `0`, `0` |
+| `max_chars` | then at most this many characters (`0` = no limit) | `0` |
+| `keep` | `"start"` keeps the first characters, `"end"` the last ones | `"start"` |
+| `ellipsis` | marker put on the cut side when the text was cut (`""` = none) | `"…"` |
+| `case` | `"keep"`, `"upper"`, `"lower"` | `"keep"` |
+| `trim` | remove spaces / line breaks around the text | `true` |
+| `strip_tags` | remove the game's rich-text tags (`<color=…>`, `<b>`…) | `true` |
+| `font` | `"sans"` (Rajdhani), `"mono"` (fixed width), `"serif"` (PT Serif), `"title"` (Bebas Neue, capitals) | `"sans"` |
+| `bold` | thicker glyphs | `false` |
+| `size`, `color`, `align`, `pos`, `rotation`, `skew`, `opacity` | as for `text` | `16`, white, `"left"`, `[0,0]`, `0`, `0`, `1` |
+| `letter_spacing` | extra space between letters, px | `0` |
+| `max_width` | wrap onto several lines past this width (`0` = one line) | `0` |
+| `line_height` | line height when wrapping | font's |
+| `outline`, `outline_color` | contour around the letters, px | `0`, black |
+| `glow`, `glow_color` | halo, as for `text` | `0` |
+| `background`, `padding`, `corner` | box behind the text (turns with `rotation`), its margin `[x, y]` and corner radius | none, `[4, 2]`, `0` |
+
+Order of the limits: tags removed → spaces trimmed → `skip_start` /
+`skip_end` → `max_chars` (+ `ellipsis`) → `case`. An empty result
+draws nothing (no background either). `bold` is drawn by thickening
+the glyphs (the fonts have no bold file).
 
 ## 5. Full example: needle speedometer
 

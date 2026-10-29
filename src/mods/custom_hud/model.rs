@@ -206,6 +206,142 @@ pub(crate) enum Widget {
         glow: f32,
         glow_color: Option<Color32>,
     },
+    /// Full text widget: template (numbers and text sources), length
+    /// limits, case, font family, faux bold, outline, halo, background,
+    /// letter spacing and wrapping. Not drawn while a placeholder is
+    /// unresolved and `hide_unresolved` is set.
+    Label {
+        text: String,
+        trim: TrimSpec,
+        font: FontKind,
+        bold: bool,
+        size: f32,
+        align: Align,
+        color: Color32,
+        pos: [f32; 2],
+        rotation: f32,
+        opacity: f32,
+        skew: f32,
+        letter_spacing: f32,
+        line_height: Option<f32>,
+        /// Wrap width (0 = one line).
+        max_width: f32,
+        outline: f32,
+        outline_color: Color32,
+        glow: f32,
+        glow_color: Option<Color32>,
+        background: Option<Color32>,
+        padding: [f32; 2],
+        corner: f32,
+    },
+}
+
+/// Font family of a `label`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum FontKind {
+    /// Rajdhani (the menu font).
+    Sans,
+    /// Fixed width (digits that do not "dance").
+    Mono,
+    /// PT Serif.
+    Serif,
+    /// Bebas Neue (condensed capitals).
+    Title,
+}
+
+/// Letter case applied to a `label` text.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Case {
+    Keep,
+    Upper,
+    Lower,
+}
+
+/// How a `label` shortens its text (characters, not bytes).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TrimSpec {
+    /// Dropped from the start / end first (fixed prefixes, units…).
+    pub(crate) skip_start: usize,
+    pub(crate) skip_end: usize,
+    /// Then at most this many characters (0 = no limit)…
+    pub(crate) max_chars: usize,
+    /// …keeping the end instead of the start.
+    pub(crate) keep_end: bool,
+    /// Marker added on the cut side when the limit cut something.
+    pub(crate) ellipsis: String,
+    pub(crate) case: Case,
+    /// Strip surrounding spaces / line breaks (`trim = true`).
+    pub(crate) trim_spaces: bool,
+    /// Rich-text tags of the game's TMP labels (`<color=…>`, `<b>`…)
+    /// removed (`strip_tags = true`).
+    pub(crate) strip_tags: bool,
+}
+
+impl Default for TrimSpec {
+    fn default() -> Self {
+        Self {
+            skip_start: 0,
+            skip_end: 0,
+            max_chars: 0,
+            keep_end: false,
+            ellipsis: String::new(),
+            case: Case::Keep,
+            trim_spaces: true,
+            strip_tags: true,
+        }
+    }
+}
+
+/// `<…>` rich-text tags removed (unclosed `<` kept as text).
+pub(crate) fn strip_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(open) = rest.find('<') {
+        out.push_str(&rest[..open]);
+        match rest[open..].find('>') {
+            Some(close) => rest = &rest[open + close + 1..],
+            None => {
+                out.push_str(&rest[open..]);
+                return out;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Apply a `label`'s limits to its resolved text.
+pub(crate) fn shape_text(s: &str, t: &TrimSpec) -> String {
+    let s = if t.strip_tags { strip_tags(s) } else { s.to_string() };
+    let s = if t.trim_spaces { s.trim().to_string() } else { s };
+    let chars: Vec<char> = s.chars().collect();
+    let lo = t.skip_start.min(chars.len());
+    let hi = chars.len().saturating_sub(t.skip_end).max(lo);
+    let mut body: Vec<char> = chars[lo..hi].to_vec();
+    // Skipping may expose spaces at the cut ("LAP 3/5" → " 3/5").
+    if t.trim_spaces {
+        while body.first().is_some_and(|c| c.is_whitespace()) {
+            body.remove(0);
+        }
+        while body.last().is_some_and(|c| c.is_whitespace()) {
+            body.pop();
+        }
+    }
+    if t.max_chars > 0 && body.len() > t.max_chars {
+        let mark: Vec<char> = t.ellipsis.chars().collect();
+        let keep = t.max_chars.saturating_sub(mark.len()).max(1).min(body.len());
+        body = if t.keep_end {
+            mark.into_iter().chain(body[body.len() - keep..].iter().copied()).collect()
+        } else {
+            body[..keep].iter().copied().chain(mark).collect()
+        };
+    }
+    let out: String = body.into_iter().collect();
+    match t.case {
+        Case::Keep => out,
+        Case::Upper => out.to_uppercase(),
+        Case::Lower => out.to_lowercase(),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -288,7 +424,8 @@ pub(crate) fn with_main_color(w: &Widget, c: Color32) -> Widget {
         Widget::Bar { color, .. }
         | Widget::Arc { color, .. }
         | Widget::Needle { color, .. }
-        | Widget::Text { color, .. } => *color = c,
+        | Widget::Text { color, .. }
+        | Widget::Label { color, .. } => *color = c,
         Widget::Ticks { color, minor_color, label_color, .. } => {
             *color = c;
             *minor_color = c;
@@ -422,14 +559,18 @@ pub(crate) struct HudConfig {
     pub(crate) huds: Vec<Hud>,
 }
 
-/// One frame of named values. Small (a handful of entries): a linear
+/// One frame of named values: numbers, plus texts read from string
+/// fields (game UI labels). Small (a handful of entries): a linear
 /// scan beats a map here. `speed_mph` derives from `speed` (km/h).
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Values(pub(crate) Vec<(String, f32)>);
+pub(crate) struct Values {
+    pub(crate) nums: Vec<(String, f32)>,
+    pub(crate) texts: Vec<(String, String)>,
+}
 
 impl Values {
     pub(crate) fn get(&self, name: &str) -> Option<f32> {
-        if let Some((_, v)) = self.0.iter().find(|(n, _)| n == name) {
+        if let Some((_, v)) = self.nums.iter().find(|(n, _)| n == name) {
             return Some(*v);
         }
         if name == "speed_mph" {
@@ -439,14 +580,26 @@ impl Values {
     }
 
     pub(crate) fn set(&mut self, name: &str, v: f32) {
-        match self.0.iter_mut().find(|(n, _)| n == name) {
+        match self.nums.iter_mut().find(|(n, _)| n == name) {
             Some(slot) => slot.1 = v,
-            None => self.0.push((name.to_string(), v)),
+            None => self.nums.push((name.to_string(), v)),
+        }
+    }
+
+    /// Text source (string field).
+    pub(crate) fn text(&self, name: &str) -> Option<&str> {
+        self.texts.iter().find(|(n, _)| n == name).map(|(_, t)| t.as_str())
+    }
+
+    pub(crate) fn set_text(&mut self, name: &str, t: String) {
+        match self.texts.iter_mut().find(|(n, _)| n == name) {
+            Some(slot) => slot.1 = t,
+            None => self.texts.push((name.to_string(), t)),
         }
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.nums.is_empty() && self.texts.is_empty()
     }
 }
 
@@ -460,8 +613,8 @@ pub(crate) fn gear_label(gear: i32) -> String {
 }
 
 /// Fill `{name}` (0 decimals; `gear` as R/N/1…) and `{name:N}`
-/// (N decimals, max 6). Unknown or unavailable names stay literal
-/// (a typo stays visible on screen).
+/// (N decimals, max 6); a text source is inserted as is. Unknown or
+/// unavailable names stay literal (a typo stays visible on screen).
 pub(crate) fn format_template(t: &str, v: &Values) -> String {
     if !t.contains('{') {
         return t.to_string();
@@ -483,6 +636,7 @@ pub(crate) fn format_template(t: &str, v: &Values) -> String {
         match v.get(name) {
             Some(x) if name == "gear" && decimals.is_none() => out.push_str(&gear_label(x.round() as i32)),
             Some(x) => out.push_str(&format!("{:.*}", decimals.unwrap_or(0), x)),
+            None if v.text(name).is_some() => out.push_str(v.text(name).unwrap_or_default()),
             None => {
                 out.push('{');
                 out.push_str(inner);
@@ -896,6 +1050,98 @@ fn parse_widget(t: &toml::Table, ctx: String, warnings: &mut Vec<String>) -> Opt
                         None
                     }
                 }),
+            })
+        }
+        "label" => {
+            let align = match f.str("align", "left").as_str() {
+                "left" => Align::Left,
+                "center" => Align::Center,
+                "right" => Align::Right,
+                _ => {
+                    f.warn("align");
+                    Align::Left
+                }
+            };
+            let font = match f.str("font", "sans").as_str() {
+                "sans" => FontKind::Sans,
+                "mono" => FontKind::Mono,
+                "serif" => FontKind::Serif,
+                "title" => FontKind::Title,
+                _ => {
+                    f.warn("font");
+                    FontKind::Sans
+                }
+            };
+            let case = match f.str("case", "keep").as_str() {
+                "keep" => Case::Keep,
+                "upper" => Case::Upper,
+                "lower" => Case::Lower,
+                _ => {
+                    f.warn("case");
+                    Case::Keep
+                }
+            };
+            let keep_end = match f.str("keep", "start").as_str() {
+                "start" => false,
+                "end" => true,
+                _ => {
+                    f.warn("keep");
+                    false
+                }
+            };
+            // `source = "name"` is shorthand for `text = "{name}"`.
+            let source = f.str("source", "");
+            let text = match (f.str("text", ""), source.is_empty()) {
+                (t, true) => t,
+                (t, false) if t.is_empty() => format!("{{{source}}}"),
+                (t, false) => {
+                    f.warnings.push(format!("{}: `text` et `source` donnés, `source` ignoré", f.ctx));
+                    t
+                }
+            };
+            let count = |f: &mut Fields, k: &str| f.f32(k, 0.0).clamp(0.0, 10_000.0) as usize;
+            let trim = TrimSpec {
+                skip_start: count(&mut f, "skip_start"),
+                skip_end: count(&mut f, "skip_end"),
+                max_chars: count(&mut f, "max_chars"),
+                keep_end,
+                ellipsis: f.str("ellipsis", "…"),
+                case,
+                trim_spaces: f.bool("trim", true),
+                strip_tags: f.bool("strip_tags", true),
+            };
+            let opt_color = |f: &mut Fields, k: &str| {
+                f.t.get(k).and_then(|v| match v.as_str().and_then(parse_color) {
+                    Some(c) => Some(c),
+                    None => {
+                        f.warnings.push(format!("{}: `{k}` invalide, ignoré", f.ctx));
+                        None
+                    }
+                })
+            };
+            let color = f.color("color", Color32::WHITE);
+            Some(Widget::Label {
+                text,
+                trim,
+                font,
+                bold: f.bool("bold", false),
+                size: f.f32("size", 16.0).clamp(4.0, 300.0),
+                align,
+                color,
+                pos: f.pair("pos", [0.0, 0.0]),
+                rotation: f.f32("rotation", 0.0),
+                opacity: f.f32("opacity", 1.0).clamp(0.0, 1.0),
+                skew: f.f32("skew", 0.0).clamp(-45.0, 45.0),
+                letter_spacing: f.f32("letter_spacing", 0.0).clamp(-20.0, 100.0),
+                line_height: f.t.get("line_height").and_then(num).map(|v| v.clamp(4.0, 600.0)),
+                max_width: f.f32("max_width", 0.0).clamp(0.0, 10_000.0),
+                outline: f.f32("outline", 0.0).clamp(0.0, 20.0),
+                outline_color: f.color("outline_color", Color32::BLACK),
+                glow: f.f32("glow", 0.0).clamp(0.0, 40.0),
+                glow_color: opt_color(&mut f, "glow_color"),
+                background: opt_color(&mut f, "background"),
+                padding: f.pair("padding", [4.0, 2.0]),
+                corner: f.f32("corner", 0.0).clamp(0.0, 100.0),
             })
         }
         other => {
@@ -1848,5 +2094,57 @@ d = 4
             assert!((0.0..=250.0).contains(&v.get("speed").unwrap()));
         }
         assert_eq!(demo_values(f64::NAN).get("gear"), Some(1.0));
+    }
+
+    #[test]
+    fn label_text_shaping() {
+        let t = |max: usize, end: bool| TrimSpec { max_chars: max, keep_end: end, ellipsis: "…".into(), ..TrimSpec::default() };
+        assert_eq!(shape_text("  Tokyo Drift Club  ", &TrimSpec::default()), "Tokyo Drift Club");
+        assert_eq!(shape_text("Tokyo Drift Club", &t(6, false)), "Tokyo…");
+        assert_eq!(shape_text("Tokyo Drift Club", &t(5, true)), "…Club");
+        assert_eq!(shape_text("Tokyo", &t(10, false)), "Tokyo");
+        let skip = TrimSpec { skip_start: 4, skip_end: 3, case: Case::Upper, ..TrimSpec::default() };
+        assert_eq!(shape_text("LAP 3/5 ok!", &skip), "3/5");
+        assert_eq!(shape_text("<color=#fff>12</color> <b>km</b>", &TrimSpec::default()), "12 km");
+        let raw = TrimSpec { strip_tags: false, ..TrimSpec::default() };
+        assert_eq!(shape_text("<b>x</b>", &raw), "<b>x</b>");
+        assert_eq!(strip_tags("a < b"), "a < b");
+        assert_eq!(shape_text("é漢字😀", &t(2, false)), "é…");
+    }
+
+    #[test]
+    fn label_parses_and_templates_take_text() {
+        let toml = r##"
+            [[hud]]
+            name = "l"
+              [[hud.widget]]
+              type = "label"
+              source = "track"
+              max_chars = 12
+              keep = "end"
+              font = "serif"
+              bold = true
+              case = "upper"
+              background = "#00000080"
+              rotation = 10
+        "##;
+        let (cfg, w) = parse_config(toml).unwrap();
+        assert!(w.iter().all(|x| !x.contains("label")), "{w:?}");
+        match &cfg.huds[0].widgets[0].w {
+            Widget::Label { text, trim, font, bold, background, .. } => {
+                assert_eq!(text, "{track}");
+                assert_eq!((trim.max_chars, trim.keep_end, trim.case), (12, true, Case::Upper));
+                assert_eq!(*font, FontKind::Serif);
+                assert!(*bold && background.is_some());
+            }
+            other => panic!("{other:?}"),
+        }
+        let mut v = Values::default();
+        v.set("speed", 88.4);
+        v.set_text("track", "Shibuya".into());
+        assert_eq!(format_template("{track} {speed}", &v), "Shibuya 88");
+        assert!(!v.is_empty());
+        let (_, w) = parse_config("[[hud]]\nname=\"x\"\n[[hud.widget]]\ntype=\"label\"\nfont=\"comic\"").unwrap();
+        assert!(w.iter().any(|x| x.contains("font")), "{w:?}");
     }
 }

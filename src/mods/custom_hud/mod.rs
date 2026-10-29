@@ -52,7 +52,7 @@ pub(crate) struct Status {
 }
 
 /// Mod version (shown on the phone; bump with its features).
-pub const VERSION: &str = "0.2.0";
+pub const VERSION: &str = "0.3.0";
 
 pub struct HudMod {
     pub(crate) enabled: AtomicBool,

@@ -7,7 +7,7 @@
 
 use super::HudMod;
 use super::model::{
-    Align, ExploreReq, Hud, HudConfig, Mode, Values, Widget, arc_point, arc_points, bar_fraction,
+    Align, ExploreReq, FontKind, Hud, HudConfig, Mode, Values, Widget, shape_text, arc_point, arc_points, bar_fraction,
     apply_derived, binding_path, demo_values, format_template, rotate_about, segment_height, tick_label,
     tick_layout, ticks_range, with_main_color,
 };
@@ -395,6 +395,115 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values, active: &[&str
                 }
                 p.add(mk(col, egui::Vec2::ZERO));
             }
+            Widget::Label {
+                text,
+                trim,
+                font,
+                bold,
+                size,
+                align,
+                color,
+                pos,
+                rotation,
+                opacity,
+                skew,
+                letter_spacing,
+                line_height,
+                max_width,
+                outline,
+                outline_color,
+                glow,
+                glow_color,
+                background,
+                padding,
+                corner,
+            } => {
+                let shown = shape_text(&format_template(text, v), trim);
+                if shown.is_empty() {
+                    continue;
+                }
+                let fid = match font {
+                    FontKind::Sans => egui::FontId::proportional(size * s),
+                    FontKind::Mono => egui::FontId::monospace(size * s),
+                    FontKind::Serif => crate::ui::fonts::serif(size * s),
+                    FontKind::Title => crate::ui::fonts::title(size * s),
+                };
+                let col = color.gamma_multiply(*opacity);
+                let mut job = egui::text::LayoutJob::single_section(
+                    shown,
+                    egui::TextFormat {
+                        font_id: fid,
+                        color: col,
+                        extra_letter_spacing: letter_spacing * s,
+                        line_height: line_height.map(|h| h * s),
+                        ..Default::default()
+                    },
+                );
+                if *max_width > 0.0 {
+                    job.wrap.max_width = max_width * s;
+                }
+                job.halign = match align {
+                    Align::Left => egui::Align::LEFT,
+                    Align::Center => egui::Align::Center,
+                    Align::Right => egui::Align::RIGHT,
+                };
+                let galley = p.layout_job(job);
+                let anchor = match align {
+                    Align::Left => egui::Align2::LEFT_TOP,
+                    Align::Center => egui::Align2::CENTER_TOP,
+                    Align::Right => egui::Align2::RIGHT_TOP,
+                };
+                // Rows of centred/right jobs sit left of x = 0: work in
+                // the galley's own coordinates (`raw`), placed so its
+                // box lands on the alignment point, turned around it.
+                let raw = galley.rect;
+                let top_left = anchor.anchor_size(at(*pos), raw.size()).min;
+                let origin = top_left - raw.min.to_vec2();
+                let pivot = raw.min.to_vec2()
+                    + anchor.pos_in_rect(&egui::Rect::from_min_size(egui::Pos2::ZERO, raw.size())).to_vec2();
+                let k = |c: egui::Color32| c.gamma_multiply(*opacity);
+                if let Some(bg) = background {
+                    let pad = egui::vec2(padding[0] * s, padding[1] * s);
+                    let r = raw.expand2(pad);
+                    if *rotation == 0.0 {
+                        p.rect_filled(r.translate(origin.to_vec2()), corner * s, k(*bg));
+                    } else {
+                        let pts = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()]
+                            .map(|q| {
+                                let t = rotate_about([q.x, q.y], [pivot.x, pivot.y], *rotation);
+                                origin + egui::vec2(t[0], t[1])
+                            })
+                            .to_vec();
+                        p.add(egui::Shape::convex_polygon(pts, k(*bg), egui::Stroke::NONE));
+                    }
+                }
+                let tex = ctx.fonts(|f| f.font_image_size());
+                let mk = |c: egui::Color32, shift: egui::Vec2| {
+                    egui::Shape::mesh(text_mesh(&galley, origin, pivot, *rotation, *skew, c, tex, shift))
+                };
+                // Faux bold: the glyphs again, nudged right.
+                let bold_px = if *bold { (size * s * 0.045).max(1.0) } else { 0.0 };
+                let strokes: Vec<f32> = if *bold { vec![0.0, bold_px * 0.5, bold_px] } else { vec![0.0] };
+                let ring = |p: &egui::Painter, r: f32, c: egui::Color32| {
+                    for step in 0..8 {
+                        let o = arc_point([0.0, 0.0], r, step as f32 * 45.0);
+                        for dx in &strokes {
+                            p.add(mk(c, egui::vec2(o[0] + dx, o[1])));
+                        }
+                    }
+                };
+                if *glow > 0.0 {
+                    let gc = k(glow_color.unwrap_or(color.gamma_multiply(0.12)));
+                    ring(&p, glow * s * 0.5, gc);
+                    ring(&p, glow * s, gc);
+                }
+                if *outline > 0.0 {
+                    ring(&p, outline * s, k(*outline_color));
+                }
+                for dx in &strokes {
+                    p.add(mk(col, egui::vec2(*dx, 0.0)));
+                }
+            }
         }
     }
 }
@@ -504,7 +613,12 @@ impl HudMod {
                 }
             }
             // Current values, one compact line (what the HUDs see).
-            let line: Vec<String> = values.0.iter().map(|(n, v)| format!("{n}={v:.2}")).collect();
+            let line: Vec<String> = values
+                .nums
+                .iter()
+                .map(|(n, v)| format!("{n}={v:.2}"))
+                .chain(values.texts.iter().map(|(n, t)| format!("{n}=\"{t}\"")))
+                .collect();
             ui.add(egui::Label::new(egui::RichText::new(line.join("  ")).monospace().small()).wrap());
             if ui.button(super::i18n::reload_label(code)).clicked() {
                 self.reload_now.store(true, Ordering::SeqCst);
@@ -813,5 +927,72 @@ mod tests {
             let prims = ctx.tessellate(out.shapes, out.pixels_per_point);
             assert!(!prims.is_empty());
         }
+    }
+
+    /// Every `label` option draws, with the real fonts, at any angle.
+    #[test]
+    fn label_draws_with_every_option() {
+        use crate::mods::custom_hud::model::parse_config;
+        let toml = r##"
+            mode = "demo"
+            [[hud]]
+            name = "labels"
+            anchor = "center"
+            size = [400.0, 200.0]
+              [[hud.widget]]
+              type = "label"
+              text = "<b>{track}</b> · {speed} km/h"
+              font = "serif"
+              bold = true
+              outline = 2
+              glow = 4
+              background = "#000000A0"
+              padding = [6, 3]
+              corner = 4
+              rotation = 15
+              skew = 10
+              align = "center"
+              letter_spacing = 2
+              max_width = 120
+              pos = [200.0, 50.0]
+              [[hud.widget]]
+              type = "label"
+              source = "track"
+              font = "mono"
+              max_chars = 4
+              keep = "end"
+              align = "right"
+              [[hud.widget]]
+              type = "label"
+              source = "missing"
+              font = "title"
+        "##;
+        let (cfg, w) = parse_config(toml).unwrap();
+        assert!(w.is_empty(), "{w:?}");
+        let mut v = Values::default();
+        v.set("speed", 123.0);
+        v.set_text("track", "Downtown Tokyo".into());
+        let ctx = egui::Context::default();
+        crate::ui::fonts::install(&ctx);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0))),
+            ..Default::default()
+        };
+        let mut verts = 0;
+        for _ in 0..2 {
+            ctx.begin_pass(input.clone());
+            draw_hud(&ctx, 0, &cfg.huds[0], &v, &[]);
+            let mut out = ctx.end_pass();
+            out.textures_delta.clear();
+            verts = ctx
+                .tessellate(out.shapes, out.pixels_per_point)
+                .iter()
+                .map(|p| match &p.primitive {
+                    egui::epaint::Primitive::Mesh(m) => m.vertices.len(),
+                    _ => 0,
+                })
+                .sum();
+        }
+        assert!(verts > 100, "{verts}");
     }
 }
