@@ -81,12 +81,34 @@ impl Bound {
     }
 }
 
-/// Text alignment relative to the widget `pos`.
+/// Text alignment relative to the widget `pos`. `Justify` (labels
+/// with a `max_width` only) spreads each wrapped line to both edges;
+/// it is placed like `Left`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Align {
     Left,
     Center,
     Right,
+    Justify,
+}
+
+/// Primitive shape of a [`Widget::Shape`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ShapeKind {
+    Rect,
+    Ellipse,
+    Line,
+}
+
+impl ShapeKind {
+    /// TOML `type` of the widget.
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            ShapeKind::Rect => "rect",
+            ShapeKind::Ellipse => "ellipse",
+            ShapeKind::Line => "line",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -234,6 +256,22 @@ pub(crate) enum Widget {
         padding: [f32; 2],
         corner: f32,
     },
+    /// Primitive shape. `rect` (rounded `corner`) and `ellipse`
+    /// (inscribed in the box) fill `pos..pos + size` and turn around
+    /// their centre; `line` goes from `pos` to `pos + size` and turns
+    /// around `pos`. `fill = None` = outline only; `stroke` 0 = no
+    /// outline (a line's `stroke` is its thickness).
+    Shape {
+        kind: ShapeKind,
+        pos: [f32; 2],
+        size: [f32; 2],
+        rotation: f32,
+        corner: f32,
+        fill: Option<Color32>,
+        stroke: f32,
+        stroke_color: Color32,
+        opacity: f32,
+    },
 }
 
 /// Font family of a `label`.
@@ -358,6 +396,11 @@ pub(crate) struct Hud {
     /// Hide while no game value is available (menus, loading).
     pub(crate) hide_when_missing: bool,
     pub(crate) widgets: Vec<Placed>,
+    /// Position of this `[[hud]]` in the file (editor writes).
+    pub(crate) index: usize,
+    /// Length of its `[[hud.widget]]` array in the file (skipped
+    /// widgets included): the index a new widget gets.
+    pub(crate) slots: usize,
 }
 
 /// A widget plus its shared-colour hook: while the named `[states]`
@@ -366,6 +409,8 @@ pub(crate) struct Hud {
 pub(crate) struct Placed {
     pub(crate) w: Widget,
     pub(crate) alert: Option<Alert>,
+    /// Position in the HUD's `[[hud.widget]]` array (editor writes).
+    pub(crate) index: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -431,6 +476,8 @@ pub(crate) fn with_main_color(w: &Widget, c: Color32) -> Widget {
             *minor_color = c;
             *label_color = c;
         }
+        Widget::Shape { fill: Some(fill), .. } => *fill = c,
+        Widget::Shape { fill: None, stroke_color, .. } => *stroke_color = c,
     }
     w
 }
@@ -1057,6 +1104,7 @@ fn parse_widget(t: &toml::Table, ctx: String, warnings: &mut Vec<String>) -> Opt
                 "left" => Align::Left,
                 "center" => Align::Center,
                 "right" => Align::Right,
+                "justify" => Align::Justify,
                 _ => {
                     f.warn("align");
                     Align::Left
@@ -1144,11 +1192,89 @@ fn parse_widget(t: &toml::Table, ctx: String, warnings: &mut Vec<String>) -> Opt
                 corner: f.f32("corner", 0.0).clamp(0.0, 100.0),
             })
         }
+        "rect" | "ellipse" | "line" => {
+            let kind = match kind.as_str() {
+                "rect" => ShapeKind::Rect,
+                "ellipse" => ShapeKind::Ellipse,
+                _ => ShapeKind::Line,
+            };
+            let line = kind == ShapeKind::Line;
+            // `fill = "none"` (or absent on a line) = outline only.
+            let fill = match f.t.get("fill") {
+                None if line => None,
+                None => Some(Color32::WHITE),
+                Some(v) if v.as_str() == Some("none") => None,
+                Some(v) => match v.as_str().and_then(parse_color) {
+                    Some(c) => Some(c),
+                    None => {
+                        f.warn("fill");
+                        if line { None } else { Some(Color32::WHITE) }
+                    }
+                },
+            };
+            Some(Widget::Shape {
+                kind,
+                pos: f.pair("pos", [0.0, 0.0]),
+                size: f.pair("size", if line { [100.0, 0.0] } else { [100.0, 40.0] }),
+                rotation: f.f32("rotation", 0.0),
+                corner: f.f32("corner", 0.0).clamp(0.0, 1000.0),
+                fill,
+                stroke: f.f32("stroke", if line { 2.0 } else { 0.0 }).clamp(0.0, 200.0),
+                stroke_color: f.color("stroke_color", Color32::WHITE),
+                opacity: f.f32("opacity", 1.0).clamp(0.0, 1.0),
+            })
+        }
         other => {
             f.warnings.push(format!("{}: type `{other}` inconnu, widget ignoré", f.ctx));
             None
         }
     }
+}
+
+/// One widget from a `[[hud.widget]]`-like table (editor: new widgets
+/// are built from the very keys written to the file). Warnings dropped.
+pub(crate) fn widget_from_table(t: &toml::Table) -> Option<Widget> {
+    let mut warnings = Vec::new();
+    parse_widget(t, String::new(), &mut warnings)
+}
+
+/// Outline of a rect (rounded `corner`) or ellipse filling `min..max`,
+/// turned `deg` clockwise around its centre (convex, clockwise points).
+pub(crate) fn shape_outline(kind: ShapeKind, min: [f32; 2], max: [f32; 2], corner: f32, deg: f32) -> Vec<[f32; 2]> {
+    let (x0, x1) = (min[0].min(max[0]), min[0].max(max[0]));
+    let (y0, y1) = (min[1].min(max[1]), min[1].max(max[1]));
+    let c = [(x0 + x1) * 0.5, (y0 + y1) * 0.5];
+    let (hw, hh) = ((x1 - x0) * 0.5, (y1 - y0) * 0.5);
+    let mut pts = Vec::new();
+    match kind {
+        ShapeKind::Ellipse => {
+            for i in 0..48 {
+                let a = (i as f32 / 48.0) * std::f32::consts::TAU;
+                pts.push([c[0] + hw * a.sin(), c[1] - hh * a.cos()]);
+            }
+        }
+        _ => {
+            let r = corner.clamp(0.0, hw.min(hh));
+            if r <= 0.0 {
+                pts = vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+            } else {
+                // Corner centres clockwise from top-right, 8 steps each.
+                let corners = [([x1 - r, y0 + r], 0.0f32), ([x1 - r, y1 - r], 90.0), ([x0 + r, y1 - r], 180.0), ([x0 + r, y0 + r], 270.0)];
+                for (cc, a0) in corners {
+                    for k in 0..=8 {
+                        let a = (a0 + 90.0 * k as f32 / 8.0).to_radians();
+                        pts.push([cc[0] + r * a.sin(), cc[1] - r * a.cos()]);
+                    }
+                }
+            }
+        }
+    }
+    if deg != 0.0 {
+        for q in &mut pts {
+            *q = rotate_about(*q, c, deg);
+        }
+    }
+    pts
 }
 
 /// `[sources]`: `name = "Root/…/field"` or
@@ -1307,10 +1433,13 @@ pub(crate) fn parse_config(text: &str) -> Result<(HudConfig, Vec<String>), Strin
             background: f.color("background", Color32::TRANSPARENT),
             hide_when_missing: f.bool("hide_when_missing", true),
             widgets: Vec::new(),
+            index: i,
+            slots: 0,
             name,
         };
         let ctx = f.ctx.clone();
         let widgets = t.get("widget").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        hud.slots = widgets.len();
         for (j, w) in widgets.iter().enumerate() {
             let wctx = format!("{ctx} widget #{}", j + 1);
             match w.as_table() {
@@ -1328,7 +1457,7 @@ pub(crate) fn parse_config(text: &str) -> Result<(HudConfig, Vec<String>), Strin
                         None => None,
                     };
                     if let Some(w) = parse_widget(wt, wctx, &mut warnings) {
-                        hud.widgets.push(Placed { w, alert });
+                        hud.widgets.push(Placed { w, alert, index: j });
                     }
                 }
                 None => warnings.push(format!("{wctx}: pas une table, ignoré")),
@@ -1378,9 +1507,13 @@ pub(crate) const DEFAULT_CONFIG: &str = r##"# CXSFM — HUD personnalisés (rech
 #                   {nom:2} (2 décimales), size, align = "left" | "center"
 #                   | "right", mono, color
 #   type = "needle" / "ticks" : aiguille et graduations de cadran.
+#   type = "rect" / "ellipse" / "line" : formes (pos, size, corner, fill
+#                   ou "none", stroke, stroke_color).
+#   Onglet « Éditeur » du mod : déplace / aligne / ajoute à la souris,
+#   Enregistrer n'écrit que les clés modifiées (commentaires gardés).
 #   Tous les widgets : pos, rotation (degrés, 0 = haut, sens horaire),
 #   opacity, alert = "état" + alert_color (couleur partagée, [states]). Doc complète + exemple de compteur à aiguille :
-#   src/mods/custom_hud/README.md du dépôt CXSFM.
+#   crates/cxsfm-mods/src/custom_hud/README.md du dépôt CXSFM.
 # Couleurs : "#RRGGBB" ou "#RRGGBBAA".
 
 version = 2
@@ -2146,5 +2279,60 @@ d = 4
         assert!(!v.is_empty());
         let (_, w) = parse_config("[[hud]]\nname=\"x\"\n[[hud.widget]]\ntype=\"label\"\nfont=\"comic\"").unwrap();
         assert!(w.iter().any(|x| x.contains("font")), "{w:?}");
+    }
+
+    #[test]
+    fn shapes_parse_with_defaults() {
+        let text = r##"
+[[hud]]
+  [[hud.widget]]
+  type = "rect"
+  corner = 6
+  [[hud.widget]]
+  type = "ellipse"
+  fill = "none"
+  stroke = 2
+  stroke_color = "#FF0000"
+  [[hud.widget]]
+  type = "line"
+  size = [50, 10]
+  [[hud.widget]]
+  type = "label"
+  text = "a b c"
+  align = "justify"
+  max_width = 40
+"##;
+        let (cfg, w) = parse_config(text).unwrap();
+        assert!(w.iter().all(|w| !w.contains("widget")), "{w:?}");
+        let ws: Vec<&Widget> = cfg.huds[0].widgets.iter().map(|p| &p.w).collect();
+        assert!(matches!(ws[0], Widget::Shape { kind: ShapeKind::Rect, corner, fill: Some(_), stroke, .. } if *corner == 6.0 && *stroke == 0.0));
+        assert!(matches!(ws[1], Widget::Shape { kind: ShapeKind::Ellipse, fill: None, stroke_color, .. } if *stroke_color == Color32::RED));
+        assert!(matches!(ws[2], Widget::Shape { kind: ShapeKind::Line, fill: None, stroke, size, .. } if *stroke == 2.0 && *size == [50.0, 10.0]));
+        assert!(matches!(ws[3], Widget::Label { align: Align::Justify, .. }));
+        // File positions follow the array (editor writes).
+        let idx: Vec<usize> = cfg.huds[0].widgets.iter().map(|p| p.index).collect();
+        assert_eq!(idx, vec![0, 1, 2, 3]);
+        assert_eq!(cfg.huds[0].slots, 4);
+        // Alert recolours the fill, or the outline without one.
+        assert!(matches!(with_main_color(ws[0], Color32::BLUE), Widget::Shape { fill: Some(c), .. } if c == Color32::BLUE));
+        assert!(matches!(with_main_color(ws[1], Color32::BLUE), Widget::Shape { stroke_color, .. } if stroke_color == Color32::BLUE));
+    }
+
+    #[test]
+    fn shape_outlines() {
+        let r = shape_outline(ShapeKind::Rect, [0.0, 0.0], [10.0, 4.0], 0.0, 0.0);
+        assert_eq!(r, vec![[0.0, 0.0], [10.0, 0.0], [10.0, 4.0], [0.0, 4.0]]);
+        // Rounded: corner capped at half the short side, 4 × 9 points.
+        let rr = shape_outline(ShapeKind::Rect, [0.0, 0.0], [10.0, 4.0], 50.0, 0.0);
+        assert_eq!(rr.len(), 36);
+        assert!(rr.iter().all(|p| p[0] >= -0.001 && p[0] <= 10.001 && p[1] >= -0.001 && p[1] <= 4.001));
+        let e = shape_outline(ShapeKind::Ellipse, [0.0, 0.0], [20.0, 10.0], 0.0, 90.0);
+        // Turned 90° around (10, 5): now 10 wide, 20 tall.
+        let (mut x0, mut x1) = (f32::MAX, f32::MIN);
+        for p in &e {
+            x0 = x0.min(p[0]);
+            x1 = x1.max(p[0]);
+        }
+        assert!((x1 - x0 - 10.0).abs() < 0.1, "{x0}..{x1}");
     }
 }

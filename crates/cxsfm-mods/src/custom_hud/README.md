@@ -8,7 +8,9 @@ anything into the game.
 - File: `~/.config/cxsfm/custom_hud.toml` (created with an example the first
   time the **Custom HUD** tile is enabled).
 - Mod window (menu open): file path, active HUDs, config errors and
-  warnings, live values, and the **Explorer** tab to find new values.
+  warnings, live values; the **Editor** tab to lay HUDs out with the
+  mouse (§6); the **Explorer** tab to find new values and turn them
+  into variables.
 - HUDs stay visible with the menu closed and never take the mouse or
   the keyboard.
 
@@ -342,7 +344,8 @@ letter spacing, wrapping.
 | `strip_tags` | remove the game's rich-text tags (`<color=…>`, `<b>`…) | `true` |
 | `font` | `"sans"` (Rajdhani), `"mono"` (fixed width), `"serif"` (PT Serif), `"title"` (Bebas Neue, capitals) | `"sans"` |
 | `bold` | thicker glyphs | `false` |
-| `size`, `color`, `align`, `pos`, `rotation`, `skew`, `opacity` | as for `text` | `16`, white, `"left"`, `[0,0]`, `0`, `0`, `1` |
+| `size`, `color`, `pos`, `rotation`, `skew`, `opacity` | as for `text` | `16`, white, `[0,0]`, `0`, `0`, `1` |
+| `align` | `"left"`, `"center"`, `"right"`, or `"justify"` (wrapped lines spread to both edges — needs `max_width`; placed like `"left"`) | `"left"` |
 | `letter_spacing` | extra space between letters, px | `0` |
 | `max_width` | wrap onto several lines past this width (`0` = one line) | `0` |
 | `line_height` | line height when wrapping | font's |
@@ -354,6 +357,29 @@ Order of the limits: tags removed → spaces trimmed → `skip_start` /
 `skip_end` → `max_chars` (+ `ellipsis`) → `case`. An empty result
 draws nothing (no background either). `bold` is drawn by thickening
 the glyphs (the fonts have no bold file).
+
+### `rect`, `ellipse`, `line` — primitive shapes
+
+```toml
+  [[hud.widget]]
+  type = "rect"          # or "ellipse", "line"
+  pos = [0, 0]
+  size = [120, 40]
+  corner = 6
+  fill = "#000000A0"
+  stroke = 1
+  stroke_color = "#F5C518"
+```
+
+| Key | Role | Default |
+|---|---|---|
+| `pos` | `rect` / `ellipse`: top-left corner of the box; `line`: start point | `[0, 0]` |
+| `size` | box `[w, h]` (the ellipse fills it); `line`: vector to the end point | `[100, 40]`, line `[100, 0]` |
+| `corner` | `rect` corner radius (capped at half the short side) | `0` |
+| `fill` | fill colour, or `"none"` for an outline only (a line has none) | white |
+| `stroke`, `stroke_color` | outline width (a line's thickness), colour | `0` (line `2`), white |
+| `rotation` | degrees clockwise: around the centre for `rect` / `ellipse`, around `pos` for `line` | `0` |
+| `opacity`, `alert` | as for every widget (`alert` recolours the fill, else the outline) | `1` |
 
 ## 5. Full example: needle speedometer
 
@@ -581,7 +607,45 @@ size = [360.0, 200.0]
   track_color = "#7FF6FF14"
 ```
 
-## 6. Troubleshooting
+## 6. Editor (menu open, "Editor" tab)
+
+Lay HUDs out with the mouse instead of typing coordinates. Changes show
+at once on the game screen; **Save** writes **only the keys you
+touched** into `custom_hud.toml` — your comments, spacing and the
+other keys stay as they were (the previous version is kept as
+`custom_hud.toml.bak`). **Discard** goes back to the file.
+
+- **Select**: click a widget on the screen or in the list (Shift =
+  several). Every widget shows a faint box, the selection a yellow one —
+  even widgets with nothing to draw yet.
+- **Move**: drag the selection; drag an empty spot of a HUD to move the
+  whole HUD (its `offset`). Arrows nudge by 1 (Shift: 10).
+- **Magnetic**: while dragging, edges and centres snap to the HUD box,
+  to the other widgets and (with the grid on) to the grid; a yellow
+  guide shows the line caught. A HUD snaps to the screen edges/centre.
+- **Align**: left / centre / right / top / middle / bottom. Several
+  widgets align on the selection; a single widget on its HUD box.
+- **Distribute** (3 widgets or more): equal gaps, horizontally or
+  vertically; the two outermost stay put.
+- **Justify text**: the `align` row of a `label` offers `justify`.
+- **Add**: rectangle, circle/ellipse, line (§4), text/number, gauge
+  circle (`arc`), bar — created at the HUD centre. **Duplicate**
+  (Ctrl+D), **Delete** (Del), **Undo** (Ctrl+Z).
+- **Properties**: every key of the selected widget (nothing selected =
+  the HUD itself). Value rows (`Variable`, `Min`, `Max`, `Red zone`,
+  `label_max`) list every known variable with its current value; a
+  bound is a number or a variable. `+ variable` inserts `{name}` into
+  a text. `Alert` picks a `[states]` entry.
+- **New variables**: in the **Explorer** tab, the `+` in front of a
+  field ("Use as variable") proposes a name (`m_currentSpeed` →
+  `current_speed`); **Add** writes it into `[sources]` right away and
+  the editor lists it. Live reading starts with the reload (~1 s).
+
+While editing in the garage (no live value yet), the HUDs show demo
+values so every widget can be grabbed. Unsaved changes stay on screen
+with the menu closed.
+
+## 7. Troubleshooting
 
 - **Nothing shows**: mod window → the status line says `UITachometer:
   not found` when not driving (normal, retried every 5 s); otherwise

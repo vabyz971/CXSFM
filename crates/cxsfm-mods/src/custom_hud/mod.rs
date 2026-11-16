@@ -16,14 +16,21 @@
 //! live instance, following reference fields from a re-found root.
 //! Read-only: nothing in the game is ever written.
 //!
+//! EDITOR: the "Editor" tab lays HUDs out on screen (select, drag,
+//! magnetic snapping, align / distribute, primitive shapes, value
+//! binding); Save writes only the touched keys back into the file,
+//! comments kept (`edit` = pure side, `editor` = present side).
+//!
 //! Layout: `model` (config, values, explorer decoding, pure helpers +
 //! tests), `bind` (explorer, tick side, on demand only), `ui`
-//! (present-thread rendering + control window). Disabling only hides
+//! (present-thread rendering + control window), `edit` / `editor`. Disabling only hides
 //! the HUDs (nothing in the game was changed).
 
 pub mod i18n;
 
 mod bind;
+mod edit;
+mod editor;
 mod live;
 pub(crate) mod model;
 mod ui;
@@ -40,6 +47,11 @@ use model::{ExploreReq, ExploreView, HudConfig, Mode, Values};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// Control-window tabs.
+pub(crate) const TAB_HUD: usize = 0;
+pub(crate) const TAB_EDIT: usize = 1;
+pub(crate) const TAB_EXPLORE: usize = 2;
+
 /// Reload probe cadence (ticks, ~1 s at 60 Hz).
 const RELOAD_EVERY_TICKS: u64 = 60;
 
@@ -52,7 +64,7 @@ pub(crate) struct Status {
 }
 
 /// Mod version (shown on the phone; bump with its features).
-pub const VERSION: &str = "0.3.0";
+pub const VERSION: &str = "0.4.0";
 
 pub struct HudMod {
     pub(crate) enabled: AtomicBool,
@@ -71,9 +83,17 @@ pub struct HudMod {
     pub(crate) unity: Mutex<Option<UnityCache>>,
     pub(crate) explore_req: Mutex<Option<ExploreReq>>,
     pub(crate) explore: Mutex<ExploreView>,
-    /// Present thread only: active tab, search box text.
-    pub(crate) tab_explore: bool,
+    /// Present thread only: active tab (`TAB_*`), search box text,
+    /// variable being added from the Explorer (name, field path).
+    pub(crate) tab: usize,
     pub(crate) query: String,
+    pub(crate) new_var: Option<(String, String)>,
+    /// Layout editor (present thread only).
+    pub(crate) editor: editor::Editor,
+    /// Edits to write into the file (render stages, tick applies).
+    pub(crate) save_req: Mutex<Option<Vec<edit::Edit>>>,
+    /// Outcome of the last write, for the editor panel.
+    pub(crate) save_status: Mutex<Option<String>>,
     /// Live values (tick reads at the config fps, render clones).
     pub(crate) live: Mutex<Values>,
     pub(crate) live_status: Mutex<LiveStatus>,
@@ -99,8 +119,12 @@ impl HudMod {
             unity: Mutex::new(None),
             explore_req: Mutex::new(None),
             explore: Mutex::new(ExploreView::default()),
-            tab_explore: false,
+            tab: TAB_HUD,
             query: String::new(),
+            new_var: None,
+            editor: editor::Editor::default(),
+            save_req: Mutex::new(None),
+            save_status: Mutex::new(None),
             live: Mutex::new(Values::default()),
             live_status: Mutex::new(LiveStatus::default()),
             reader: Mutex::new(LiveReader::default()),
@@ -163,6 +187,38 @@ impl HudMod {
 }
 
 impl HudMod {
+    /// Tick thread: write the editor's staged edits into the file
+    /// (comments kept, `.bak` of the previous version), then reload.
+    fn save_edits(&self) {
+        let Some(edits) = lock(&self.save_req).take() else {
+            return;
+        };
+        let code = cxsfm_api::i18n::current().code();
+        let Some(path) = cxsfm_api::config::hud_path() else {
+            return;
+        };
+        let result = cxsfm_api::config::load_toml(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|text| edit::apply_edits(&text, &edits))
+            .and_then(|(text, skipped)| {
+                cxsfm_api::config::save_toml(&path, &text).map_err(|e| e.to_string())?;
+                Ok(skipped)
+            });
+        let msg = match result {
+            Ok(skipped) if skipped.is_empty() => i18n::ed(code, "saved").replace("{n}", &edits.len().to_string()),
+            Ok(skipped) => {
+                for w in &skipped {
+                    cxsfm_api::log_line(&format!("{MOD_ID}: editor: {w}"));
+                }
+                i18n::ed(code, "saved_skipped").replace("{w}", &skipped.len().to_string())
+            }
+            Err(e) => i18n::ed(code, "save_error").replace("{e}", &e),
+        };
+        cxsfm_api::log_line(&format!("{MOD_ID}: editor: {msg}"));
+        *lock(&self.save_status) = Some(msg);
+        self.reload(true);
+    }
+
     /// Live sources at the config fps (tick thread). Demo mode, no
     /// sources or no visible HUD = zero Unity traffic.
     fn live_tick(&self, t: u64) {
@@ -233,6 +289,7 @@ impl Mod for HudMod {
         if force || t % RELOAD_EVERY_TICKS == 0 {
             self.reload(force);
         }
+        self.save_edits();
         // Explorer: on-demand only (no request = no Unity traffic).
         self.explore_tick();
         self.live_tick(t);

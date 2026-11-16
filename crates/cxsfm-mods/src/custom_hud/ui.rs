@@ -7,10 +7,12 @@
 
 use super::HudMod;
 use super::model::{
-    Align, ExploreReq, FontKind, Hud, HudConfig, Mode, Values, Widget, shape_text, arc_point, arc_points, bar_fraction,
+    Align, ExploreReq, FontKind, Hud, HudConfig, Mode, ShapeKind, Values, Widget, shape_outline, shape_text, arc_point, arc_points, bar_fraction,
     apply_derived, binding_path, demo_values, format_template, rotate_about, segment_height, tick_label,
     tick_layout, ticks_range, with_main_color,
 };
+use super::editor::PanelOut;
+use super::{TAB_EDIT, TAB_EXPLORE};
 use cxsfm_api::common::lock;
 use cxsfm_ui::kit;
 use std::sync::atomic::Ordering;
@@ -125,14 +127,18 @@ fn text_mesh(
     mesh
 }
 
-/// `active` = names of the `[states]` entries showing this frame.
-fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values, active: &[&str]) {
+/// Background layer of HUD `idx` (under every window, never interactive).
+fn hud_painter(ctx: &egui::Context, idx: usize) -> egui::Painter {
+    ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new(("cxsfm_hud", idx))))
+}
+
+/// Paint HUD `h` with `p` (its own background layer, or the editor's
+/// interactive layer). `active` = names of the `[states]` entries
+/// showing this frame.
+pub(crate) fn draw_hud(ctx: &egui::Context, p: &egui::Painter, h: &Hud, v: &Values, active: &[&str]) {
     let screen = ctx.content_rect();
     let rect = hud_rect(screen, h);
-    let mut p = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Background,
-        egui::Id::new(("cxsfm_hud", idx)),
-    ));
+    let mut p = p.clone();
     p.set_opacity(h.opacity);
     if h.background.a() > 0 {
         p.rect_filled(rect, 3.0, h.background);
@@ -355,7 +361,7 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values, active: &[&str
             }
             Widget::Text { text, pos, size, align, color, mono, rotation, opacity, skew, glow, glow_color } => {
                 let anchor = match align {
-                    Align::Left => egui::Align2::LEFT_TOP,
+                    Align::Left | Align::Justify => egui::Align2::LEFT_TOP,
                     Align::Center => egui::Align2::CENTER_TOP,
                     Align::Right => egui::Align2::RIGHT_TOP,
                 };
@@ -444,13 +450,15 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values, active: &[&str
                     job.wrap.max_width = max_width * s;
                 }
                 job.halign = match align {
-                    Align::Left => egui::Align::LEFT,
+                    Align::Left | Align::Justify => egui::Align::LEFT,
                     Align::Center => egui::Align::Center,
                     Align::Right => egui::Align::RIGHT,
                 };
+                // Both edges flush: only meaningful on wrapped lines.
+                job.justify = *align == Align::Justify && *max_width > 0.0;
                 let galley = p.layout_job(job);
                 let anchor = match align {
-                    Align::Left => egui::Align2::LEFT_TOP,
+                    Align::Left | Align::Justify => egui::Align2::LEFT_TOP,
                     Align::Center => egui::Align2::CENTER_TOP,
                     Align::Right => egui::Align2::RIGHT_TOP,
                 };
@@ -505,6 +513,37 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values, active: &[&str
                     p.add(mk(col, egui::vec2(*dx, 0.0)));
                 }
             }
+            Widget::Shape { kind, pos, size, rotation, corner, fill, stroke, stroke_color, opacity } => {
+                let k = |c: egui::Color32| c.gamma_multiply(*opacity);
+                let a = at(*pos);
+                let d = egui::vec2(size[0] * s, size[1] * s);
+                let st = if *stroke > 0.0 {
+                    egui::Stroke::new(stroke * s, k(*stroke_color))
+                } else {
+                    egui::Stroke::NONE
+                };
+                let fill = fill.map(k).unwrap_or(egui::Color32::TRANSPARENT);
+                match kind {
+                    ShapeKind::Line => {
+                        let b = pt(rotate_about([a.x + d.x, a.y + d.y], [a.x, a.y], *rotation));
+                        p.line_segment([a, b], st);
+                    }
+                    ShapeKind::Rect if *rotation == 0.0 => {
+                        let r = egui::Rect::from_two_pos(a, a + d);
+                        p.rect(r, corner * s, fill, st, egui::StrokeKind::Inside);
+                    }
+                    _ => {
+                        let pts: Vec<egui::Pos2> =
+                            shape_outline(*kind, [a.x, a.y], [a.x + d.x, a.y + d.y], corner * s, *rotation)
+                                .into_iter()
+                                .map(pt)
+                                .collect();
+                        if pts.len() >= 3 {
+                            p.add(egui::Shape::convex_polygon(pts, fill, st));
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -512,55 +551,74 @@ fn draw_hud(ctx: &egui::Context, idx: usize, h: &Hud, v: &Values, active: &[&str
 impl HudMod {
     pub(crate) fn draw(&mut self, ctx: &egui::Context) {
         let cfg: Option<std::sync::Arc<HudConfig>> = lock(&self.config).clone();
+        let t = ctx.input(|i| i.time);
+        // Editing = menu open on the Editor tab: the HUDs become
+        // interactive and show the working copy.
+        let editing = cxsfm_input::hotkey::ui_visible() && self.tab == TAB_EDIT;
+        if editing {
+            self.editor.sync(&cfg);
+        }
         let mut values = match cfg.as_deref().map(|c| c.mode) {
-            Some(Mode::Demo) => demo_values(ctx.input(|i| i.time)),
+            Some(Mode::Demo) => demo_values(t),
             _ => lock(&self.live).clone(),
         };
-        // Derived sources (remaps) on top of whatever was read.
-        if let Some(c) = cfg.as_deref() {
-            if !values.is_empty() {
-                apply_derived(&mut values, &c.derived);
-            }
+        // Laying out in the garage: no live value yet → demo values so
+        // every widget shows (and can be grabbed).
+        if editing && values.is_empty() {
+            values = demo_values(t);
         }
-        if let Some(cfg) = &cfg {
-            let t = ctx.input(|i| i.time);
-            let active: Vec<&str> = cfg
-                .states
-                .iter()
-                .filter(|s| s.active(&values, t))
-                .map(|s| s.name.as_str())
-                .collect();
+        // Unsaved edits stay visible with the menu closed too.
+        let shown: Option<&HudConfig> =
+            if editing || !self.editor.edits.is_empty() { self.editor.work.as_ref() } else { cfg.as_deref() };
+        if let Some(c) = shown
+            && !values.is_empty()
+        {
+            apply_derived(&mut values, &c.derived);
+        }
+        if editing {
+            self.editor.overlay(ctx, &values, t);
+            ctx.request_repaint_after(std::time::Duration::from_millis(33));
+        } else if let Some(cfg) = shown {
+            let active: Vec<&str> = cfg.states.iter().filter(|s| s.active(&values, t)).map(|s| s.name.as_str()).collect();
             let mut any = false;
             for (i, h) in cfg.huds.iter().enumerate().filter(|(_, h)| h.enabled) {
                 any = true;
                 if h.hide_when_missing && values.is_empty() {
                     continue;
                 }
-                draw_hud(ctx, i, h, &values, &active);
+                draw_hud(ctx, &hud_painter(ctx, i), h, &values, &active);
             }
             // Live values need frames even with the menu closed: the
             // overlay re-runs egui when the requested delay expires.
             if any {
-                ctx.request_repaint_after(std::time::Duration::from_millis(
-                    1000 / u64::from(cfg.fps.max(1)),
-                ));
+                ctx.request_repaint_after(std::time::Duration::from_millis(1000 / u64::from(cfg.fps.max(1))));
             }
         }
         if cxsfm_input::hotkey::ui_visible() {
+            let cfg = cfg.clone();
             self.draw_window(ctx, cfg.as_deref(), &values);
         }
     }
 
     fn draw_window(&mut self, ctx: &egui::Context, cfg: Option<&HudConfig>, values: &Values) {
         let code = cxsfm_api::i18n::current().code();
-        // The explorer tab needs the whole mod: take the chrome out.
+        // The tabs need the whole mod: take the chrome out.
         let mut tool = std::mem::take(&mut self.tool);
         tool.show(ctx, super::i18n::tile_label(code), egui::vec2(WIN_W, WIN_H), |ui, _controls| {
-            let mut tab = usize::from(self.tab_explore);
-            kit::tabs(ui, &mut tab, &[super::i18n::tab_hud(code), super::i18n::tab_explore(code)]);
-            self.tab_explore = tab == 1;
-            if self.tab_explore {
+            kit::tabs(
+                ui,
+                &mut self.tab,
+                &[super::i18n::tab_hud(code), super::i18n::ed(code, "tab_edit"), super::i18n::tab_explore(code)],
+            );
+            if self.tab == TAB_EXPLORE {
                 self.explore_tab(ui, code);
+                return;
+            }
+            if self.tab == TAB_EDIT {
+                let status = lock(&self.save_status).clone();
+                if let PanelOut::Save(edits) = self.editor.panel(ui, values, code, status.as_deref()) {
+                    lock(&self.save_req).get_or_insert_with(Vec::new).extend(edits);
+                }
                 return;
             }
             let status = lock(&self.status).clone();
@@ -643,6 +701,8 @@ impl HudMod {
             }
         });
         kit::note(ui, super::i18n::explore_hint(code));
+        self.new_var_row(ui, code);
+        let mut add_var: Option<(String, String)> = None;
         match &view.open {
             Some(o) => {
                 ui.horizontal(|ui| {
@@ -704,8 +764,12 @@ impl HudMod {
                                     path.push(row.name.clone());
                                     req = Some(ExploreReq::Open { klass: o.klass, root: o.root.clone(), path, instance: o.instance });
                                 }
-                            } else {
-                                ui.add_space(22.0);
+                            } else if ui
+                                .small_button(egui_material_icons::icons::ICON_ADD.rich_text())
+                                .on_hover_text(super::i18n::ed(code, "use_var"))
+                                .clicked()
+                            {
+                                add_var = Some((row.name.clone(), binding_path(&root_short, &o.path, &row.name)));
                             }
                             let line = format!("{}: {} = {}", row.name, row.type_name, row.value);
                             ui.add(egui::Label::new(egui::RichText::new(line).monospace()).truncate())
@@ -741,6 +805,61 @@ impl HudMod {
         if let Some(r) = req {
             *lock(&self.explore_req) = Some(r);
         }
+        if let Some((field, path)) = add_var {
+            let name = super::edit::suggest_var_name(&field, &self.taken_names());
+            self.new_var = Some((name, path));
+        }
+    }
+
+    /// Source names already in use (file + editor copy).
+    fn taken_names(&self) -> Vec<String> {
+        let published = lock(&self.config).clone();
+        let mut v: Vec<String> = published
+            .iter()
+            .flat_map(|c| c.sources.iter().map(|s| s.name.clone()).chain(c.derived.iter().map(|d| d.name.clone())))
+            .collect();
+        if let Some(w) = &self.editor.work {
+            v.extend(w.sources.iter().map(|s| s.name.clone()));
+            v.extend(w.derived.iter().map(|d| d.name.clone()));
+        }
+        v.push("speed_mph".into());
+        v
+    }
+
+    /// "Use as variable": name the field, then write it into
+    /// `[sources]` right away (through the tick) — the editor's pickers
+    /// list it at once, the live reader once the file is reloaded.
+    fn new_var_row(&mut self, ui: &mut egui::Ui, code: &str) {
+        let Some((mut name, path)) = self.new_var.take() else {
+            return;
+        };
+        let taken = self.taken_names();
+        let ok = super::edit::valid_var_name(&name) && !taken.contains(&name);
+        let mut keep = true;
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(super::i18n::ed(code, "var_name"));
+                ui.add(egui::TextEdit::singleline(&mut name).desired_width(160.0));
+                if ui.add_enabled(ok, egui::Button::new(super::i18n::ed(code, "var_add"))).clicked() {
+                    lock(&self.save_req)
+                        .get_or_insert_with(Vec::new)
+                        .push(super::edit::Edit::AddSource { name: name.clone(), path: path.clone() });
+                    self.editor.note_source(&name, &path);
+                    *lock(&self.save_status) = Some(super::i18n::ed(code, "var_added").replace("{name}", &name));
+                    keep = false;
+                }
+                if ui.button(egui_material_icons::icons::ICON_CANCEL.rich_text()).clicked() {
+                    keep = false;
+                }
+            });
+            ui.add(egui::Label::new(egui::RichText::new(&path).monospace().small()).truncate());
+            if !ok {
+                kit::warn(ui, super::i18n::ed(code, "var_bad"));
+            }
+        });
+        if keep {
+            self.new_var = Some((name, path));
+        }
     }
 }
 
@@ -768,11 +887,147 @@ mod tests {
     }
 
     /// Explorer with long names must stay inside the fixed window.
+    /// Editor tab: HUD props, then each widget type's props (and a
+    /// multi-selection) must stay inside the fixed window.
+    #[test]
+    fn editor_panel_stays_within_window() {
+        use super::super::model::parse_config;
+        let text = r##"
+version = 2
+mode = "demo"
+[sources]
+rpm = "UITachometer/m_rpm"
+[states]
+rouge = { source = "rpm", above = 0.9 }
+[[hud]]
+name = "All widgets with a deliberately long HUD name"
+size = [400.0, 200.0]
+  [[hud.widget]]
+  type = "bar"
+  source = "rpm"
+  redline = 0.8
+  [[hud.widget]]
+  type = "arc"
+  source = "rpm"
+  [[hud.widget]]
+  type = "needle"
+  source = "rpm"
+  [[hud.widget]]
+  type = "ticks"
+  [[hud.widget]]
+  type = "text"
+  text = "{rpm} a long template with many words in it"
+  [[hud.widget]]
+  type = "label"
+  text = "{rpm}"
+  align = "justify"
+  [[hud.widget]]
+  type = "rect"
+  [[hud.widget]]
+  type = "ellipse"
+  fill = "none"
+  stroke = 2
+  [[hud.widget]]
+  type = "line"
+  alert = "rouge"
+"##;
+        let (cfg, w) = parse_config(text).unwrap();
+        assert!(w.is_empty(), "{w:?}");
+        let n = cfg.huds[0].widgets.len();
+        assert_eq!(n, 9);
+        let mut m = HudMod::new();
+        m.tab = TAB_EDIT;
+        m.tool.pos = Some(egui::pos2(100.0, 100.0));
+        m.editor.work = Some(cfg);
+        let ctx = egui::Context::default();
+        egui_material_icons::initialize(&ctx);
+        cxsfm_ui::fonts::install(&ctx);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0))),
+            ..Default::default()
+        };
+        let values = demo_values(1.0);
+        let mut selections: Vec<Vec<usize>> = vec![vec![]];
+        selections.extend((0..n).map(|i| vec![i]));
+        selections.push(vec![0, 4, 6]);
+        for sel in selections {
+            m.editor.sel = sel.clone();
+            let mut max_x = 0.0f32;
+            for _ in 0..3 {
+                ctx.begin_pass(input.clone());
+                m.draw_window(&ctx, None, &values);
+                let mut out = ctx.end_pass();
+                out.textures_delta.clear();
+                max_x = 0.0;
+                for p in ctx.tessellate(out.shapes, out.pixels_per_point) {
+                    if let egui::epaint::Primitive::Mesh(mesh) = &p.primitive {
+                        for v in &mesh.vertices {
+                            max_x = max_x.max(v.pos.x);
+                        }
+                    }
+                }
+            }
+            assert!(max_x <= 100.0 + WIN_W + 40.0, "editor panel overflows with selection {sel:?}: max_x={max_x}");
+        }
+        assert!(m.editor.edits.is_empty(), "drawing alone must not record edits");
+    }
+
+    /// Every shape (rotated, outlined, filled, line) paints without
+    /// panicking and inside its HUD.
+    #[test]
+    fn shapes_render() {
+        use super::super::model::parse_config;
+        let text = r##"
+[[hud]]
+anchor = "top_left"
+size = [300.0, 200.0]
+  [[hud.widget]]
+  type = "rect"
+  corner = 8
+  rotation = 30
+  stroke = 2
+  [[hud.widget]]
+  type = "rect"
+  pos = [50, 50]
+  [[hud.widget]]
+  type = "ellipse"
+  pos = [100, 20]
+  size = [80, 40]
+  rotation = 45
+  [[hud.widget]]
+  type = "line"
+  pos = [10, 150]
+  size = [200, 0]
+  rotation = -10
+"##;
+        let (cfg, _) = parse_config(text).unwrap();
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0))),
+            ..Default::default()
+        };
+        ctx.begin_pass(input);
+        draw_hud(&ctx, &hud_painter(&ctx, 0), &cfg.huds[0], &Values::default(), &[]);
+        let mut out = ctx.end_pass();
+        out.textures_delta.clear();
+        let prims = ctx.tessellate(out.shapes, out.pixels_per_point);
+        let verts: Vec<egui::Pos2> = prims
+            .iter()
+            .filter_map(|p| match &p.primitive {
+                egui::epaint::Primitive::Mesh(m) => Some(m),
+                _ => None,
+            })
+            .flat_map(|m| m.vertices.iter().map(|v| v.pos))
+            .collect();
+        assert!(verts.len() > 100, "shapes painted");
+        assert!(verts.iter().all(|v| v.x < 320.0 && v.y < 220.0), "inside the HUD");
+    }
+
     #[test]
     fn explorer_stays_within_window() {
         use super::super::model::{FieldRow, OpenView};
         let mut m = HudMod::new();
-        m.tab_explore = true;
+        m.tab = TAB_EXPLORE;
         m.tool.pos = Some(egui::pos2(100.0, 100.0));
         lock(&m.explore).open = Some(OpenView {
             root: "CarX.Street.Very.Long.Namespace.UITachometerControllerWithALongName".into(),
@@ -854,7 +1109,7 @@ mod tests {
         apply_derived(&mut v, &cfg.derived);
         assert!(v.get("rpm_tr").is_some());
         for (i, h) in cfg.huds.iter().enumerate() {
-            draw_hud(&ctx, i, h, &v, &[]);
+            draw_hud(&ctx, &hud_painter(&ctx, i), h, &v, &[]);
         }
         let mut out = ctx.end_pass();
         out.textures_delta.clear();
@@ -893,7 +1148,7 @@ mod tests {
         for t in 0..3 {
             ctx.begin_pass(input.clone());
             for (i, h) in cfg.huds.iter().enumerate() {
-                draw_hud(&ctx, i, h, &demo_values(t as f64 * 3.3), &["rouge"]);
+                draw_hud(&ctx, &hud_painter(&ctx, i), h, &demo_values(t as f64 * 3.3), &["rouge"]);
             }
             let mut out = ctx.end_pass();
             out.textures_delta.clear();
@@ -954,7 +1209,7 @@ mod tests {
         let mut verts = 0;
         for _ in 0..2 {
             ctx.begin_pass(input.clone());
-            draw_hud(&ctx, 0, &cfg.huds[0], &v, &[]);
+            draw_hud(&ctx, &hud_painter(&ctx, 0), &cfg.huds[0], &v, &[]);
             let mut out = ctx.end_pass();
             out.textures_delta.clear();
             verts = ctx

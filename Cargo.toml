@@ -32,6 +32,9 @@ bitflags = "2.9"
 # Save files (TOML, hand-editable with comments). Pure Rust, no system
 # deps — same policy as every other dependency here.
 toml = "0.8"
+# Comment-preserving edits of hand-written TOML (Custom HUD editor).
+# Already in the tree through `toml` 0.8: no new crate to build.
+toml_edit = "0.22"
 glam = { version = "0.29", features = ["serde"] }
 ctor = "0.2"
 libc = "0.2"
