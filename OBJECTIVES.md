@@ -1,6 +1,9 @@
 # CXSFM Objectives & Roadmap
 
-This document outlines the development roadmap for the CarX Street Framework Mod (CXSFM).
+This document outlines the development roadmap for the CarX Street
+Framework Mod (CXSFM). Current release: **v0.7.0**. "Proven" means
+validated in game on Linux (implicit Vulkan layer); see
+[docs/field-notes.md](docs/field-notes.md) for the evidence log.
 
 ## Phase 1: Hooking & UI (Done, proven in-game on Linux)
 
@@ -13,53 +16,80 @@ This document outlines the development roadmap for the CarX Street Framework Mod
 - [x] Egui renderer integration with game's graphics pipeline
 - [x] Input event forwarding (SDL + X11 capture, F8 toggle)
 - [x] Stability pass: stale-handle re-resolve, teardown guards
+- [x] Overlay can no longer freeze the game's present (dead fence →
+      overlay paused) nor replay stale draw ranges after a page change
+- [x] Threads detached from IL2CPP before the runtime shuts down
 
 **Status**: Complete — menu renders in-game, no crash on scene
-change (garage ↔ race) or at quit. Binary max `GLIBC_2.35`
-(< Steam Runtime sniper 2.36).
+change (garage ↔ race). Binary max `GLIBC_2.35` (< Steam Runtime
+sniper 2.36). Quit remains fragile on the game side (vanilla CarX
+SIGSEGVs in its exit handlers); `tools/cxsfm-hang-dump.sh` covers hangs.
 
 ---
 
-## Phase 2: Scanning & Telemetry
+## Phase 2: Menu, Input & Settings (Done, proven in-game)
 
-Planned for after Phase 1 stabilization.
+- [x] Phone-style main menu (per-mod tiles, version + description on
+      hover, close button, Settings / About / Quit tiles)
+- [x] CarX theme + game fonts (Bebas Neue, Rajdhani — SIL OFL),
+      Material Symbols icons
+- [x] Full-screen game-style mod screens (tabs, rows, help panel,
+      ESC BACK / POWER)
+- [x] Gamepad navigation ("mod mode", L3 + R3), pad read from evdev on
+      its own thread
+- [x] Window chrome: pin (visible with the menu closed), opacity
+- [x] Save/load settings in hand-editable TOML (`~/.config/cxsfm/`:
+      `settings.toml`, `saves.toml`, `fpv_drone.toml`, `custom_hud.toml`)
+- [x] Auto-load of speedometer/map saves on arrival in game
+      (Settings opt-in, `Mod::on_background_update`)
+- [x] Configurable keybindings (FPV Drone rebindable controls)
+- [x] Per-mod i18n translation files
 
-- [ ] AOB (Array of Bytes) scanner with wildcard support
+---
+
+## Phase 3: Bundled Mods
+
+| Mod | Version | State |
+|---|---|---|
+| Scene Inspector | 1.1.0 | [x] scene tree proven; [ ] components, field values, reference navigation and edits (1.1.0) to validate in game |
+| Game Log | 1.0.0 | [x] `Player.log` viewer |
+| Speedometer | 0.5.4 | [x] HUD restyle, edits kept on disable, Restore button, auto-applied saves |
+| Minimap | 0.2.0 | [x] same pattern as the speedometer |
+| Custom HUD | 0.3.0 | [x] bars, arcs, needles, ticks, italic/glow text, live values through field paths (~16 min of driving validated); [ ] text sources + full `label` widget (0.3.0) to validate in game |
+| Engine Sound | 0.2.0 | [x] FMOD engine-event pitch/volume (cosmetic audio), full-screen settings |
+| FPV Drone | 0.5.0 | [x] free quadcopter camera on the pad (physics, collisions, rebindable controls, four-rotor sound) |
+| FPV Camera | — | [ ] parked until per-frame application is possible (`mainthread.rs` phase 2) |
+
+---
+
+## Phase 4: Telemetry & Scanning
+
+- [x] IL2CPP reflection (class search, field dumps, raw field reads,
+      bounded `read_string`) — replaces signatures for most needs
+- [x] Real-time value extraction (Custom HUD live reader: speed, RPM,
+      gear via field paths)
+- [~] AOB scanner with wildcard support — implemented in
+      `src/memory.rs` (`AobScanner`), not used by any mod yet
+- [ ] Telemetry data logger (position, speed, lap times) to a file
 - [ ] Game structure signature database
-- [ ] Real-time memory value extraction
-- [ ] Telemetry data logger (position, speed, lap times)
-- [ ] Memory map visualization UI
 - [ ] Signature update mechanism (community-driven)
-
-**Estimated Timeline**: 2-3 months after Phase 1
+- [ ] Memory map visualization UI
 
 ---
 
-## Phase 3: FPV Camera & HUD
+## Phase 5: Framework & Advanced Mods
 
-Planned for Phase 2 completion.
-
-- [ ] FPV Drone camera mod (example)
+- [ ] Main-thread execution (`mainthread.rs`: `methodPointer` swap —
+      phase 1 probes done, no mod migrated) — unblocks FPV Camera
 - [ ] Camera orbit / follow modes
-- [ ] HUD overlay elements
-- [ ] Performance optimizations
-- [ ] Configurable keybindings
-- [ ] Save/load settings
-
-**Estimated Timeline**: 3-4 months after Phase 2
-
----
-
-## Phase 4: Advanced Mods
-
-Future development beyond the MVP.
-
-- [ ] Replay system
-- [ ] Screenshot mode (free camera)
+- [ ] Screenshot mode (free camera — partly covered by FPV Drone)
 - [ ] Color adjustment filters
-- [ ] Mod loader (community plugin support)
-- [ ] Configuration file parser (TOML)
-- [ ] Debug information overlay
+- [ ] Replay system
+- [ ] Mod loader for external community plugins (see
+      [docs/plugin-guide.md](docs/plugin-guide.md))
+- [ ] Debug information overlay (FPS, frame time, framework state)
+- [ ] Windows (DXGI) and macOS (Metal) paths validated in game
+      (scaffolds only today)
 
 ---
 
@@ -69,9 +99,11 @@ Future development beyond the MVP.
   the FFI/bridge modules (`memory.rs`, `il2cpp.rs`, `layer.rs`,
   `unity/`, `hotkey.rs`, `render/`) behind safe APIs with documented
   `SAFETY` contracts; mods themselves contain no `unsafe`
-- **No gameplay modification** - strictly cosmetic/UI/HUD/camera changes
-- **Minimal performance overhead** - async mod loading
-- **Cross-platform compatibility** - consistent behavior across Windows/Linux/macOS
+- **No gameplay modification** - strictly cosmetic/UI/HUD/camera/audio
+  changes; never economy, physics or network
+- **Minimal performance overhead** - nothing heavy on the present
+  thread, no Unity call from it
+- **Cross-platform layout** - only Linux is proven in game today
 
 ---
 
