@@ -193,6 +193,12 @@ pub fn follow_hint(lang_code: &str) -> &'static str {
 pub fn ed(lang_code: &str, key: &str) -> &'static str {
     let (fr, en) = match key {
         "tab_edit" => ("Éditeur", "Editor"),
+        "widget_name" => ("Nom", "Name"),
+        "widget_name_hint" => ("ex. Compte-tours", "e.g. Rev counter"),
+        "reads" => ("Lit :", "Reads:"),
+        "filter_widgets" => ("chercher (nom, type, variable)", "search (name, type, variable)"),
+        "bound_only" => ("liés à une variable", "bound to a variable"),
+        "no_match" => ("Aucun élément.", "No element."),
         "none" => ("aucune", "none"),
         "number" => ("nombre", "number"),
         "insert_var" => ("+ variable", "+ variable"),

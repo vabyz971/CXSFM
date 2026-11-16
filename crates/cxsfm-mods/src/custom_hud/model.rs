@@ -411,6 +411,9 @@ pub(crate) struct Placed {
     pub(crate) alert: Option<Alert>,
     /// Position in the HUD's `[[hud.widget]]` array (editor writes).
     pub(crate) index: usize,
+    /// `name = "…"`: free label to find the widget in the editor
+    /// (empty = none). Never drawn.
+    pub(crate) name: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1457,7 +1460,8 @@ pub(crate) fn parse_config(text: &str) -> Result<(HudConfig, Vec<String>), Strin
                         None => None,
                     };
                     if let Some(w) = parse_widget(wt, wctx, &mut warnings) {
-                        hud.widgets.push(Placed { w, alert, index: j });
+                        let name = wt.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+                        hud.widgets.push(Placed { w, alert, index: j, name });
                     }
                 }
                 None => warnings.push(format!("{wctx}: pas une table, ignoré")),
@@ -1512,7 +1516,8 @@ pub(crate) const DEFAULT_CONFIG: &str = r##"# CXSFM — HUD personnalisés (rech
 #   Onglet « Éditeur » du mod : déplace / aligne / ajoute à la souris,
 #   Enregistrer n'écrit que les clés modifiées (commentaires gardés).
 #   Tous les widgets : pos, rotation (degrés, 0 = haut, sens horaire),
-#   opacity, alert = "état" + alert_color (couleur partagée, [states]). Doc complète + exemple de compteur à aiguille :
+#   opacity, alert = "état" + alert_color (couleur partagée, [states]),
+#   name = "…" (libellé pour retrouver le widget dans l'éditeur). Doc complète + exemple de compteur à aiguille :
 #   crates/cxsfm-mods/src/custom_hud/README.md du dépôt CXSFM.
 # Couleurs : "#RRGGBB" ou "#RRGGBBAA".
 

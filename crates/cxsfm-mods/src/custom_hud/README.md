@@ -69,7 +69,8 @@ is a reference frame, not a clip.
 
 **Every widget** accepts `pos`, `rotation` and `opacity` (`0.0..1.0`,
 multiplied by the HUD opacity), plus `alert` + `alert_color` (shared
-colour, see §3b).
+colour, see §3b), and `name = "…"`: a free label, never drawn, to find
+the widget in the editor (§6).
 
 ## 3. Sources: bind a game value
 
@@ -615,6 +616,13 @@ touched** into `custom_hud.toml` — your comments, spacing and the
 other keys stay as they were (the previous version is kept as
 `custom_hud.toml.bak`). **Discard** goes back to the file.
 
+- **Name**: the `Name` row (top of the properties) labels a widget
+  (`name` key, e.g. "Rev counter"). The list shows names first, a `●`
+  in front of every widget that reads a variable, and the name above
+  a selected widget on screen; hovering a widget tells its name, type
+  and the variables it reads. The search box above the list matches a
+  name, a type or a variable (`rpm` finds every widget fed by it);
+  "bound to a variable" hides static shapes and labels.
 - **Select**: click a widget on the screen or in the list (Shift =
   several). Every widget shows a faint box, the selection a yellow one —
   even widgets with nothing to draw yet.

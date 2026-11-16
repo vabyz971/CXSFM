@@ -47,7 +47,7 @@ HUD version tag applied to the game's own nickname label](docs/overlay-proof.png
 | Game Log | 1.0.0 | `Player.log` viewer |
 | [Speedometer](crates/cxsfm-mods/src/speedometer/README.md) | 0.5.4 | HUD restyle; edits kept on disable, Restore button, saves auto-applied at launch |
 | [Minimap](crates/cxsfm-mods/src/map/README.md) | 0.2.0 | same pattern for the minimap |
-| [Custom HUD](crates/cxsfm-mods/src/custom_hud/README.md) | 0.4.0 | HUDs from a hot-reloaded `custom_hud.toml`: bars, arcs, needles, dial ticks, text/labels, shapes (rect, ellipse, line); live game values through field paths found with its Explorer tab (~16 min of driving validated); on-screen **Editor** (move, magnetic snap, align/distribute, justify, bind variables — Save keeps the file's comments) |
+| [Custom HUD](crates/cxsfm-mods/src/custom_hud/README.md) | 0.4.1 | HUDs from a hot-reloaded `custom_hud.toml`: bars, arcs, needles, dial ticks, text/labels, shapes (rect, ellipse, line); live game values through field paths found with its Explorer tab (~16 min of driving validated); on-screen **Editor** (move, magnetic snap, align/distribute, justify, bind variables, named widgets + search — Save keeps the file's comments) |
 | Engine Sound | 0.2.0 | pitch / volume of the FMOD engine events (cosmetic audio), full-screen settings |
 | FPV Drone | 0.5.0 | free quadcopter camera on the pad (physics, collisions, rebindable controls, four-rotor sound), full-screen settings driven by `fpv_drone.toml` |
 

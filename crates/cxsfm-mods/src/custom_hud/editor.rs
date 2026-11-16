@@ -76,6 +76,10 @@ pub(crate) struct Editor {
     pub(crate) grid_step: f32,
     /// Snap guides hit by the current drag (HUD units).
     guides: (Option<f32>, Option<f32>),
+    /// Widget list filter (name, type, variable) and "bound to a
+    /// variable only".
+    pub(crate) filter: String,
+    pub(crate) bound_only: bool,
 }
 
 impl Default for Editor {
@@ -93,6 +97,8 @@ impl Default for Editor {
             grid: false,
             grid_step: 8.0,
             guides: (None, None),
+            filter: String::new(),
+            bound_only: false,
         }
     }
 }
@@ -195,6 +201,13 @@ fn kind_name(w: &Widget) -> &'static str {
         Widget::Label { .. } => "label",
         Widget::Shape { kind, .. } => kind.key(),
     }
+}
+
+/// Hover text / list line: name (or type), type, variables read.
+fn widget_title(pw: &Placed) -> String {
+    let vars = edit::widget_vars(&pw.w);
+    let head = if pw.name.is_empty() { kind_name(&pw.w).to_string() } else { format!("{} ({})", pw.name, kind_name(&pw.w)) };
+    if vars.is_empty() { head } else { format!("{head} · {}", vars.join(", ")) }
 }
 
 /// One-line hint next to the type (bound value or text).
@@ -359,7 +372,7 @@ impl Editor {
             let Some(h) = e.work.as_mut().and_then(|c| c.huds.get_mut(hud)) else { return };
             let index = h.slots;
             h.slots += 1;
-            h.widgets.push(Placed { w, alert: None, index });
+            h.widgets.push(Placed { w, alert: None, index, name: String::new() });
             let hidx = h.index;
             e.record(Edit::AddWidget { hud: hidx, fields });
             e.sel = vec![index];
@@ -477,8 +490,9 @@ impl Editor {
                         }
                         if r.hovered() {
                             ctx.set_cursor_icon(egui::CursorIcon::Move);
+                            r.on_hover_text(widget_title(pw));
                         }
-                        boxes.push((pw.index, sb));
+                        boxes.push((pw.index, sb, pw.name.clone()));
                     }
                     if let Some((w, drag)) = hit {
                         press = Some(Press { hud: hi, widget: Some(w), drag });
@@ -511,7 +525,7 @@ impl Editor {
                             }
                         }
                     }
-                    for (i, sb) in &boxes {
+                    for (i, sb, name) in &boxes {
                         let on = self.sel.contains(i);
                         let st = if on {
                             egui::Stroke::new(1.5, ACCENT)
@@ -519,6 +533,16 @@ impl Editor {
                             egui::Stroke::new(1.0, Color32::from_white_alpha(45))
                         };
                         p.rect_stroke(*sb, 1.0, st, egui::StrokeKind::Outside);
+                        // Name tag over the selected widgets.
+                        if on && !name.is_empty() {
+                            p.text(
+                                sb.left_top() - egui::vec2(0.0, 3.0),
+                                egui::Align2::LEFT_BOTTOM,
+                                name,
+                                egui::FontId::proportional(13.0),
+                                ACCENT,
+                            );
+                        }
                     }
                     let gs = egui::Stroke::new(1.0, ACCENT);
                     if let Some(x) = self.guides.0 {
@@ -1006,6 +1030,19 @@ const FONTS: [(FontKind, &str, &str); 4] = [
 fn widget_props(pr: &mut Props, ui: &mut egui::Ui, pw: &mut Placed, states: &[String]) {
     let c = pr.code;
     kit::hint(ui, kind_name(&pw.w));
+    ui.horizontal(|ui| {
+        Props::label(ui, ed(c, "widget_name"));
+        let r = ui.add(egui::TextEdit::singleline(&mut pw.name).desired_width(170.0).hint_text(ed(c, "widget_name_hint")));
+        if r.changed() {
+            let v = pw.name.trim();
+            pr.put("name", if v.is_empty() { Val::Remove } else { Val::Str(v.to_string()) });
+        }
+    });
+    let vars = edit::widget_vars(&pw.w);
+    if !vars.is_empty() {
+        let now: Vec<String> = vars.iter().map(|v| pr.var_label(v)).collect();
+        kit::note(ui, &format!("{} {}", ed(c, "reads"), now.join(" · ")));
+    }
     pr.pair(ui, ed(c, "pos"), "pos", edit::pos_mut(&mut pw.w), 0.5);
     match &mut pw.w {
         Widget::Bar { source, from_right, rotation, opacity, min, max, redline, size, segments, color, redline_color, track_color, .. } => {
@@ -1321,6 +1358,8 @@ impl Editor {
         let sel = self.sel.clone();
         let last_key = self.last_key.clone();
         let shift = ui.input(|i| i.modifiers.shift);
+        let filter = &mut self.filter;
+        let bound_only = &mut self.bound_only;
         let edits = &mut self.edits;
         let Some(h) = self.work.as_mut().and_then(|w| w.huds.get_mut(hud)) else { return out };
         kit::two_panes(ui, "hud_editor", 170.0, |ui, pane| {
@@ -1329,12 +1368,30 @@ impl Editor {
                 if ui.selectable_label(on, egui::RichText::new(format!("HUD · {}", h.name)).strong()).clicked() {
                     pick = Some((usize::MAX, false));
                 }
+                ui.add(egui::TextEdit::singleline(filter).desired_width(150.0).hint_text(ed(code, "filter_widgets")));
+                ui.checkbox(bound_only, ed(code, "bound_only"));
+                let mut shown = 0;
                 for pw in &h.widgets {
-                    let hint = kit::short(&kind_hint(&pw.w), 14);
-                    let text = format!("{}  {}", kind_name(&pw.w), hint);
-                    if ui.selectable_label(sel.contains(&pw.index), text).clicked() {
+                    let kind = kind_name(&pw.w);
+                    let bound = !edit::widget_vars(&pw.w).is_empty();
+                    if (*bound_only && !bound) || !edit::widget_matches(pw, kind, filter) {
+                        continue;
+                    }
+                    shown += 1;
+                    // Name first when given; `●` = reads a variable.
+                    let dot = if bound { "● " } else { "  " };
+                    let text = if pw.name.is_empty() {
+                        egui::RichText::new(format!("{dot}{kind}  {}", kit::short(&kind_hint(&pw.w), 14)))
+                    } else {
+                        egui::RichText::new(format!("{dot}{}", kit::short(&pw.name, 18))).strong()
+                    };
+                    let r = ui.selectable_label(sel.contains(&pw.index), text).on_hover_text(widget_title(pw));
+                    if r.clicked() {
                         pick = Some((pw.index, shift));
                     }
+                }
+                if shown == 0 {
+                    kit::hint(ui, ed(code, "no_match"));
                 }
                 return;
             }

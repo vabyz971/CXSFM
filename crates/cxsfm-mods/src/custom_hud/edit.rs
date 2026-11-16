@@ -328,6 +328,85 @@ pub(crate) fn variable_names(cfg: &HudConfig, live: &super::model::Values) -> Ve
     v
 }
 
+/// `{name}` / `{name:N}` placeholders of a text template, in order,
+/// without duplicates (`{{` / `}}` are not placeholders).
+pub(crate) fn placeholders(t: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = t;
+    while let Some(i) = rest.find('{') {
+        rest = &rest[i + 1..];
+        if rest.starts_with('{') {
+            rest = &rest[1..];
+            continue;
+        }
+        let Some(j) = rest.find('}') else { break };
+        let name = rest[..j].split(':').next().unwrap_or("").trim();
+        if valid_var_name(name) && !out.iter().any(|n| n == name) {
+            out.push(name.to_string());
+        }
+        rest = &rest[j + 1..];
+    }
+    out
+}
+
+/// Variables a widget reads (value, bounds, red zone, placeholders),
+/// in order, without duplicates. Empty = static widget.
+pub(crate) fn widget_vars(w: &Widget) -> Vec<String> {
+    use super::model::Bound;
+    let mut v: Vec<String> = Vec::new();
+    let mut add = |s: &str| {
+        if !s.is_empty() && !v.iter().any(|x| x == s) {
+            v.push(s.to_string());
+        }
+    };
+    let src = |b: &Bound| match b {
+        Bound::Src(s) => Some(s.clone()),
+        Bound::Num(_) => None,
+    };
+    match w {
+        Widget::Bar { source, min, max, redline, .. } | Widget::Needle { source, min, max, redline, .. } => {
+            add(source);
+            for b in [Some(min), Some(max), redline.as_ref()].into_iter().flatten() {
+                if let Some(s) = src(b) {
+                    add(&s);
+                }
+            }
+        }
+        Widget::Arc { source, min, max, redline, .. } => {
+            if let Some(s) = source {
+                add(s);
+                for b in [Some(min), Some(max), redline.as_ref()].into_iter().flatten() {
+                    if let Some(s) = src(b) {
+                        add(&s);
+                    }
+                }
+            }
+        }
+        Widget::Ticks { label_max, .. } => {
+            if let Some(s) = src(label_max) {
+                add(&s);
+            }
+        }
+        Widget::Text { text, .. } | Widget::Label { text, .. } => {
+            for p in placeholders(text) {
+                add(&p);
+            }
+        }
+        Widget::Shape { .. } => {}
+    }
+    v
+}
+
+/// Editor list filter: name, type or a variable contains `q` (case
+/// insensitive; empty = everything).
+pub(crate) fn widget_matches(p: &Placed, kind: &str, q: &str) -> bool {
+    let q = q.trim().to_lowercase();
+    q.is_empty()
+        || p.name.to_lowercase().contains(&q)
+        || kind.contains(&q)
+        || widget_vars(&p.w).iter().any(|v| v.to_lowercase().contains(&q))
+}
+
 /// Variable name for a field (`m_currentSpeed` → `current_speed`),
 /// made unique against `taken` (`_2`, `_3`…).
 pub(crate) fn suggest_var_name(field: &str, taken: &[String]) -> String {
@@ -633,6 +712,43 @@ name = "B"
         assert!(!valid_var_name("2rpm"));
         assert!(!valid_var_name("r pm"));
         assert!(!valid_var_name(""));
+    }
+
+    #[test]
+    fn widget_names_and_variables() {
+        assert_eq!(placeholders("{gear}/{max_gear}  {speed:1} {{x}} {gear} {bad name}"), vec!["gear", "max_gear", "speed"]);
+        let text = r##"
+[[hud]]
+  [[hud.widget]]
+  type = "bar"
+  name = "  Compte-tours  "
+  source = "rpm"
+  min = "rpm_min"
+  max = 1.0
+  redline = "redline"
+  [[hud.widget]]
+  type = "label"
+  text = "{speed} km/h"
+  [[hud.widget]]
+  type = "rect"
+  name = "Fond"
+"##;
+        let (cfg, _) = parse_config(text).unwrap();
+        let ws = &cfg.huds[0].widgets;
+        assert_eq!(ws[0].name, "Compte-tours");
+        assert_eq!(ws[1].name, "");
+        assert_eq!(widget_vars(&ws[0].w), vec!["rpm", "rpm_min", "redline"]);
+        assert_eq!(widget_vars(&ws[1].w), vec!["speed"]);
+        assert!(widget_vars(&ws[2].w).is_empty());
+        assert!(widget_matches(&ws[0], "bar", "COMPTE"));
+        assert!(widget_matches(&ws[0], "bar", "redl"));
+        assert!(widget_matches(&ws[1], "label", "speed"));
+        assert!(!widget_matches(&ws[2], "rect", "speed"));
+        assert!(widget_matches(&ws[2], "rect", ""));
+        // The name round-trips through an edit.
+        let e = Edit::Widget { hud: 0, widget: 1, key: "name".into(), val: Val::Str("Vitesse".into()) };
+        let (out, _) = apply_edits(text, &[e]).unwrap();
+        assert_eq!(parse_config(&out).unwrap().0.huds[0].widgets[1].name, "Vitesse");
     }
 
     #[test]
