@@ -112,6 +112,30 @@ fn try_inner(handle: &Arc<Entry>) -> Option<MutexGuard<'_, Box<dyn Mod>>> {
     }
 }
 
+/// Longest the present thread waits, per frame and for all mods
+/// together, for mods busy in their tick while the menu is open.
+///
+/// A skipped draw means egui does not see the window for one frame:
+/// it drops the keyboard focus of its text fields and closes its open
+/// lists (seen in the Custom HUD editor, whose tick reads game values
+/// at 30 Hz). A tick update is normally well under a millisecond, so
+/// a short wait catches it; a mod stuck inside Unity still gets
+/// skipped once the budget is spent (bounded, never a stall).
+const DRAW_WAIT: std::time::Duration = std::time::Duration::from_millis(4);
+
+/// [`try_inner`], retried until `deadline` (`None` = single try).
+fn inner_until(handle: &Arc<Entry>, deadline: Option<std::time::Instant>) -> Option<MutexGuard<'_, Box<dyn Mod>>> {
+    loop {
+        if let Some(g) = try_inner(handle) {
+            return Some(g);
+        }
+        match deadline {
+            Some(d) if std::time::Instant::now() < d => std::thread::yield_now(),
+            _ => return None,
+        }
+    }
+}
+
 /// Mark an entry quarantined + disabled, intent cleared (short state
 /// lock only). Clearing `desired` stops the tick from retrying the
 /// failed transition every frame; only an explicit re-enable (which
@@ -446,12 +470,14 @@ impl ModRegistry {
 
     /// Call `on_draw_ui` on enabled mods (render thread).
     ///
-    /// Dispatch uses the applied state; the inner lock is taken with
-    /// `try_inner`, so a mod stuck inside Unity skips this frame
-    /// instead of stalling the present thread. When the menu is closed
-    /// only pinned (cached) mods draw; the menu window itself stays
-    /// gated by the caller.
+    /// Dispatch uses the applied state; the inner lock is never waited
+    /// on for long: menu closed = single try, menu open = shared
+    /// [`DRAW_WAIT`] budget, so a mod stuck inside Unity skips this
+    /// frame instead of stalling the present thread. When the menu is
+    /// closed only pinned (cached) mods draw; the menu window itself
+    /// stays gated by the caller.
     pub fn draw_ui_all(&self, ctx: &egui::Context, menu_open: bool) {
+        let deadline = menu_open.then(|| std::time::Instant::now() + DRAW_WAIT);
         for handle in self.snapshot() {
             // State checks first (microsecond lock).
             let pinned = {
@@ -464,7 +490,7 @@ impl ModRegistry {
             if !menu_open && !pinned {
                 continue;
             }
-            let mut inner = match try_inner(&handle) {
+            let mut inner = match inner_until(&handle, deadline) {
                 Some(g) => g,
                 None => continue,
             };
@@ -809,5 +835,61 @@ mod tests {
         assert_eq!(enables.load(Ordering::SeqCst), 2);
         assert_eq!(updates.load(Ordering::SeqCst), 2);
         assert_eq!(reg.enabled_count(), 1);
+    }
+
+    /// Counts `on_draw_ui` calls.
+    struct DrawMod {
+        draws: Arc<AtomicUsize>,
+    }
+
+    impl Mod for DrawMod {
+        fn name(&self) -> &'static str {
+            "Draw"
+        }
+        fn on_update(&mut self, _dt: f32) {}
+        fn on_draw_ui(&mut self, _ctx: &egui::Context) {
+            self.draws.fetch_add(1, Ordering::SeqCst);
+        }
+        fn is_pinned(&self) -> bool {
+            true
+        }
+    }
+
+    /// A mod busy in its tick for a moment still draws while the menu
+    /// is open (focus / open lists survive); menu closed, it is skipped
+    /// rather than waited on.
+    #[test]
+    fn busy_mod_still_draws_with_menu_open() {
+        let draws = Arc::new(AtomicUsize::new(0));
+        let reg = ModRegistry::new();
+        reg.register(Box::new(DrawMod { draws: draws.clone() }));
+        reg.set_enabled("Draw", true);
+        reg.update_all(0.016);
+        // The menu caches `is_pinned` (closed-menu dispatch reads it).
+        let _ = reg.tile_info();
+        let ctx = egui::Context::default();
+        let hold = |ms: u64| {
+            let h = reg.snapshot()[0].clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let t = std::thread::spawn(move || {
+                let _g = h.inner.lock().unwrap();
+                tx.send(()).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            });
+            rx.recv().unwrap();
+            t
+        };
+        let t = hold(1);
+        reg.draw_ui_all(&ctx, true);
+        t.join().unwrap();
+        assert_eq!(draws.load(Ordering::SeqCst), 1, "short tick: waited for");
+        let t = hold(50);
+        reg.draw_ui_all(&ctx, true);
+        assert_eq!(draws.load(Ordering::SeqCst), 1, "stuck mod: skipped after the budget");
+        reg.draw_ui_all(&ctx, false);
+        assert_eq!(draws.load(Ordering::SeqCst), 1, "menu closed: single try");
+        t.join().unwrap();
+        reg.draw_ui_all(&ctx, false);
+        assert_eq!(draws.load(Ordering::SeqCst), 2);
     }
 }
