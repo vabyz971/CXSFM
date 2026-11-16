@@ -1,19 +1,26 @@
-[package]
-name = "cxsfm"
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+default-members = ["crates/cxsfm"]
+
+[workspace.package]
 version = "0.7.0"
 edition = "2024"
-authors = ["vabyz971"]
-description = "CarX Street Framework Mod - Open-source modding framework for CarX Street"
 license = "MIT"
+authors = ["vabyz971"]
 repository = "https://github.com/vabyz971/cxsfm"
-keywords = ["carx", "modding", "injection", "egui", "game-mod"]
-categories = ["game-development", "rendering", "multiplatform"]
 
-[lib]
-crate-type = ["cdylib"]
+[workspace.dependencies]
+# Internal crates (bottom → top: api, sys, input, ui, mods, cxsfm).
+cxsfm-api = { path = "crates/cxsfm-api" }
+cxsfm-sys = { path = "crates/cxsfm-sys" }
+cxsfm-input = { path = "crates/cxsfm-input" }
+cxsfm-ui = { path = "crates/cxsfm-ui" }
+cxsfm-mods = { path = "crates/cxsfm-mods" }
 
-[dependencies]
+# UI
 egui = { version = "0.36", default-features = false, features = ["default_fonts"] }
+egui_material_icons = "0.8"
 # Vulkan overlay rendering (Linux layer path only in practice, but the
 # crates are pure Rust + ash with no system deps, so they stay
 # unconditional): ash for GPU calls through our layer-resolved function
@@ -22,35 +29,31 @@ egui = { version = "0.36", default-features = false, features = ["default_fonts"
 ash = { version = "0.38", default-features = false, features = ["std"] }
 egui-ash-renderer = { version = "0.13", default-features = false }
 bitflags = "2.9"
-egui_material_icons = "0.8"
 # Save files (TOML, hand-editable with comments). Pure Rust, no system
 # deps — same policy as every other dependency here.
 toml = "0.8"
 glam = { version = "0.29", features = ["serde"] }
 ctor = "0.2"
 libc = "0.2"
-# x86_64 instruction decoding for the Vulkan inline hook (prologoue
+# x86_64 instruction decoding for the Vulkan inline hook (prologue
 # boundary analysis — never split an instruction when patching).
 # Pure Rust, no C toolchain needed.
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }
-
-[target.'cfg(windows)'.dependencies]
 # Win32 base + threading/loader (core) + windowing for the DXGI scaffold
-# (src/render/dxgi.rs uses GetDesktopWindow; DirectX types below are
-# hand-declared because windows-sys 0.59 ships no Dxgi/D3D11 bindings).
+# (render/dxgi.rs uses GetDesktopWindow; DirectX types are hand-declared
+# because windows-sys 0.59 ships no Dxgi/D3D11 bindings).
 windows-sys = { version = "0.59", features = ["Win32", "Win32_Foundation", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_Security", "Win32_System_SystemInformation", "Win32_UI_WindowsAndMessaging"] }
-
-[target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
-
-[dev-dependencies]
 serde = { version = "1.0", features = ["derive"] }
 
-# Release binaire injecté en jeu : taille maîtrisée sans sacrifier
-# la perf (opt-level 3 conservé pour la tessellation/overlay).
-# - strip : ~1.5 MB de symtab/strtab en moins (egui 0.36 ≃ 8 MB sinon).
-# - lto + codegen-units = 1 : déduplique les génériques monomorphisés
-#   (egui/epaint/skrifa). Coût : builds release plus longs.
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+# Release binary injected in game: controlled size without giving up
+# speed (opt-level 3 kept for tessellation/overlay).
+# - strip: ~1.5 MB less symtab/strtab (egui 0.36 ≃ 8 MB otherwise).
+# - lto + codegen-units = 1: dedupes monomorphized generics
+#   (egui/epaint/skrifa). Cost: longer release builds.
 [profile.release]
 strip = true
 lto = true

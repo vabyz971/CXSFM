@@ -33,9 +33,30 @@ This document describes the system architecture of the CarX Street Framework Mod
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## Workspace layout (2026-11)
+
+The code is a Cargo workspace (`crates/`). Each crate only depends on
+the ones below it; the last one is the `cdylib` loaded in game.
+
+| Crate | Contents | `unsafe` |
+|---|---|---|
+| `cxsfm-api` | `Mod` trait, registry (panic quarantine), manager (`register_mod`), `config`, `i18n` (+ `register_tile_label`), `log_line`, fmod link shim | log path lookup + shim only |
+| `cxsfm-sys` | `memory`, `il2cpp`, `unity/`, `fmod`, `mainthread`; `il2cpp_api()`, `shutting_down()` | yes (FFI crate) |
+| `cxsfm-input` | `hotkey` (F8, SDL/X11 capture), `gamepad` (evdev), `padnav` | yes (X11/SDL) |
+| `cxsfm-ui` | `theme`, `fonts`, `tool` (`ToolChrome`), `kit`, `game`, `screen`, `paramfile`, `repaint` | forbidden |
+| `cxsfm-mods` | bundled mods + `register_all()` | still some (to move into `cxsfm-sys`) |
+| `cxsfm` | `#[ctor]`, init + tick threads, `layer`, `render/`, `menu/` (phone, pages) | yes (Vulkan) |
+
+Cycles of the single-crate days were cut as follows: mods register
+their own tile label (`i18n::register_tile_label`) instead of `i18n`
+naming every mod; the save-file format moved next to the element
+editor (`cxsfm-mods/src/speedometer/saves.rs`); the Vulkan layer
+installs the teardown probe (`cxsfm_sys::set_shutdown_probe`) used by
+the tick and `mainthread`; repaint bursts live in `cxsfm_ui::repaint`.
+
 ## Module Overview
 
-### 1. memory.rs
+### 1. memory.rs (`cxsfm-sys`)
 
 Provides low-level memory access with OS abstraction:
 
@@ -53,7 +74,7 @@ memory.rs (Public API)
 └── write_value::<T>(): Safe typed memory writes
 ```
 
-### 2. mod_api.rs
+### 2. Mod API (`cxsfm-api`: `mod_trait.rs`, `manager.rs`)
 
 Trait-based mod management system:
 
@@ -166,6 +187,8 @@ The `Mod` trait requires `Send + Sync` to allow concurrent access from multiple 
 
 ## Refactor: isolated mods, split i18n/UI (2026-10)
 
+> History: paths below predate the workspace (see "Workspace layout").
+
 A mod is one folder under `src/mods/`, compiled into the framework
 `.so` (no external files). See `docs/plugin-guide.md`.
 
@@ -199,10 +222,10 @@ locked, labels wrapped and hover-only.
 Mods called Unity from the `cxsfm-tick` thread (≠ Unity's main
 thread): residual races (freezes, SIGSEGV). `minhud` runs every frame
 through hooks on game methods (hence on the main thread).
-`src/mainthread.rs` (phase 1: infra + probes + API, no mod migrated)
+`cxsfm-sys/src/mainthread.rs` (phase 1: infra + probes + API, no mod migrated)
 does the same by swapping the `MethodInfo.methodPointer` pointer
 (offset 0): a pure data write, no code patching (see
-`src/render/vk.rs` for the safety style).
+`cxsfm/src/render/vk.rs` for the safety style).
 
 - Candidates (priority): DOTweenComponent::Update, RtmpManager::Update,
   EventSystem::Update, CanvasScaler::Update,

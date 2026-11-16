@@ -26,7 +26,7 @@ This document outlines how to develop new mods and extend the framework.
 
 ### Step 1: Understand the Mod API
 
-All mods must implement the [`Mod` trait](src/mod_api.rs) which defines:
+All mods must implement the [`Mod` trait](crates/cxsfm-api/src/mod_trait.rs) which defines:
 
 - `name()` - Human-readable identifier
 - `on_update(delta_time)` - Called each game tick
@@ -36,11 +36,11 @@ All mods must implement the [`Mod` trait](src/mod_api.rs) which defines:
 
 ### Step 2: Implement Your Mod
 
-Create a new Rust file in `src/mods/` and implement the `Mod` trait.
+Create a new folder in `crates/cxsfm-mods/src/` and implement the `Mod` trait (see [docs/plugin-guide.md](docs/plugin-guide.md)).
 
 Example structure:
 ```rust
-use cxsfm::mod_api::{Mod, ModManager};
+use cxsfm_api::{Mod, ModManager};
 use egui;
 
 struct MyMod;
@@ -64,7 +64,7 @@ impl Mod for MyMod {
 
 Register with the global mod manager:
 ```rust
-use cxsfm::mod_api::register_mod;
+use cxsfm_api::register_mod;
 
 fn init() {
     register_mod(Box::new(MyMod));

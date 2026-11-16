@@ -1,0 +1,21 @@
+[package]
+name = "cxsfm-ui"
+description = "CXSFM UI kit: CarX theme, fonts, tool windows, game-style rows and full-screen screens"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+cxsfm-api.workspace = true
+cxsfm-input.workspace = true
+egui.workspace = true
+egui_material_icons.workspace = true
+toml.workspace = true
+
+# Pure egui: no FFI here.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

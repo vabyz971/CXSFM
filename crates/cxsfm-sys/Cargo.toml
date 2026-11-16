@@ -1,0 +1,19 @@
+[package]
+name = "cxsfm-sys"
+description = "CXSFM game bridge: process memory, IL2CPP runtime, Unity helpers, FMOD, main-thread hooks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# FFI crate: `unsafe` lives here behind safe APIs with SAFETY contracts.
+[dependencies]
+cxsfm-api.workspace = true
+libc.workspace = true
+bitflags.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "cxsfm-api"
+description = "CXSFM mod API: Mod trait, registry, settings/config files, i18n, framework log"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+egui.workspace = true
+toml.workspace = true
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[lints]
+workspace = true

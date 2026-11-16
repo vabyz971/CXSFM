@@ -8,34 +8,36 @@
 
 ```bash
 nix develop --command cargo build --release  # build (rustc 1.98 via flake)
-nix develop --command bash -c 'cargo test --lib'
+nix develop --command bash -c 'cargo test --workspace --lib'
 ./tools/cxsfm-setup.sh                       # stage the layer after every rebuild
 ```
 
-## Architecture (10 lines)
+## Architecture (Cargo workspace, `crates/`, deps point down)
 
-- `src/layer.rs` — implicit Vulkan layer: the loader `dlopen`s us, we
-  route `vkQueuePresentKHR` (negotiation, link nodes, `advance_link`).
-- `src/render/overlay.rs` — egui rendered into the swapchain images at
-  present time (render pass `loadOp=LOAD`, 1 frame in flight, per-image
-  replay).
-- `src/render/vk.rs` — LEGACY: GOT/inline patching (the layer is the
-  chosen path; do not extend without agreement).
-- `src/il2cpp.rs` — IL2CPP bridge (`resolve`, `invoke`/`invoke_void`,
-  `domain_checked`, cached classes/methods, objects re-resolved on use).
-- `src/unity/` — helpers (`object_alive` via `m_CachedPtr`, camera,
-  scene, text/TMP, transforms) + `UnityCache` of resolved methods.
-- `src/mods/{api,loader,tool,…}` — `Mod` trait, registry with panic
-  quarantine, window chrome (pin/opacity), bundled mods
-  (`inspector`, `gamelog`, `speedometer`, `map`, `custom_hud`, `fpv_camera` parked).
-- `src/mainthread.rs` — `MethodInfo.methodPointer` swap infrastructure
-  (phase 1: probes, no mod migrated).
-- `src/hotkey.rs` — F8 = UI visibility + capture (SDL + X11; Unity path
-  cut: it segfaulted at teardown).
-- `src/lib.rs` — `#[ctor]` → deferred init thread → ~60 Hz tick
-  (`on_update`), never IL2CPP during teardown.
-- `src/menu.rs` + `src/ui/` — tile menu + CarX theme (black panels,
-  yellow accent `#F5C518`, 3px corners, Material Symbols icons).
+- `cxsfm-api` — `Mod` trait, registry with panic quarantine, manager
+  (`register_mod`), `config` (settings, paths, atomic IO), `i18n`
+  (+ `register_tile_label`), `log_line`, `fmod` link shim.
+- `cxsfm-sys` — FFI: `il2cpp` (`resolve`, `invoke`/`invoke_void`,
+  `domain_checked`, cached classes/methods, objects re-resolved on use),
+  `unity/` (`object_alive` via `m_CachedPtr`, camera, scene, text/TMP,
+  transforms, `UnityCache`), `memory`, `fmod`, `mainthread`
+  (`methodPointer` swap, phase 1: probes, no mod migrated),
+  `il2cpp_api()` + `shutting_down()` (probe set by the layer).
+- `cxsfm-input` — `hotkey` (F8 = UI visibility + capture, SDL + X11;
+  Unity path cut: it segfaulted at teardown), `gamepad`, `padnav`.
+- `cxsfm-ui` — CarX theme (black panels, yellow accent `#F5C518`, 3px
+  corners, Material Symbols icons), `tool::ToolChrome` + `kit` (every
+  tool window), `game` + `screen` (full-screen screens). No `unsafe`.
+- `cxsfm-mods` — bundled mods (`inspector`, `gamelog`, `speedometer`
+  + shared `editor`/`saves`, `map`, `custom_hud`, `engine_audio`,
+  `fpv_drone`, `fpv_camera` parked), `register_all()`.
+- `cxsfm` (cdylib) — `lib.rs`: `#[ctor]` → deferred init thread →
+  ~60 Hz tick (`on_update`), never IL2CPP during teardown; `layer.rs`:
+  implicit Vulkan layer (negotiation, link nodes, `advance_link`);
+  `render/overlay.rs`: egui into the swapchain images at present
+  (`loadOp=LOAD`, 1 frame in flight, per-image replay);
+  `render/vk.rs`: LEGACY GOT/inline patching (do not extend without
+  agreement); `menu/`: phone menu + Settings/About.
 
 ## Rules proven in game (docs/field-notes.md — READ before changing)
 

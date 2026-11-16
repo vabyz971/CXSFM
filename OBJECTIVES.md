@@ -69,7 +69,7 @@ SIGSEGVs in its exit handlers); `tools/cxsfm-hang-dump.sh` covers hangs.
 - [x] Real-time value extraction (Custom HUD live reader: speed, RPM,
       gear via field paths)
 - [~] AOB scanner with wildcard support — implemented in
-      `src/memory.rs` (`AobScanner`), not used by any mod yet
+      `cxsfm-sys` (`memory::AobScanner`), not used by any mod yet
 - [ ] Telemetry data logger (position, speed, lap times) to a file
 - [ ] Game structure signature database
 - [ ] Signature update mechanism (community-driven)
@@ -79,6 +79,11 @@ SIGSEGVs in its exit handlers); `tools/cxsfm-hang-dump.sh` covers hangs.
 
 ## Phase 5: Framework & Advanced Mods
 
+- [x] Cargo workspace (`crates/`: api, sys, input, ui, mods, cxsfm)
+- [ ] Safe mods: move the remaining `unsafe` of the mods (bind.rs,
+      inspector/detail.rs, engine_audio/fmod.rs…) behind safe
+      `cxsfm-sys` APIs, then `unsafe_code = "forbid"` in `cxsfm-mods`
+      — one mod at a time, each re-validated in game
 - [ ] Main-thread execution (`mainthread.rs`: `methodPointer` swap —
       phase 1 probes done, no mod migrated) — unblocks FPV Camera
 - [ ] Camera orbit / follow modes
@@ -95,10 +100,10 @@ SIGSEGVs in its exit handlers); `tools/cxsfm-hang-dump.sh` covers hangs.
 
 ## Constraints
 
-- **100% Safe Rust** in mod implementations - `unsafe` lives only in
-  the FFI/bridge modules (`memory.rs`, `il2cpp.rs`, `layer.rs`,
-  `unity/`, `hotkey.rs`, `render/`) behind safe APIs with documented
-  `SAFETY` contracts; mods themselves contain no `unsafe`
+- **Safe Rust in mods (goal)** - `unsafe` belongs in the FFI crates
+  (`cxsfm-sys`, `cxsfm-input`, the `cxsfm` render path) behind safe
+  APIs with documented `SAFETY` contracts; `cxsfm-ui` already forbids
+  it, the mods still carry some (see Phase 5)
 - **No gameplay modification** - strictly cosmetic/UI/HUD/camera/audio
   changes; never economy, physics or network
 - **Minimal performance overhead** - nothing heavy on the present

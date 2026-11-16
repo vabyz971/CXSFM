@@ -45,9 +45,9 @@ HUD version tag applied to the game's own nickname label](docs/overlay-proof.png
 |---|---|---|
 | Scene Inspector | 1.0.0 | read-only scene tree |
 | Game Log | 1.0.0 | `Player.log` viewer |
-| [Speedometer](src/mods/speedometer/README.md) | 0.5.4 | HUD restyle; edits kept on disable, Restore button, saves auto-applied at launch |
-| [Minimap](src/mods/map/README.md) | 0.2.0 | same pattern for the minimap |
-| [Custom HUD](src/mods/custom_hud/README.md) | 0.2.0 | HUDs from a hot-reloaded `custom_hud.toml`: bars, arcs, needles, dial ticks, text with italic/glow; live game values through field paths found with its Explorer tab (~16 min of driving validated) |
+| [Speedometer](crates/cxsfm-mods/src/speedometer/README.md) | 0.5.4 | HUD restyle; edits kept on disable, Restore button, saves auto-applied at launch |
+| [Minimap](crates/cxsfm-mods/src/map/README.md) | 0.2.0 | same pattern for the minimap |
+| [Custom HUD](crates/cxsfm-mods/src/custom_hud/README.md) | 0.2.0 | HUDs from a hot-reloaded `custom_hud.toml`: bars, arcs, needles, dial ticks, text with italic/glow; live game values through field paths found with its Explorer tab (~16 min of driving validated) |
 | Engine Sound | 0.2.0 | pitch / volume of the FMOD engine events (cosmetic audio), full-screen settings |
 | FPV Drone | 0.5.0 | free quadcopter camera on the pad (physics, collisions, rebindable controls, four-rotor sound), full-screen settings driven by `fpv_drone.toml` |
 
@@ -91,7 +91,7 @@ findings log (input paths, layer bring-up, incidents and fixes).
 | `~/.config/cxsfm/settings.toml` | framework settings (auto-load) |
 | `~/.config/cxsfm/saves.toml` | speedometer/map saved edits, by object path (`[speedometer."path"]`, `.bak` kept on save) |
 | `~/.config/cxsfm/fpv_drone.toml` | which FPV Drone parameters the simple view shows, with limits |
-| `~/.config/cxsfm/custom_hud.toml` | Custom HUD layouts (hot-reloaded) — see [its README](src/mods/custom_hud/README.md) |
+| `~/.config/cxsfm/custom_hud.toml` | Custom HUD layouts (hot-reloaded) — see [its README](crates/cxsfm-mods/src/custom_hud/README.md) |
 | `~/.cache/cxsfm/cxsfm.log` | framework log (next to the staged layer; `CXSF_LOG` overrides) |
 
 - Diagnostics: the log starts with `diag: cxsfm base=…` / `il2cpp
@@ -234,8 +234,9 @@ Check the log for the init sequence: `CXSF_LOG` if set, else
 
 ## Framework API
 
-Mods are compiled into the framework: one folder under `src/mods/`,
-registered in `src/lib.rs`. The full walkthrough (folder layout,
+Mods are compiled into the framework: one folder under
+`crates/cxsfm-mods/src/`, registered in `register_all()` of
+`crates/cxsfm-mods/src/lib.rs`. The full walkthrough (folder layout,
 i18n, Unity rules) is in [docs/plugin-guide.md](docs/plugin-guide.md).
 
 ### Creating a Mod
@@ -243,9 +244,8 @@ i18n, Unity rules) is in [docs/plugin-guide.md](docs/plugin-guide.md).
 Implement the `Mod` trait (only `name` and `on_update` are required):
 
 ```rust
-use crate::mods::api::{Mod, TileIcon};
-use crate::mods::tool::ToolChrome;
-use crate::ui::kit;
+use cxsfm_api::{Mod, TileIcon};
+use cxsfm_ui::{kit, tool::ToolChrome};
 
 #[derive(Default)]
 struct MyMod {
@@ -288,77 +288,60 @@ one edit restyles them all: `ToolChrome::show` for the window itself,
 editor window (`mods/speedometer/editor.rs`).
 
 A mod that wants a full-screen game-style settings screen declares it
-at registration and draws it with `ui::screen::show` while
-`ui::screen::is_open(NAME)`; its tile then opens the screen instead of
-toggling (see `mods/fpv_drone` and `mods/engine_audio`).
+at registration and draws it with `cxsfm_ui::screen::show` while
+`cxsfm_ui::screen::is_open(NAME)`; its tile then opens the screen
+instead of toggling (see `fpv_drone` and `engine_audio`).
 
 ### Registering a Mod
 
 ```rust
-// src/lib.rs, next to the bundled mods (boots disarmed)
-crate::mod_api::register_mod(Box::new(MyMod));
+// crates/cxsfm-mods/src/my_mod/mod.rs — called from `register_all()`
+pub fn register() {
+    cxsfm_api::i18n::register_tile_label("mod_my", i18n::tile_label);
+    cxsfm_api::register_mod(Box::new(MyMod::default())); // boots disarmed
+}
 ```
 
 ## Project Structure
 
+A Cargo workspace: five library crates under `crates/`, and the
+`cxsfm` crate that links them into the one `libcxsfm.so` loaded in
+game. Dependencies only point downwards:
+`cxsfm` → `cxsfm-mods` → `cxsfm-ui` → `cxsfm-input` → `cxsfm-sys` → `cxsfm-api`.
+
 ```
 cxsfm/
-├── Cargo.toml           # Project configuration
-├── README.md            # This file
-├── CONTRIBUTING.md      # Contribution guidelines
-├── OBJECTIVES.md        # Roadmap
-├── flake.nix            # Pinned Nix toolchain
-├── AGENTS.md            # Rules for coding agents (proven in-game constraints)
-├── assets/fonts/        # Bebas Neue + Rajdhani (SIL OFL)
-├── docs/
-│   ├── README.md        # Documentation overview
-│   ├── architecture.md  # System architecture
-│   ├── plugin-guide.md  # Writing a mod, step by step
-│   ├── field-notes.md   # Verified in-game findings log
-│   └── overlay-proof.png # Screenshot: overlay in CarX Street
-├── tools/
-│   ├── cxsfm-setup.sh   # Stage the Vulkan layer + manifest
-│   ├── cxsfm-watchdog.sh # ptrace injection for running games
-│   ├── cxsfm-hang-dump.sh # Thread snapshot of a frozen game
-│   ├── cxsym-inject     # ptrace injector (+ --self-test)
-│   └── inject.c, Makefile # injector sources
-└── src/
-    ├── lib.rs          # Entry point (#[ctor], init + tick threads)
-    ├── layer.rs        # Implicit Vulkan layer (present routing)
-    ├── render.rs       # Render-hook dispatcher + frame counters
-    ├── render/
-    │   ├── vk.rs       # GOT/inline Vulkan fallback (static volk defeats it)
-    │   ├── dxgi.rs     # Windows DXGI scaffold
-    │   ├── metal.rs    # macOS stub
-    │   └── overlay.rs  # egui-into-swapchain renderer
-    ├── il2cpp.rs       # IL2CPP embedding bridge (+ field reflection)
-    ├── unity/          # Unity helpers (object, camera, scene, text)
-    ├── config.rs       # settings.toml / saves.toml / custom_hud.toml paths + IO
-    ├── i18n/           # Framework strings (7 languages)
-    ├── menu.rs         # Menu page state + window orchestration
-    ├── ui/             # phone (main menu), screen (full-screen frame),
-    │                   # game (rows/tabs/key hints), pages (Settings/About),
-    │                   # paramfile (fpv_drone.toml), fonts, theme, chrome
-    ├── gamepad.rs      # SDL joystick polling (game's own SDL2)
-    ├── padnav.rs       # Pad -> menu events (mod mode, L3+R3), own thread
-    ├── mainthread.rs   # methodPointer-swap infra (parked)
-    ├── hotkey.rs       # SDL/X11 hotkeys + X11 input capture
-    ├── memory.rs       # Maps/AOB scanning utilities
-    ├── shim.rs         # glibc symbol shims (Steam Runtime)
-    ├── mod_api.rs      # Mod trait + ModManager
-    ├── mods.rs         # Mod registry
-    └── mods/
-        ├── api.rs         # Mod trait + tile types
-        ├── loader.rs      # Isolated registry (quarantine on panic)
-        ├── fpv_camera.rs  # FPV camera mod (parked)
-        ├── inspector/     # Scene Inspector (model/bind/ui + i18n)
-        ├── gamelog/       # Game Player.log viewer (model/bind/ui + i18n)
-        ├── speedometer/   # Speedometer restyle (model/bind/ui + i18n)
-        ├── map/           # Minimap restyle (model/bind/ui + i18n)
-        ├── custom_hud/    # Custom HUD (model/bind/live/ui + i18n)
-        ├── engine_audio/  # Engine Sound (FMOD pitch/volume)
-        └── fpv_drone/     # FPV Drone (physics, sound, settings screen)
+├── Cargo.toml            # Workspace: members, shared deps + lints, release profile
+├── .cargo/config.toml    # Linux: -Wl,--wrap=fmod (Steam Runtime glibc)
+├── flake.nix             # Pinned Nix toolchain
+├── README.md · CONTRIBUTING.md · OBJECTIVES.md · AGENTS.md
+├── docs/                 # architecture, plugin guide, field notes
+├── tools/                # cxsfm-setup.sh, watchdog, hang dump, ptrace injector
+└── crates/
+    ├── cxsfm-api/        # Mod trait, registry (panic quarantine), manager,
+    │                     # config (settings/paths/atomic IO), i18n (7 languages),
+    │                     # framework log, fmod link shim
+    ├── cxsfm-sys/        # FFI: memory (maps, AOB), il2cpp (+ reflection),
+    │                     # unity/ (object, camera, scene, text, video), fmod,
+    │                     # mainthread (methodPointer swap, parked)
+    ├── cxsfm-input/      # hotkey (F8, SDL/X11 capture), gamepad (evdev),
+    │                     # padnav (mod mode, own thread)
+    ├── cxsfm-ui/         # theme, fonts (+ assets/fonts, SIL OFL), tool
+    │                     # (ToolChrome), kit (tool-window widgets), game
+    │                     # (rows/tabs), screen (full-screen frame), paramfile
+    ├── cxsfm-mods/       # bundled mods, one folder each (mod/bind/model/ui/i18n):
+    │                     # inspector, gamelog, speedometer (+ shared editor,
+    │                     # saves format), map, custom_hud, engine_audio,
+    │                     # fpv_drone, fpv_camera (parked)
+    └── cxsfm/            # cdylib: lib.rs (#[ctor], init + tick threads),
+                          # layer.rs (implicit Vulkan layer), render/ (overlay,
+                          # vk fallback, dxgi/metal scaffolds), menu/ (phone,
+                          # Settings/About pages)
 ```
+
+Only `cxsfm-ui` forbids `unsafe` today; the FFI lives in `cxsfm-sys`,
+`cxsfm-input` and the `cxsfm` render path (mods still carry some —
+moving it behind safe `cxsfm-sys` APIs is tracked in OBJECTIVES).
 
 ## Dependencies
 

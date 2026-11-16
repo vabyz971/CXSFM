@@ -1,6 +1,6 @@
 # Plugin guide — writing a CXSFM mod
 
-A mod = **one folder** under `src/mods/`, compiled into the framework
+A mod = **one folder** under `crates/cxsfm-mods/src/`, compiled into the framework
 `.so` (no external file injected). Examples to copy:
 
 | Folder | Demonstrated operation |
@@ -16,7 +16,7 @@ A mod = **one folder** under `src/mods/`, compiled into the framework
 ## 1. Copy a folder
 
 ```bash
-cp -r src/mods/inspector src/mods/my_mod
+cp -r crates/cxsfm-mods/src/inspector crates/cxsfm-mods/src/my_mod
 ```
 
 Uniform layout (every mod follows it):
@@ -26,13 +26,13 @@ Uniform layout (every mod follows it):
 | `mod.rs` | struct + `new` + `impl Mod` (delegates to `bind`/`ui`) + `register()` |
 | `model.rs` | data + pure helpers (+ tests) — no Unity call |
 | `bind.rs` | tick-side Unity (`ensure`, walk, drain, restore) |
-| `ui.rs` | present-side window (`draw_window`, staging) |
+| `ui.rs` | present-side window (`draw_window`, staging) — built with `cxsfm_ui::tool::ToolChrome::show` + `cxsfm_ui::kit` |
 | `i18n.rs` | 7 languages, English fallback |
 
 ## 2. Implement the `Mod` trait (`mod.rs`)
 
 ```rust
-use crate::mods::api::{Mod, TileIcon};
+use cxsfm_api::{Mod, TileIcon};
 
 pub struct MyMod { /* atomics + Mutex, never a shared &mut */ }
 
@@ -71,11 +71,8 @@ pub fn tile_label(lang_code: &str) -> &'static str { match lang_code {
 pub fn describe(lang_code: &str) -> &'static str { /* same */ }
 ```
 
-Then **one line** in `src/i18n/mod.rs::mod_tile`:
-
-```rust
-"mod_my" => Some(crate::mods::my_mod::i18n::tile_label(code)),
-```
+Then route the tile key to it from `register()` (step 4):
+`cxsfm_api::i18n::register_tile_label("mod_my", i18n::tile_label)`.
 
 The menu only knows the stable key; every displayed letter comes from
 the mod's folder. Framework files (`en.rs`, `fr.rs`, …) are never
@@ -83,12 +80,13 @@ touched for a mod.
 
 ## 4. Register (2 lines)
 
-`src/mods.rs`: `pub mod my_mod;`
-`src/lib.rs` (registrations): `mods::my_mod::register();`
+`crates/cxsfm-mods/src/lib.rs`: `pub mod my_mod;` and
+`my_mod::register();` in `register_all()`.
 
 ```rust
 pub fn register() {
-    crate::mod_api::register_mod(Box::new(MyMod::new())); // boots disarmed
+    cxsfm_api::i18n::register_tile_label("mod_my", i18n::tile_label);
+    cxsfm_api::register_mod(Box::new(MyMod::new())); // boots disarmed
 }
 ```
 
