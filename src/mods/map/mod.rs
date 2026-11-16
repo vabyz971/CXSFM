@@ -35,10 +35,9 @@ pub(crate) const MOD_ID: &str = "map";
 
 use crate::mods::api::{Mod, TileIcon};
 use crate::mods::common::lock;
-use crate::mods::tool::ToolChrome;
 use crate::unity::UnityCache;
-use crate::mods::speedometer::model::{ObjSnap, OrigRec, SavedObj, UiObj, WriteReq};
-use std::collections::HashSet;
+use crate::mods::speedometer::editor::Editor;
+use crate::mods::speedometer::model::{ObjSnap, OrigRec, SavedObj, WriteReq};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -89,15 +88,9 @@ pub struct MinimapMod {
     /// Discovery status for the status line.
     pub(crate) status_ok: AtomicU64,
     pub(crate) status_total: AtomicU64,
-    /// Render-side mirror (present thread only).
-    pub(crate) ui: Vec<UiObj>,
-    pub(crate) ui_ver: u64,
-    /// Owner path selected in the tree (present thread only).
-    pub(crate) selected: Option<String>,
-    /// Collapsed section names (present thread only; absent = open).
-    pub(crate) collapsed: HashSet<String>,
-    /// Pin + opacity chrome (shared tool pattern).
-    pub(crate) tool: ToolChrome,
+    /// Element editor window: render-side mirror, selection, chrome
+    /// (present thread only).
+    pub(crate) editor: Editor,
 }
 
 // SAFETY: all shared state is atomics or mutex-guarded plain data;
@@ -129,11 +122,7 @@ impl MinimapMod {
             discover_after_drain: AtomicBool::new(false),
             status_ok: AtomicU64::new(0),
             status_total: AtomicU64::new(0),
-            ui: Vec::new(),
-            ui_ver: 0,
-            selected: None,
-            collapsed: HashSet::new(),
-            tool: ToolChrome::new(),
+            editor: Editor::default(),
         }
     }
 
@@ -174,7 +163,7 @@ impl Mod for MinimapMod {
     }
 
     fn is_pinned(&self) -> bool {
-        self.tool.pin
+        self.editor.tool.pin
     }
 
     fn on_update(&mut self, _delta_time: f32) {

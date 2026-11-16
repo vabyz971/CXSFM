@@ -1,4 +1,5 @@
-//! map strings, owned by the mod (same keys as speedo).
+//! map strings, owned by the mod. The editor window's labels (cards,
+//! buttons) are shared: they live in the speedometer's i18n.
 
 /// Tile label for `lang_code` (unknown falls back to English).
 pub fn tile_label(lang_code: &str) -> &'static str {
@@ -26,61 +27,6 @@ pub fn describe(lang_code: &str) -> &'static str {
     }
 }
 
-/// Refresh (re-discover objects) button.
-pub fn refresh_label(lang_code: &str) -> &'static str {
-    match lang_code {
-        "fr" => "Actualiser",
-        "de" => "Aktualisieren",
-        "es" => "Actualizar",
-        "it" => "Aggiorna",
-        "pt" => "Atualizar",
-        "ru" => "Обновить",
-        _ => "Refresh",
-    }
-}
-
-/// Restore-originals button.
-pub fn restore_label(lang_code: &str) -> &'static str {
-    match lang_code {
-        "fr" => "Restaurer",
-        "de" => "Wiederherst.",
-        "es" => "Restaurar",
-        "it" => "Ripristina",
-        "pt" => "Repôr",
-        "ru" => "Вернуть",
-        _ => "Restore",
-    }
-}
-
-/// Save-to-file button (TOML, only modified params).
-pub fn save_label(lang_code: &str) -> &'static str {
-    match lang_code {
-        "fr" => "Sauvegarder",
-        _ => "Save",
-    }
-}
-
-/// Load-from-file button (staged as one batched pass + re-discover).
-pub fn load_label(lang_code: &str) -> &'static str {
-    match lang_code {
-        "fr" => "Charger",
-        _ => "Load",
-    }
-}
-
-/// Object counter prefix ("objets 5/6").
-pub fn objects_label(lang_code: &str) -> &'static str {
-    match lang_code {
-        "fr" => "objets",
-        "de" => "Objekte",
-        "es" => "objetos",
-        "it" => "oggetti",
-        "pt" => "objetos",
-        "ru" => "объекты",
-        _ => "objects",
-    }
-}
-
 /// Empty-list hint (never discovered yet).
 pub fn hint_label(lang_code: &str) -> &'static str {
     match lang_code {
@@ -91,31 +37,6 @@ pub fn hint_label(lang_code: &str) -> &'static str {
         "pt" => "A aguardar deteção… (Atualizar após mudança de cena)",
         "ru" => "Ожидание поиска… (Обновить после смены сцены)",
         _ => "Waiting for discovery… (Refresh after scene change)",
-    }
-}
-
-/// No-selection hint (right pane).
-pub fn select_hint(lang_code: &str) -> &'static str {
-    match lang_code {
-        "fr" => "Sélectionne un objet dans la liste.",
-        _ => "Select an object from the list.",
-    }
-}
-
-/// Re-activating an inactive object can crash the game (SetActive
-/// from the tick thread fires the game's lifecycle callbacks).
-pub fn active_warning(lang_code: &str) -> &'static str {
-    match lang_code {
-        "fr" => "⚠ Réactiver un élément désactivé peut faire planter le jeu.",
-        _ => "⚠ Re-activating a disabled element can crash the game.",
-    }
-}
-
-/// TMP color caveat (text material ignores vertex color).
-pub fn color_hint(lang_code: &str) -> &'static str {
-    match lang_code {
-        "fr" => "La couleur peut être ignorée (matériau du texte).",
-        _ => "Color may be ignored (text material).",
     }
 }
 
@@ -232,82 +153,3 @@ pub fn log_alpha_ignored(lang_code: &str) -> &'static str {
     }
 }
 
-/// Params-card labels (same shape for every row).
-pub fn card_gameobject(lang_code: &str) -> &'static str {
-    match lang_code {
-        "fr" => "GameObject",
-        _ => "GameObject",
-    }
-}
-pub fn card_name(lang_code: &str) -> &'static str {
-    match lang_code {
-        "fr" => "Nom",
-        _ => "Name",
-    }
-}
-pub fn card_path(lang_code: &str) -> &'static str {
-    match lang_code {
-        "fr" => "Chemin",
-        _ => "Path",
-    }
-}
-pub fn card_active(lang_code: &str) -> &'static str {
-    match lang_code {
-        "fr" => "Actif",
-        _ => "Active",
-    }
-}
-pub fn card_visible(lang_code: &str) -> &'static str {
-    match lang_code {
-        "fr" => "Visible",
-        _ => "Visible",
-    }
-}
-pub fn card_transform(lang_code: &str) -> &'static str {
-    match lang_code {
-        "fr" => "Transform",
-        _ => "Transform",
-    }
-}
-pub fn axis_position(lang_code: &str) -> &'static str {
-    match lang_code {
-        "fr" => "Position",
-        _ => "Position",
-    }
-}
-pub fn axis_rotation(lang_code: &str) -> &'static str {
-    match lang_code {
-        "fr" => "Rotation",
-        _ => "Rotation",
-    }
-}
-pub fn axis_scale(lang_code: &str) -> &'static str {
-    match lang_code {
-        "fr" => "Échelle",
-        _ => "Scale",
-    }
-}
-pub fn card_color(lang_code: &str) -> &'static str {
-    match lang_code {
-        "fr" => "Couleur",
-        _ => "Color",
-    }
-}
-pub fn card_opacity(lang_code: &str) -> &'static str {
-    match lang_code {
-        "fr" => "Opacité",
-        _ => "Opacity",
-    }
-}
-pub fn card_text(lang_code: &str) -> &'static str {
-    match lang_code {
-        "fr" => "Texte",
-        _ => "Text",
-    }
-}
-pub fn card_size(lang_code: &str) -> &'static str {
-    match lang_code {
-        "fr" => "Taille",
-        _ => "Size",
-    }
-}
