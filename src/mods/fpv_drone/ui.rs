@@ -182,27 +182,11 @@ impl FpvDroneMod {
 
     /// Pinned telemetry over the game (menu closed).
     fn draw_compact(&mut self, ctx: &egui::Context, tel: &Telemetry) {
-        let mut win = egui::Window::new(NAME)
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .fixed_size(egui::Vec2::new(WIN_W, 0.0))
-            .frame(self.tool.frame(ctx));
-        if let Some(p) = self.tool.pos {
-            win = win.current_pos(p);
-        }
-        let win = win.show(ctx, |ui| {
-            self.tool.enter(ui);
-            self.tool.header(ui, "FPV DRONE");
-            if self.tool.hide_controls {
-                return;
+        self.tool.show(ctx, NAME, egui::Vec2::new(WIN_W, 0.0), |ui, controls| {
+            if controls {
+                telemetry(ui, tel);
             }
-            telemetry(ui, tel);
         });
-        if let Some(r) = win {
-            self.tool.pos = Some(r.response.rect.min);
-            self.tool.context_menu(&r.response);
-        }
     }
 
     /// Full-screen settings (menu open, tile opened).

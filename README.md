@@ -244,8 +244,13 @@ Implement the `Mod` trait (only `name` and `on_update` are required):
 
 ```rust
 use crate::mods::api::{Mod, TileIcon};
+use crate::mods::tool::ToolChrome;
+use crate::ui::kit;
 
-struct MyMod;
+#[derive(Default)]
+struct MyMod {
+    tool: ToolChrome, // window chrome: pin, opacity, header, position
+}
 
 impl Mod for MyMod {
     fn name(&self) -> &'static str { "My Mod" }          // unique
@@ -258,15 +263,15 @@ impl Mod for MyMod {
     fn on_background_update(&mut self, _dt: f32) {}
     // Present thread: egui only, never Unity.
     fn on_draw_ui(&mut self, ctx: &egui::Context) {
-        egui::Window::new("My Mod").show(ctx, |ui| {
-            ui.label("Hello from CXSFM!");
+        self.tool.show(ctx, "My Mod", egui::vec2(400.0, 300.0), |ui, _controls| {
+            kit::card(ui, "Hello", |ui| kit::kv(ui, "from", "CXSFM"));
         });
     }
     // Transitions run on the tick thread, never on the UI thread.
     fn on_enable(&mut self) {}
     fn on_disable(&mut self) {}  // restore what you changed
     // Keep drawing with the menu closed (view-only).
-    fn is_pinned(&self) -> bool { false }
+    fn is_pinned(&self) -> bool { self.tool.pin }
     // Version shown on the phone (defaults to the framework version).
     fn version(&self) -> &'static str { "0.1.0" }
 }
@@ -274,6 +279,13 @@ impl Mod for MyMod {
 
 Every hook runs under `catch_unwind`: a panicking mod is quarantined,
 the menu and the other mods keep running.
+
+Draw windows with the shared helpers so every mod looks the same and
+one edit restyles them all: `ToolChrome::show` for the window itself,
+`ui::kit` inside it (`card`, `field`, `kv`, `xyz`, `percent`, `search`,
+`tabs`, `tree_group` / `tree_item`, `two_panes`, `hint` / `note` /
+`warn` / `error`). The speedometer and the minimap share a whole
+editor window (`mods/speedometer/editor.rs`).
 
 A mod that wants a full-screen game-style settings screen declares it
 at registration and draws it with `ui::screen::show` while

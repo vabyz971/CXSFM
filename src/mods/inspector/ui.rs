@@ -9,7 +9,8 @@
 use super::model::{collect_matches, node_at, Detail, Edit, Req, Row, SceneNode, Target};
 use super::InspectorMod;
 use crate::mods::common::lock;
-use crate::ui::theme::{STATE_ERR as RED, STATE_OK as GREEN, STATE_WARN as ORANGE, TEXT_BRIGHT as BRIGHT, TEXT_DIM as DIM};
+use crate::ui::kit;
+use crate::ui::theme::{TEXT_BRIGHT as BRIGHT, TEXT_DIM as DIM};
 use std::collections::HashSet;
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
@@ -130,11 +131,11 @@ fn detail_pane(
     });
     let mut guard = lock(detail);
     let Some(d) = guard.as_mut().filter(|d| d.id == node.id) else {
-        ui.weak("reading…");
+        kit::hint(ui, "reading…");
         return;
     };
     if let Some(e) = &d.error {
-        ui.label(egui::RichText::new(e).color(RED));
+        kit::error(ui, e);
     }
     let mut next: Option<Target> = None;
     for (i, c) in d.comps.iter().enumerate() {
@@ -167,14 +168,10 @@ fn detail_pane(
         });
         ui.label(egui::RichText::new(&v.class).monospace().color(DIM));
         if let Some(n) = &v.note {
-            ui.label(egui::RichText::new(n).color(ORANGE));
+            kit::warn(ui, n);
         }
         if v.rows.iter().any(|r| r.edit != Edit::None) {
-            ui.label(
-                egui::RichText::new("Edits are raw field writes: the game may overwrite them, and disabling the mod does not undo them.")
-                    .small()
-                    .color(DIM),
-            );
+            kit::note(ui, "Edits are raw field writes: the game may overwrite them, and disabling the mod does not undo them.");
         }
         let mut write: Option<(String, Vec<u8>)> = None;
         egui::Grid::new("inspector_fields").striped(true).num_columns(4).show(ui, |ui| {
@@ -258,22 +255,8 @@ fn draw_node(
         } else {
             format!("{} ({})", node.name, node.children.len())
         };
-        // Contrast: active nodes bright, inactive ones dimmed +
-        // struck through with a readable orange OFF badge (the old
-        // weak-gray badge was invisible on the dark panel).
-        let text = if node.active {
-            egui::RichText::new(label).color(BRIGHT)
-        } else {
-            egui::RichText::new(label).color(DIM).strikethrough()
-        };
-        if ui
-            .selectable_label(selected.as_ref() == Some(path), text)
-            .clicked()
-        {
+        if kit::tree_item(ui, selected.as_ref() == Some(path), &label, node.active).clicked() {
             *selected = Some(path.clone());
-        }
-        if !node.active {
-            ui.label(egui::RichText::new("OFF").small().strong().color(ORANGE));
         }
     });
     if open.contains(path) {
@@ -298,41 +281,25 @@ impl InspectorMod {
         // Fixed size: no auto-resize at all. Panes scroll inside;
         // the divider still adjusts the tree/details split.
         // Right-click the window for pin + opacity.
-        let mut win = egui::Window::new("Scene Inspector")
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .fixed_size(egui::Vec2::new(1100.0, 720.0))
-            .frame(self.tool.frame(ctx));
-        if let Some(p) = self.tool.pos {
-            win = win.current_pos(p);
-        }
-        let win = win.show(ctx, |ui| {
-                self.tool.enter(ui);
-                self.tool.header(ui, "Scene Inspector");
-                if !self.tool.hide_controls {
-                ui.horizontal(|ui| {
-                    ui.label("🔍");
-                    let resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.search)
-                            .hint_text("filter by name…")
-                            .desired_width(f32::INFINITY),
-                    );
-                    if resp.changed() {
-                        self.selected = None;
-                    }
-                    if ui.button("Refresh").clicked() {
-                        self.refresh_wanted.store(true, Ordering::SeqCst);
-                    }
-                });
-                } // hide_controls
+        self.tool.show(ctx, "Scene Inspector", egui::Vec2::new(1100.0, 720.0), |ui, controls| {
+                if controls {
+                    ui.horizontal(|ui| {
+                        // Refresh first: the search box takes the rest of the row.
+                        if ui.button("Refresh").clicked() {
+                            self.refresh_wanted.store(true, Ordering::SeqCst);
+                        }
+                        if kit::search(ui, &mut self.search, "filter by name…").changed() {
+                            self.selected = None;
+                        }
+                    });
+                }
                 let snap = self.snapshot.lock().unwrap();
                 match snap.as_ref() {
                     None => {
-                        ui.label("No data yet — open the menu once so the tick walks the scene.");
+                        kit::hint(ui, "No data yet — open the menu once so the tick walks the scene.");
                     }
                     Some(s) => {
-                        ui.label(format!(
+                        kit::hint(ui, &format!(
                             "{} nodes / {} scenes{} / sweep +{}",
                             s.nodes,
                             s.roots.len(),
@@ -383,13 +350,8 @@ impl InspectorMod {
                                                 &mut Vec::new(),
                                             );
                                             for (p, full) in out {
-                                                if ui
-                                                    .selectable_label(
-                                                        self.selected.as_ref() == Some(&p),
-                                                        full,
-                                                    )
-                                                    .clicked()
-                                                {
+                                                let sel = self.selected.as_ref() == Some(&p);
+                                                if kit::tree_item(ui, sel, &full, true).clicked() {
                                                     self.selected = Some(p);
                                                 }
                                             }
@@ -404,25 +366,19 @@ impl InspectorMod {
                                 let path = match self.selected.clone() {
                                     Some(p) => p,
                                     None => {
-                                        ui.weak("← Select a node to inspect its values.");
+                                        kit::hint(ui, "← Select a node to inspect its values.");
                                         return;
                                     }
                                 };
                                 let n = match node_at(&s.roots, &path) {
                                     Some(n) => n,
                                     None => {
-                                        ui.weak("Selection is stale — Refresh.");
+                                        kit::hint(ui, "Selection is stale — Refresh.");
                                         return;
                                     }
                                 };
-                                ui.label(
-                                    egui::RichText::new(&n.name).strong().size(16.0).color(BRIGHT),
-                                );
-                                ui.label(if n.active {
-                                    egui::RichText::new("● active").color(GREEN)
-                                } else {
-                                    egui::RichText::new("● inactive").color(RED)
-                                });
+                                kit::title(ui, &n.name);
+                                kit::status(ui, n.active, "active", "inactive");
                                 ui.separator();
                                 let path_str = path
                                     .iter()
@@ -451,15 +407,12 @@ impl InspectorMod {
                                     ("children", n.children.len().to_string()),
                                     ("path", path_str),
                                 ] {
-                                    ui.horizontal(|ui| {
-                                        ui.label(egui::RichText::new(k).color(DIM));
-                                        ui.monospace(v);
-                                    });
+                                    kit::kv(ui, k, &v);
                                 }
                                 detail_pane(ui, n, &path, &self.detail, &self.detail_req, &mut self.det_ui);
                                 if !n.children.is_empty() {
                                     ui.separator();
-                                    ui.weak("direct children (click to jump):");
+                                    kit::hint(ui, "direct children (click to jump):");
                                     for (i, child) in n.children.iter().enumerate() {
                                         let mut child_path = path.clone();
                                         child_path.push(i);
@@ -476,9 +429,5 @@ impl InspectorMod {
                     }
                 }
             });
-        if let Some(r) = win {
-            self.tool.pos = Some(r.response.rect.min);
-            self.tool.context_menu(&r.response);
-        }
     }
 }

@@ -12,6 +12,7 @@ use super::model::{
     tick_layout, ticks_range, with_main_color,
 };
 use crate::mods::common::lock;
+use crate::ui::kit;
 use std::sync::atomic::Ordering;
 
 /// Screen-space box of a HUD (anchor point + offset, scaled size).
@@ -552,32 +553,18 @@ impl HudMod {
 
     fn draw_window(&mut self, ctx: &egui::Context, cfg: Option<&HudConfig>, values: &Values) {
         let code = crate::i18n::current().code();
-        let mut win = egui::Window::new(super::i18n::tile_label(code))
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .fixed_size(egui::vec2(WIN_W, WIN_H))
-            .frame(self.tool.frame(ctx));
-        if let Some(p) = self.tool.pos {
-            win = win.current_pos(p);
-        }
-        let win = win.show(ctx, |ui| {
-            self.tool.enter(ui);
-            self.tool.header(ui, super::i18n::tile_label(code));
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.tab_explore, false, super::i18n::tab_hud(code));
-                ui.selectable_value(&mut self.tab_explore, true, super::i18n::tab_explore(code));
-            });
-            ui.separator();
+        // The explorer tab needs the whole mod: take the chrome out.
+        let mut tool = std::mem::take(&mut self.tool);
+        tool.show(ctx, super::i18n::tile_label(code), egui::vec2(WIN_W, WIN_H), |ui, _controls| {
+            let mut tab = usize::from(self.tab_explore);
+            kit::tabs(ui, &mut tab, &[super::i18n::tab_hud(code), super::i18n::tab_explore(code)]);
+            self.tab_explore = tab == 1;
             if self.tab_explore {
                 self.explore_tab(ui, code);
                 return;
             }
             let status = lock(&self.status).clone();
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(super::i18n::file_label(code)).weak());
-                ui.monospace(status.path.as_deref().unwrap_or("—"));
-            });
+            kit::kv(ui, super::i18n::file_label(code), status.path.as_deref().unwrap_or("—"));
             match cfg {
                 Some(c) => {
                     let on = c.huds.iter().filter(|h| h.enabled).count();
@@ -596,20 +583,14 @@ impl HudMod {
             if !demo {
                 let live = lock(&self.live_status).clone();
                 for (root, found) in &live.roots {
-                    let (txt, col) = if *found {
-                        (super::i18n::root_found(code), ui.visuals().text_color())
+                    if *found {
+                        ui.label(super::i18n::root_found(code).replace("{root}", root));
                     } else {
-                        (super::i18n::root_missing(code), ui.visuals().warn_fg_color)
-                    };
-                    ui.label(egui::RichText::new(txt.replace("{root}", root)).color(col));
+                        kit::warn(ui, &super::i18n::root_missing(code).replace("{root}", root));
+                    }
                 }
                 for (name, err) in live.errors.iter().take(8) {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(format!("{name} : {err}")).small().color(ui.visuals().warn_fg_color),
-                        )
-                        .wrap(),
-                    );
+                    kit::warn(ui, &format!("{name} : {err}"));
                 }
             }
             // Current values, one compact line (what the HUDs see).
@@ -624,25 +605,17 @@ impl HudMod {
                 self.reload_now.store(true, Ordering::SeqCst);
             }
             if let Some(e) = &status.error {
-                ui.label(
-                    egui::RichText::new(super::i18n::error_label(code))
-                        .color(ui.visuals().error_fg_color),
-                );
+                kit::error(ui, super::i18n::error_label(code));
                 ui.add(egui::Label::new(egui::RichText::new(e).small().monospace()).wrap());
             }
             if !status.warnings.is_empty() {
-                ui.label(
-                    egui::RichText::new(super::i18n::warnings_label(code))
-                        .color(ui.visuals().warn_fg_color),
-                );
+                kit::warn(ui, super::i18n::warnings_label(code));
                 for w in status.warnings.iter().take(12) {
-                    ui.add(egui::Label::new(egui::RichText::new(w).small()).wrap());
+                    kit::note(ui, w);
                 }
             }
         });
-        if let Some(r) = win {
-            self.tool.pos = Some(r.response.rect.min);
-        }
+        self.tool = tool;
     }
 
     /// Explorer tab: search classes, open one, read its fields, step
@@ -669,7 +642,7 @@ impl HudMod {
                 ui.spinner();
             }
         });
-        ui.add(egui::Label::new(egui::RichText::new(super::i18n::explore_hint(code)).small()).wrap());
+        kit::note(ui, super::i18n::explore_hint(code));
         match &view.open {
             Some(o) => {
                 ui.horizontal(|ui| {
@@ -719,10 +692,10 @@ impl HudMod {
                 }
                 ui.add(egui::Label::new(egui::RichText::new(crumb).monospace().strong()).truncate());
                 if let Some(e) = &o.error {
-                    ui.add(egui::Label::new(egui::RichText::new(e).small().color(ui.visuals().warn_fg_color)).wrap());
+                    kit::warn(ui, e);
                 }
                 let root_short = o.root.rsplit('.').next().unwrap_or(&o.root).to_string();
-                egui::ScrollArea::vertical().max_height(LIST_H).auto_shrink([false, false]).show(ui, |ui| {
+                kit::list(ui, "hud_explore_fields", LIST_H, |ui| {
                     for row in &o.fields {
                         ui.horizontal(|ui| {
                             if row.follow {
@@ -750,7 +723,7 @@ impl HudMod {
                             + if view.truncated { " (+)" } else { "" },
                     );
                 }
-                egui::ScrollArea::vertical().max_height(LIST_H).auto_shrink([false, false]).show(ui, |ui| {
+                kit::list(ui, "hud_explore_hits", LIST_H, |ui| {
                     for h in &view.hits {
                         let text = format!("{}   [{}]", h.full, h.image);
                         let r = ui.add(

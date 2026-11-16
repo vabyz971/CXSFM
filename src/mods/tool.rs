@@ -52,6 +52,43 @@ impl ToolChrome {
         }
     }
 
+    /// The whole tool window: fixed `size`, background alpha, manual
+    /// position, content opacity, header and right-click menu. `body`
+    /// draws the content; its `bool` says whether the top control rows
+    /// (buttons, search…) are shown. Every windowed mod goes through
+    /// here, so the window look changes in one place.
+    ///
+    /// A body that needs the whole mod (`&mut self`) takes the chrome
+    /// out first: `let mut t = std::mem::take(&mut self.tool);
+    /// t.show(…); self.tool = t;`.
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        title: &str,
+        size: egui::Vec2,
+        body: impl FnOnce(&mut egui::Ui, bool),
+    ) {
+        let mut win = egui::Window::new(title)
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size(size)
+            .frame(self.frame(ctx));
+        if let Some(p) = self.pos {
+            win = win.current_pos(p);
+        }
+        let win = win.show(ctx, |ui| {
+            self.enter(ui);
+            self.header(ui, title);
+            let controls = !self.hide_controls;
+            body(ui, controls);
+        });
+        if let Some(r) = win {
+            self.pos = Some(r.response.rect.min);
+            self.context_menu(&r.response);
+        }
+    }
+
     /// Per-window frame with background alpha (menu style untouched).
     pub fn frame(&self, ctx: &egui::Context) -> egui::Frame {
         let mut f = egui::Frame::window(&ctx.style_of(ctx.theme()));

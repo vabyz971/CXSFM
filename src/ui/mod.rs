@@ -7,6 +7,7 @@
 pub mod chrome;
 pub mod fonts;
 pub mod game;
+pub mod kit;
 pub mod paramfile;
 pub mod pages;
 pub mod phone;
