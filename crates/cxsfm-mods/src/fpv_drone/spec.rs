@@ -6,8 +6,8 @@
 
 use super::Shared;
 use super::model::{
-    DRAG_RANGE, FOV_RANGE, GRAVITY_RANGE, GUST_RANGE, MAX_ANGLE_RANGE, Mode, RADIUS_RANGE, RATE_RANGE, SOUND_RANGE,
-    TILT_RANGE, TWR_RANGE, WIND_RANGE, YAW_RATE_RANGE,
+    DRAG_RANGE, FOV_RANGE, Frame, GRAVITY_RANGE, GUST_RANGE, MAX_ANGLE_RANGE, Mode, PROPWASH_RANGE, RADIUS_RANGE,
+    RATE_RANGE, SAG_RANGE, SOUND_RANGE, TILT_RANGE, TWR_RANGE, WIND_RANGE, YAW_RATE_RANGE,
 };
 
 pub const TABS: [&str; 4] = ["Flight", "World", "Camera & sound", "Controls"];
@@ -37,6 +37,8 @@ const fn slider(r: (f32, f32), step: f32, dec: usize, unit: &'static str) -> Kin
 }
 
 pub const SPECS: &[Spec] = &[
+    Spec { key: "frame", label: "Airframe", tab: 0, section: "Airframe", kind: Kind::Choice(&["WHOOP 3\"", "FREESTYLE 5\"", "LONG RANGE 7\""]), shown: true,
+        help: "Whoop 3\": light ducted cinewhoop, very reactive, slow, buzzy 4-blade props. Freestyle 5\": the reference quad. Long range 7\": heavier and smoother, slower motors, deep 2-blade drone." },
     Spec { key: "mode", label: "Flight mode", tab: 0, section: "Flight model", kind: Kind::Choice(&["ANGLE", "ACRO"]), shown: true,
         help: "Angle: the drone levels itself, sticks set the tilt. Acro: sticks set rotation rates, no self-level (flips and rolls). Button X switches in flight." },
     Spec { key: "max_angle", label: "Max tilt", tab: 0, section: "Flight model", kind: slider(MAX_ANGLE_RANGE, 1.0, 0, "°"), shown: true,
@@ -49,12 +51,16 @@ pub const SPECS: &[Spec] = &[
         help: "Turning speed at full yaw stick (both modes)." },
     Spec { key: "twr", label: "Thrust / weight", tab: 0, section: "Motors", kind: slider(TWR_RANGE, 0.5, 1, ""), shown: true,
         help: "Motor power relative to weight. 4 is a freestyle quad, 8+ a racing drone." },
+    Spec { key: "battery_sag", label: "Battery sag", tab: 0, section: "Motors", kind: slider(SAG_RANGE, 0.01, 2, ""), shown: false,
+        help: "Thrust lost to voltage sag on a full punch-out (0.12 = 12 %). Hovering is never affected." },
     Spec { key: "throttle_mid", label: "Hover at stick centre", tab: 0, section: "Motors", kind: Kind::Toggle, shown: false,
         help: "ON: centred throttle stick hovers (spring pad). OFF: bottom of the axis is zero throttle (use a trigger)." },
     Spec { key: "gravity", label: "Gravity", tab: 1, section: "Physics", kind: slider(GRAVITY_RANGE, 0.1, 1, " m/s²"), shown: true,
         help: "World gravity. 9.8 is Earth." },
     Spec { key: "drag", label: "Air drag", tab: 1, section: "Physics", kind: slider(DRAG_RANGE, 0.1, 1, "×"), shown: true,
         help: "Air resistance multiplier. Higher = lower top speed, quicker stop." },
+    Spec { key: "propwash", label: "Prop wash", tab: 1, section: "Physics", kind: slider(PROPWASH_RANGE, 0.1, 1, "×"), shown: false,
+        help: "Shake when the drone sinks into its own downwash (vortex ring, dive pull-outs). 0 = clean air." },
     Spec { key: "wind_speed", label: "Wind speed", tab: 1, section: "Wind", kind: slider(WIND_RANGE, 0.5, 1, " m/s"), shown: true,
         help: "Steady wind pushing the drone." },
     Spec { key: "wind_dir", label: "Wind direction", tab: 1, section: "Wind", kind: slider((0.0, 360.0), 5.0, 0, "°"), shown: true,
@@ -83,6 +89,9 @@ pub fn get(s: &Shared, key: &str) -> f32 {
     let p = &s.params;
     match key {
         "mode" => (p.mode == Mode::Acro) as u8 as f32,
+        "frame" => p.frame.index() as f32,
+        "battery_sag" => p.battery_sag,
+        "propwash" => p.propwash,
         "max_angle" => p.max_angle,
         "rate" => p.rate,
         "expo" => p.expo,
@@ -111,6 +120,9 @@ pub fn set(s: &mut Shared, key: &str, v: f32) {
     let p = &mut s.params;
     match key {
         "mode" => p.mode = if on { Mode::Acro } else { Mode::Angle },
+        "frame" => p.frame = Frame::from_index(if v.is_finite() { v.round().max(0.0) as usize } else { 1 }),
+        "battery_sag" => p.battery_sag = v,
+        "propwash" => p.propwash = v,
         "max_angle" => p.max_angle = v,
         "rate" => p.rate = v,
         "expo" => p.expo = v,

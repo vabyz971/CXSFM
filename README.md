@@ -49,7 +49,7 @@ HUD version tag applied to the game's own nickname label](docs/overlay-proof.png
 | [Minimap](crates/cxsfm-mods/src/map/README.md) | 0.2.0 | same pattern for the minimap |
 | [Custom HUD](crates/cxsfm-mods/src/custom_hud/README.md) | 0.4.1 | HUDs from a hot-reloaded `custom_hud.toml`: bars, arcs, needles, dial ticks, text/labels, shapes (rect, ellipse, line); live game values through field paths found with its Explorer tab (~16 min of driving validated); on-screen **Editor** (move, magnetic snap, align/distribute, justify, bind variables, named widgets + search — Save keeps the file's comments) |
 | Engine Sound | 0.2.0 | pitch / volume of the FMOD engine events (cosmetic audio), full-screen settings |
-| FPV Drone | 0.5.0 | free quadcopter camera on the pad (physics, collisions, rebindable controls, four-rotor sound), full-screen settings driven by `fpv_drone.toml` |
+| FPV Drone | 0.6.0 | free quadcopter camera on the pad: rigid-body flight (per-motor lag, flight-controller loop, airmode, rotor drag, inflow, vortex ring/prop wash, ground effect, battery sag) with 3 airframes (3" whoop, 5", 7"), collisions, rebindable controls; sound rebuilt per motor (blade-pass tone + motor whine) + prop noise + airflow; full-screen settings driven by `fpv_drone.toml` |
 
 - ✅ Stability: stale-handle re-resolve, `object_alive` readability
   guard, no crash on scene change (garage ↔ race); the overlay can no

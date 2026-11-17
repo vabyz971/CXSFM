@@ -57,7 +57,7 @@ SIGSEGVs in its exit handlers); `tools/cxsfm-hang-dump.sh` covers hangs.
 | Minimap | 0.2.0 | [x] same pattern as the speedometer |
 | Custom HUD | 0.4.1 | [x] bars, arcs, needles, ticks, italic/glow text, live values through field paths (~16 min of driving validated); [ ] text sources + full `label` widget (0.3.0) to validate in game; [x] on-screen editor stable in game (0.4.0); [ ] shapes, justify, "use as variable", named widgets + search (0.4.1) to validate in game |
 | Engine Sound | 0.2.0 | [x] FMOD engine-event pitch/volume (cosmetic audio), full-screen settings |
-| FPV Drone | 0.5.0 | [x] free quadcopter camera on the pad (physics, collisions, rebindable controls, four-rotor sound) |
+| FPV Drone | 0.6.0 | [x] free quadcopter camera on the pad (physics, collisions, rebindable controls, four-rotor sound); [ ] rigid-body flight model, airframes, rebuilt sound (0.6.0) to validate in game |
 | FPV Camera | — | [ ] parked until per-frame application is possible (`mainthread.rs` phase 2) |
 
 ---

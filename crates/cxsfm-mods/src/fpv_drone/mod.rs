@@ -1,8 +1,13 @@
 //! FPV drone mod: a physically simulated quadcopter camera on the
 //! gamepad, cosmetic only.
 //!
-//! A flight model (thrust, gravity, drag, wind, Angle and Acro attitude
-//! modes) drives `Camera.main`. On enable the game's camera drivers
+//! A rigid-body flight model drives `Camera.main`: four motors with
+//! their own lag, a real flight-controller loop (Angle / Acro, airmode
+//! mixer), rotor aerodynamics (rotor drag, inflow, vortex ring and prop
+//! wash, ground effect, battery sag) and three airframes (3" whoop, 5"
+//! freestyle, 7" long range) — see `model`. The sound rebuilds a quad
+//! from its parts: per-motor blade-pass tone + motor whine, load-driven
+//! prop noise, airflow (see `sound`). On enable the game's camera drivers
 //! (Cinemachine brain + camera controllers) are switched off once; the
 //! drone starts DISARMED at the camera's pose. Disable puts every driver
 //! flag and the FOV back as found.
@@ -17,7 +22,8 @@
 //! come from the tick thread, so a little judder is possible (see
 //! docs/field-notes.md, FPV mod).
 //!
-//! Layout: `model` (flight math, tests), `bind` (tick side), `ui`.
+//! Layout: `model` (flight math, tests), `sound` (synthesis + FMOD),
+//! `bind` (tick side), `spec` (parameter table), `ui`.
 
 pub mod i18n;
 
@@ -63,7 +69,7 @@ pub(crate) struct Telemetry {
 }
 
 /// Mod version (shown on the phone; bump with its features).
-pub const VERSION: &str = "0.5.0";
+pub const VERSION: &str = "0.6.0";
 
 pub struct FpvDroneMod {
     enabled: AtomicBool,

@@ -33,6 +33,9 @@ const RAY_STRIKES: u32 = 5;
 /// Fallback floor below the takeoff point (m): photo mode hovers about
 /// eye level above the ground.
 const FALLBACK_FLOOR: f32 = 1.5;
+/// Ground-effect probe length under the drone (m): beyond ~4 arm
+/// lengths the effect is gone.
+const GROUND_RAY: f32 = 3.0;
 /// `Physics.DefaultRaycastLayers` and `QueryTriggerInteraction.Ignore`.
 const LAYER_MASK: i32 = -5;
 const QTI_IGNORE: i32 = 1;
@@ -225,7 +228,7 @@ impl Rt {
             self.audio.stop();
             return;
         }
-        let Some(motors) = self.drone.as_ref().map(|d| d.motors()) else { return };
+        let Some(ac) = self.drone.as_ref().map(|d| d.acoustics()) else { return };
         if !self.audio.load() {
             return;
         }
@@ -245,7 +248,7 @@ impl Rt {
                 return;
             }
         }
-        if !self.audio.update(self.studio, &motors, p.sound_volume) {
+        if !self.audio.update(self.studio, &ac, &p.frame.spec(), p.sound_volume) {
             self.studio = 0;
         }
     }
@@ -267,6 +270,7 @@ impl Rt {
         let from = drone.pos;
         drone.step(sticks, p, dt);
         if !p.collisions {
+            drone.set_ground(None);
             return;
         }
         // Real world, while Physics.Raycast works from this thread.
@@ -289,6 +293,15 @@ impl Rt {
                 }
             }
             if self.ray_method != 0 {
+                // Ground effect: height above whatever is under the drone.
+                // SAFETY: method resolved above, 6-arg overload.
+                let down = unsafe {
+                    raycast(api, self.ray_method as *mut std::ffi::c_void, drone.pos, -Vec3::Y, GROUND_RAY)
+                };
+                drone.set_ground(match down {
+                    Some(Some(hit)) => Some((drone.pos.y - hit.point.y).max(0.0)),
+                    _ => None,
+                });
                 let delta = drone.pos - from;
                 let len = delta.length();
                 if len > 1e-5 {
@@ -316,6 +329,7 @@ impl Rt {
         // Fallback: flat floor under the takeoff point.
         if let Some((start, _)) = self.start {
             let floor = start[1] - FALLBACK_FLOOR;
+            drone.set_ground(Some((drone.pos.y - floor).max(0.0)).filter(|h| *h < GROUND_RAY));
             if drone.pos.y < floor + p.radius {
                 drone.contact(&Hit { point: Vec3::new(drone.pos.x, floor, drone.pos.z), normal: Vec3::Y }, p);
             }
