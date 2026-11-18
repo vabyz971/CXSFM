@@ -733,3 +733,31 @@ Diagnostic line (zero keypresses needed):
   `gamepad: opened … (evdev, 11 buttons, 6 axes)`.
 - Rule: no SDL joystick call from a framework thread; read input
   through the kernel, never through the game's input stack.
+
+## FPV Drone: random crashes (2026-11-17, 0.6.0 → 0.7.0)
+
+- Two sessions died with the drone on (only the second left a
+  `Player.log` trace):
+  1. mod enabled while the garage **idle camera** (`[IdleCamera] Shot
+     …`) cycled its shots: SIGSEGV less than 1 s after `fpv_drone: armed
+     (mod on…)`, before the `takeover` line. Crash PC outside
+     GameAssembly (`code:2`, 2 frames, unattributable). In that window
+     the tick ran the takeover: `Camera.main` → transform →
+     **`FindObjectsOfType(CinemachineBrain)`** → `set_enabled`. Same family
+     as the proven HUD crash (global enumeration while the game creates
+     / destroys objects).
+  2. in flight, about 65 s after arming, nothing in the log (the trace of
+     that `Player.log` was overwritten). 0.6.0 doubled the off-thread
+     `Physics.Raycast` (ground-effect probe + collision ray, every tick):
+     these queries race the game's physics step on the main thread.
+     Suspect, not proven (an earlier 0.6.0 session flew 19 min without a
+     crash).
+- Fixes (0.7.0): the brain is taken from the main camera's own
+  GameObject (`GetComponent`, proven on speedometer/map), no more global
+  search at takeover (the opt-in "cut CameraController" stays the only
+  enumeration); ground probe every 4 ticks (~15 Hz, height
+  dead-reckoned in between), collision ray only when the drone moved
+  ≥ 1 mm.
+- To watch: a crash in flight despite this → next step is to turn off
+  the world collisions by default (flat floor) until a main-thread
+  hook exists.

@@ -2,14 +2,17 @@
 //! model, collide with the world, give the camera back.
 //!
 //! Runs on the framework tick thread. Unity traffic is bounded:
-//! - takeover = ONE enumeration (Cinemachine brains + the game's camera
-//!   controllers, flags recorded then disabled), repeated only when
-//!   `Camera.main` changes (scene change) — never periodic, because a
-//!   periodic `FindObjectsOfType` crashed the game while driving;
-//! - flight = `Camera.main` + its transform (alive-checked) + at most
-//!   one `Physics.Raycast` per tick; no search, no stored object
-//!   pointers across ticks except the controller flags needed for the
-//!   restore (each one alive-checked before use).
+//! - takeover = the Cinemachine brain of `Camera.main` itself
+//!   (`GetComponent` on the camera's GameObject — no global search: a
+//!   `FindObjectsOfType` while the garage idle camera churned its shots
+//!   crashed the game), flag recorded then disabled; repeated only when
+//!   `Camera.main` changes. The opt-in "cut CameraController" is the only
+//!   enumeration left (one-shot, at takeover);
+//! - flight = `Camera.main` + its transform (alive-checked), one
+//!   collision `Physics.Raycast` per tick when the drone moved, plus a
+//!   ground-effect probe every [`GROUND_EVERY`] ticks; no search, no
+//!   stored object pointers across ticks except the driver flags needed
+//!   for the restore (each one alive-checked before use).
 //!
 //! Collisions need `Physics.Raycast` to work from this thread. A managed
 //! exception (main-thread-only check) disables them after a few strikes
@@ -36,6 +39,10 @@ const FALLBACK_FLOOR: f32 = 1.5;
 /// Ground-effect probe length under the drone (m): beyond ~4 arm
 /// lengths the effect is gone.
 const GROUND_RAY: f32 = 3.0;
+/// Ground-effect probe cadence (ticks, ~15 Hz): every raycast from this
+/// thread races the game's physics step, so the slow-changing height is
+/// probed sparsely and dead-reckoned in between.
+const GROUND_EVERY: u64 = 4;
 /// `Physics.DefaultRaycastLayers` and `QueryTriggerInteraction.Ignore`.
 const LAYER_MASK: i32 = -5;
 const QTI_IGNORE: i32 = 1;
@@ -63,6 +70,8 @@ pub(crate) struct Rt {
     ray_method: usize,
     ray_tried: bool,
     ray_strikes: u32,
+    /// Last probe: `(ground y, tick)` (`None` = nothing within reach).
+    ground: Option<(Option<f32>, u64)>,
     prev_buttons: [bool; BUTTONS],
     /// Camera changed under us (game menu, scene switch): the game has
     /// its drivers back, we wait for the original camera (or the arm
@@ -293,18 +302,26 @@ impl Rt {
                 }
             }
             if self.ray_method != 0 {
-                // Ground effect: height above whatever is under the drone.
-                // SAFETY: method resolved above, 6-arg overload.
-                let down = unsafe {
-                    raycast(api, self.ray_method as *mut std::ffi::c_void, drone.pos, -Vec3::Y, GROUND_RAY)
-                };
-                drone.set_ground(match down {
-                    Some(Some(hit)) => Some((drone.pos.y - hit.point.y).max(0.0)),
-                    _ => None,
-                });
+                // Ground effect: height above whatever is under the drone,
+                // probed every GROUND_EVERY ticks (a bit longer than the
+                // effect's reach, so a descent is caught between probes).
+                let due = self.ground.is_none_or(|(_, t)| self.tick.saturating_sub(t) >= GROUND_EVERY);
+                if due {
+                    // SAFETY: method resolved above, 6-arg overload.
+                    let down = unsafe {
+                        raycast(api, self.ray_method as *mut std::ffi::c_void, drone.pos, -Vec3::Y, GROUND_RAY * 1.5)
+                    };
+                    let y = match down {
+                        Some(Some(hit)) => Some(hit.point.y),
+                        _ => None,
+                    };
+                    self.ground = Some((y, self.tick));
+                }
+                let floor = self.ground.and_then(|(y, _)| y);
+                drone.set_ground(floor.map(|y| (drone.pos.y - y).max(0.0)).filter(|h| *h < GROUND_RAY));
                 let delta = drone.pos - from;
                 let len = delta.length();
-                if len > 1e-5 {
+                if len > 1e-3 {
                     // SAFETY: method resolved above, 6-arg overload.
                     let r = unsafe {
                         raycast(api, self.ray_method as *mut std::ffi::c_void, from, delta / len, len + p.radius)
@@ -481,7 +498,13 @@ impl Rt {
             // Only the Cinemachine brain writes the camera pose; the
             // game's own CameraController is left alone unless asked
             // (switching it off is suspected of breaking LOD / the menu).
-            let mut objs = unity::cm_brain_list(api, cache);
+            let mut objs: Vec<*mut std::ffi::c_void> = unity::component_gameobject(api, cache, cam)
+                .and_then(|go| unity::go_get_component(api, cache, go, cache.cm_brain_klass))
+                .into_iter()
+                .collect();
+            if objs.is_empty() {
+                cxsfm_api::log_line("fpv_drone: no CinemachineBrain on the main camera (nothing to switch off)");
+            }
             if shared.cut_controller {
                 objs.extend(unity::cam_controller_list(api, cache));
             }
@@ -549,6 +572,7 @@ impl Rt {
         self.base_fov = None;
         self.last_try = 0;
         self.learn_base = None;
+        self.ground = None;
         self.prev_buttons = [false; BUTTONS];
     }
 }
