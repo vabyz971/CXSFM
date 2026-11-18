@@ -80,16 +80,12 @@ pub fn page_settings(ui: &mut Ui) -> Option<(String, String)> {
 /// About page: version, stats, key reminder and one line per mod.
 pub fn page_about(ui: &mut Ui) -> Option<(String, String)> {
     let mut st = lock(&ABOUT_NAV);
-    let mut nav = Nav::begin(ui, &mut st, OWNER);
+    let nav = Nav::begin(ui, &mut st, OWNER);
     if nav.window_events() & padnav::BACK != 0 {
         set_page(Page::Main);
     }
     let mgr = get_mod_manager();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        let out = game::button_row(ui, &mut nav, "cx_about_back", cxsfm_api::i18n::t("back"), "", "A  BACK", "Back to the mod list.");
-        if out.accept {
-            set_page(Page::Main);
-        }
         game::section(ui, format!("CXSFM {}", env!("CARGO_PKG_VERSION")).as_str());
         for line in [
             format!("Platform: {}", std::env::consts::OS),

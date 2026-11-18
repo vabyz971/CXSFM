@@ -89,6 +89,11 @@ impl ModManager {
         self.registry.draw_ui_all(ctx, menu_open);
     }
 
+    /// Draw the body of phone app `name` (see `ModRegistry::draw_app`).
+    pub fn draw_app(&self, name: &str, ui: &mut egui::Ui, tab: usize) -> Option<String> {
+        self.registry.draw_app(name, ui, tab)
+    }
+
     /// Whether any enabled mod is currently pinned.
     pub fn has_pinned_visible(&self) -> bool {
         self.registry.has_pinned_visible()

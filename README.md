@@ -48,8 +48,8 @@ HUD version tag applied to the game's own nickname label](docs/overlay-proof.png
 | [Speedometer](crates/cxsfm-mods/src/speedometer/README.md) | 0.5.4 | HUD restyle; edits kept on disable, Restore button, saves auto-applied at launch |
 | [Minimap](crates/cxsfm-mods/src/map/README.md) | 0.2.0 | same pattern for the minimap |
 | [Custom HUD](crates/cxsfm-mods/src/custom_hud/README.md) | 0.4.1 | HUDs from a hot-reloaded `custom_hud.toml`: bars, arcs, needles, dial ticks, text/labels, shapes (rect, ellipse, line); live game values through field paths found with its Explorer tab (~16 min of driving validated); on-screen **Editor** (move, magnetic snap, align/distribute, justify, bind variables, named widgets + search — Save keeps the file's comments) |
-| Engine Sound | 0.2.0 | pitch / volume of the FMOD engine events (cosmetic audio), full-screen settings |
-| FPV Drone | 0.6.0 | free quadcopter camera on the pad: rigid-body flight (per-motor lag, flight-controller loop, airmode, rotor drag, inflow, vortex ring/prop wash, ground effect, battery sag) with 3 airframes (3" whoop, 5", 7"), collisions, rebindable controls; sound rebuilt per motor (blade-pass tone + motor whine) + prop noise + airflow; full-screen settings driven by `fpv_drone.toml` |
+| Engine Sound | 0.3.0 | pitch / volume of the FMOD engine events (cosmetic audio), phone app (Engine / Events / Parameters) |
+| FPV Drone | 0.7.0 | free quadcopter camera on the pad: rigid-body flight (per-motor lag, flight-controller loop, airmode, rotor drag, inflow, vortex ring/prop wash, ground effect, battery sag) with 3 airframes (3" whoop, 5", 7"), collisions, rebindable controls; sound rebuilt per motor (blade-pass tone + motor whine) + prop noise + airflow; phone app (Status, Flight, World, Cam & sound, Controls) driven by `fpv_drone.toml` |
 
 - ✅ Stability: stale-handle re-resolve, `object_alive` readability
   guard, no crash on scene change (garage ↔ race); the overlay can no
@@ -74,10 +74,11 @@ findings log (input paths, layer bring-up, incidents and fixes).
   disarmed); the **×** on an active tile turns it off; **Quit** closes
   the menu (mods keep running). Windows can be pinned to stay visible
   with the menu closed.
-- **Full-screen mods** (FPV Drone, Engine Sound): their tile opens a
-  game-style Settings screen (tabs, rows, help panel). **ESC BACK**
-  (footer, or B on the pad) returns to the phone with the mod still
-  on; **POWER** turns it off.
+- **Phone apps** (FPV Drone, Engine Sound): their tile opens the mod
+  inside the phone: tabs under the app title (click, or LB/RB), game
+  rows below, the focused row's help in the bottom strip. **BACK** (in
+  the title bar, or B on the pad) returns to the tiles with the mod
+  still on; the **power** button next to it turns it off.
 - **Gamepad**: **L3 + R3** enters/leaves mod mode (opens the menu);
   D-pad / left stick move, A select, B back, X reset/open window,
   Y alternate action, LB/RB tabs. The game still reads the pad too —
@@ -287,10 +288,13 @@ one edit restyles them all: `ToolChrome::show` for the window itself,
 `warn` / `error`). The speedometer and the minimap share a whole
 editor window (`mods/speedometer/editor.rs`).
 
-A mod that wants a full-screen game-style settings screen declares it
-at registration and draws it with `cxsfm_ui::screen::show` while
-`cxsfm_ui::screen::is_open(NAME)`; its tile then opens the screen
-instead of toggling (see `fpv_drone` and `engine_audio`).
+New-generation mods are **phone apps**: `Mod::app_tabs` lists the
+tabs shown under the app title and `Mod::on_draw_app(ui, tab)` draws
+one tab's body inside the phone with the `cxsfm_ui::game` rows
+(`Nav::begin(ui, …, cxsfm_ui::app::PAD_OWNER)`), returning the focused
+row's help for the bottom strip. The tile then opens the app instead of
+toggling (see `fpv_drone` and `engine_audio`); `on_draw_ui` stays for
+windows drawn over the game (e.g. pinned telemetry).
 
 ### Registering a Mod
 
@@ -328,7 +332,7 @@ cxsfm/
     │                     # padnav (mod mode, own thread)
     ├── cxsfm-ui/         # theme, fonts (+ assets/fonts, SIL OFL), tool
     │                     # (ToolChrome), kit (tool-window widgets), game
-    │                     # (rows/tabs), screen (full-screen frame), paramfile
+    │                     # (rows/tabs), app (phone apps + tab strip), paramfile
     ├── cxsfm-mods/       # bundled mods, one folder each (mod/bind/model/ui/i18n):
     │                     # inspector, gamelog, speedometer (+ shared editor,
     │                     # saves format), map, custom_hud, engine_audio,

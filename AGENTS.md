@@ -27,7 +27,8 @@ nix develop --command bash -c 'cargo test --workspace --lib'
   Unity path cut: it segfaulted at teardown), `gamepad`, `padnav`.
 - `cxsfm-ui` — CarX theme (black panels, yellow accent `#F5C518`, 3px
   corners, Material Symbols icons), `tool::ToolChrome` + `kit` (every
-  tool window), `game` + `screen` (full-screen screens). No `unsafe`.
+  tool window), `game` + `app` (phone apps: `Mod::app_tabs` +
+  `on_draw_app`, tabs under the app title). No `unsafe`.
 - `cxsfm-mods` — bundled mods (`inspector`, `gamelog`, `speedometer`
   + shared `editor`/`saves`, `map`, `custom_hud`, `engine_audio`,
   `fpv_drone`, `fpv_camera` parked), `register_all()`.

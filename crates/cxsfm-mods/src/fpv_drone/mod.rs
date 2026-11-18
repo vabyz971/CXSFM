@@ -69,7 +69,7 @@ pub(crate) struct Telemetry {
 }
 
 /// Mod version (shown on the phone; bump with its features).
-pub const VERSION: &str = "0.6.0";
+pub const VERSION: &str = "0.7.0";
 
 pub struct FpvDroneMod {
     enabled: AtomicBool,
@@ -146,6 +146,14 @@ impl Mod for FpvDroneMod {
         self.draw_window(ctx);
     }
 
+    fn app_tabs(&self) -> &'static [&'static str] {
+        ui::APP_TABS
+    }
+
+    fn on_draw_app(&mut self, ui: &mut egui::Ui, tab: usize) -> Option<String> {
+        self.draw_app(ui, tab)
+    }
+
     fn on_enable(&mut self) {
         self.enabled.store(true, Ordering::SeqCst);
         cxsfm_api::log_line("fpv_drone: armed (mod on; drone starts disarmed)");
@@ -156,7 +164,7 @@ impl Mod for FpvDroneMod {
         lock(&self.rt).stop();
         lock(&self.shared).learn = None;
         *lock(&self.tel) = Telemetry::default();
-        cxsfm_ui::screen::close();
+        cxsfm_ui::app::close_if("FPV Drone");
         cxsfm_api::log_line("fpv_drone: off (camera drivers and FOV restored)");
     }
 }
@@ -164,6 +172,5 @@ impl Mod for FpvDroneMod {
 /// Register disarmed: boots quiet, user opts in from the menu tile.
 pub fn register() {
     cxsfm_api::i18n::register_tile_label("mod_fpv_drone", i18n::tile_label);
-    cxsfm_ui::screen::declare("FPV Drone");
     cxsfm_api::register_mod(Box::new(FpvDroneMod::new()));
 }

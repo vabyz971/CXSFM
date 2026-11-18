@@ -34,7 +34,9 @@ SIGSEGVs in its exit handlers); `tools/cxsfm-hang-dump.sh` covers hangs.
 - [x] CarX theme + game fonts (Bebas Neue, Rajdhani — SIL OFL),
       Material Symbols icons
 - [x] Full-screen game-style mod screens (tabs, rows, help panel,
-      ESC BACK / POWER)
+      ESC BACK / POWER) — replaced by phone apps
+- [ ] Phone apps (new-generation mods: tabs under the app title, body
+      inside the phone, BACK / power in the title bar) — to validate in game
 - [x] Gamepad navigation ("mod mode", L3 + R3), pad read from evdev on
       its own thread
 - [x] Window chrome: pin (visible with the menu closed), opacity
@@ -56,8 +58,8 @@ SIGSEGVs in its exit handlers); `tools/cxsfm-hang-dump.sh` covers hangs.
 | Speedometer | 0.5.4 | [x] HUD restyle, edits kept on disable, Restore button, auto-applied saves |
 | Minimap | 0.2.0 | [x] same pattern as the speedometer |
 | Custom HUD | 0.4.1 | [x] bars, arcs, needles, ticks, italic/glow text, live values through field paths (~16 min of driving validated); [ ] text sources + full `label` widget (0.3.0) to validate in game; [x] on-screen editor stable in game (0.4.0); [ ] shapes, justify, "use as variable", named widgets + search (0.4.1) to validate in game |
-| Engine Sound | 0.2.0 | [x] FMOD engine-event pitch/volume (cosmetic audio), full-screen settings |
-| FPV Drone | 0.6.0 | [x] free quadcopter camera on the pad (physics, collisions, rebindable controls, four-rotor sound); [ ] rigid-body flight model, airframes, rebuilt sound (0.6.0) to validate in game |
+| Engine Sound | 0.3.0 | [x] FMOD engine-event pitch/volume (cosmetic audio); [ ] phone app (0.3.0) to validate in game |
+| FPV Drone | 0.7.0 | [x] free quadcopter camera on the pad (physics, collisions, rebindable controls, four-rotor sound); [ ] rigid-body flight model, airframes, rebuilt sound (0.6.0) to validate in game; [ ] phone app + random-crash fixes (0.7.0) to validate in game |
 | FPV Camera | — | [ ] parked until per-frame application is possible (`mainthread.rs` phase 2) |
 
 ---

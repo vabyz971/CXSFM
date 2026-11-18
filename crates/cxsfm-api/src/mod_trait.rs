@@ -179,6 +179,25 @@ pub trait Mod: Send + Sync {
     fn is_pinned(&self) -> bool {
         false
     }
+
+    /// Phone app (new-generation mod): the tabs listed under the app
+    /// title, in order. Non-empty = the tile opens the mod inside the
+    /// phone and [`on_draw_app`](Self::on_draw_app) draws its body;
+    /// empty (default) = classic tile (toggle + own window). Read once
+    /// at registration.
+    #[inline]
+    fn app_tabs(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Draw tab `tab` of the phone app into `ui` (the phone body,
+    /// already scrollable). Returns the help line of the focused row,
+    /// shown in the phone's bottom strip. Render thread, menu open,
+    /// mod enabled; same rules as [`on_draw_ui`](Self::on_draw_ui).
+    #[inline]
+    fn on_draw_app(&mut self, _ui: &mut egui::Ui, _tab: usize) -> Option<String> {
+        None
+    }
 }
 
 /// One menu tile's worth of mod state (owned snapshot, no lock held).
@@ -193,4 +212,6 @@ pub struct ModTile {
     pub icon: TileIcon,
     /// Mod version (see [`Mod::version`]).
     pub version: &'static str,
+    /// Phone app tabs (see [`Mod::app_tabs`]; empty = classic tile).
+    pub tabs: &'static [&'static str],
 }

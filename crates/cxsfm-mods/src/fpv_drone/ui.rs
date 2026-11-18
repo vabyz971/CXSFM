@@ -1,6 +1,7 @@
-//! FPV drone screen in the game's settings style (full screen): tabs,
-//! dark rows, description panel, key hints, pad navigation. When the
-//! menu is closed and the mod is pinned, a compact telemetry window
+//! FPV drone phone app: Status tab (telemetry, display toggles) then
+//! the parameter tabs and the controls, in the game's row style with pad
+//! navigation; the phone's bottom strip shows the focused row's help.
+//! When the menu is closed and telemetry is pinned, a compact window
 //! stays on screen instead.
 //!
 //! The simple view only lists the parameters designated in
@@ -12,6 +13,7 @@ use super::spec::{self, CONTROLS_TAB, Kind, SPECS, TABS};
 use super::{FpvDroneMod, Shared, Telemetry};
 use cxsfm_api::common::lock;
 use cxsfm_input::padnav;
+use cxsfm_ui::app::PAD_OWNER;
 use cxsfm_ui::game::{self, Nav};
 use cxsfm_ui::paramfile::{Policy, effective_range};
 
@@ -147,8 +149,29 @@ fn control_rows(ui: &mut egui::Ui, nav: &mut Nav, s: &mut Shared, sticks: [f32; 
     }
 }
 
+/// Phone tabs (see `Mod::app_tabs`): Status, then the parameter tabs
+/// of `spec::TABS` (app tab `i + 1` = spec tab `i`).
+pub(crate) const APP_TABS: &[&str] = &["Status", "Flight", "World", "Cam & sound", "Controls"];
+const _: () = assert!(APP_TABS.len() == TABS.len() + 1);
+
 impl FpvDroneMod {
+    /// Menu closed + pinned: compact telemetry over the game.
     pub(crate) fn draw_window(&mut self, ctx: &egui::Context) {
+        if cxsfm_input::hotkey::ui_visible() || !self.tool.pin {
+            return;
+        }
+        let tel = lock(&self.tel).clone();
+        // Live telemetry without input events.
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        self.tool.show(ctx, NAME, egui::Vec2::new(WIN_W, 0.0), |ui, controls| {
+            if controls {
+                telemetry(ui, &tel);
+            }
+        });
+    }
+
+    /// Phone app body of `tab`; returns the focused row's help.
+    pub(crate) fn draw_app(&mut self, ui: &mut egui::Ui, tab: usize) -> Option<String> {
         let tel = lock(&self.tel).clone();
         let orig = *lock(&self.shared);
         let mut s = orig;
@@ -156,13 +179,62 @@ impl FpvDroneMod {
             .policy
             .get_or_insert_with(|| Policy::new(spec::FILE, "FPV Drone", &spec::default_shown(), &spec::catalog()))
             .refresh();
-        // Live telemetry without input events.
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
-        if !cxsfm_input::hotkey::ui_visible() {
-            self.draw_compact(ctx, &tel);
-        } else if cxsfm_ui::screen::is_open(NAME) {
-            self.draw_screen(ctx, &tel, &mut s);
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        let mut nav = Nav::begin(ui, &mut self.nav, PAD_OWNER);
+        if tab != self.ui.tab {
+            self.ui.tab = tab;
+            nav.reset_focus();
         }
+        if nav.window_events() & padnav::ALT != 0 {
+            self.ui.advanced = !self.ui.advanced;
+        }
+        if let Some(a) = s.learn {
+            game::warning(ui, &format!("BIND {}: move or press the control", a.hint().to_uppercase()));
+            ui.add_space(6.0);
+        }
+        match tab.checked_sub(1) {
+            None => {
+                game::section(ui, "Telemetry");
+                telemetry(ui, &tel);
+                game::section(ui, "Display");
+                let mut adv = self.ui.advanced;
+                let o = game::toggle_row(
+                    ui,
+                    &mut nav,
+                    "fd_advanced",
+                    "Advanced",
+                    &mut adv,
+                    "Shows every parameter, not only the ones listed in fpv_drone.toml. Wrong values can freeze or crash the game. (Y on the pad)",
+                );
+                if o.changed {
+                    self.ui.advanced = adv;
+                }
+                let mut pin = self.tool.pin;
+                let o = game::toggle_row(
+                    ui,
+                    &mut nav,
+                    "fd_pin",
+                    "Telemetry",
+                    &mut pin,
+                    "Keeps a small telemetry window on screen when the menu is closed.",
+                );
+                if o.changed {
+                    self.tool.pin = pin;
+                }
+                ui.add_space(8.0);
+                game::dim(ui, "Edit fpv_drone.toml to choose which settings the simple view shows.");
+            }
+            Some(CONTROLS_TAB) => control_rows(ui, &mut nav, &mut s, tel.sticks),
+            Some(t) => {
+                if self.ui.advanced {
+                    game::warning(ui, "ADVANCED — wrong values can crash the game");
+                    ui.add_space(6.0);
+                }
+                param_rows(ui, &mut nav, &self.ui, &mut s, t);
+            }
+        }
+        let help = nav.help.clone();
+        nav.finish();
         // Field-wise write-back: only what the UI changed this frame,
         // so the tick's own writes (learned binding, mode button) survive.
         let mut shared = lock(&self.shared);
@@ -178,94 +250,7 @@ impl FpvDroneMod {
         if s.cut_controller != orig.cut_controller {
             shared.cut_controller = s.cut_controller;
         }
-    }
-
-    /// Pinned telemetry over the game (menu closed).
-    fn draw_compact(&mut self, ctx: &egui::Context, tel: &Telemetry) {
-        self.tool.show(ctx, NAME, egui::Vec2::new(WIN_W, 0.0), |ui, controls| {
-            if controls {
-                telemetry(ui, tel);
-            }
-        });
-    }
-
-    /// Full-screen settings (menu open, tile opened).
-    fn draw_screen(&mut self, ctx: &egui::Context, tel: &Telemetry, s: &mut Shared) {
-        let owner = cxsfm_ui::screen::pad_id(NAME);
-        let hints: &[(&str, &str)] = if padnav::has_focus(&owner) {
-            &[("A", "select"), ("X", "default"), ("Y", "advanced"), ("LB/RB", "tab")]
-        } else {
-            &[("L3+R3", "pad mode")]
-        };
-        let exit = cxsfm_ui::screen::show(ctx, NAME, "FPV Drone", true, hints, |ui, rg| {
-            let mut nav = Nav::begin(ui, &mut self.nav, &owner);
-            if nav.window_events() & padnav::ALT != 0 {
-                self.ui.advanced = !self.ui.advanced;
-            }
-            let mut tab = self.ui.tab;
-            cxsfm_ui::screen::region(ui, rg.tabs, |ui| {
-                game::tabs(ui, &nav, &TABS, &mut tab);
-            });
-            if tab != self.ui.tab {
-                self.ui.tab = tab;
-                nav.reset_focus();
-            }
-            // Rows (left).
-            cxsfm_ui::screen::region(ui, rg.left, |ui| {
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    if tab == CONTROLS_TAB {
-                        control_rows(ui, &mut nav, s, tel.sticks);
-                    } else {
-                        param_rows(ui, &mut nav, &self.ui, s, tab);
-                    }
-                    ui.add_space(8.0);
-                    let mut adv = self.ui.advanced;
-                    let o = game::toggle_row(
-                        ui,
-                        &mut nav,
-                        "fd_advanced",
-                        "Advanced settings",
-                        &mut adv,
-                        "Shows every parameter, not only the ones listed in fpv_drone.toml. Wrong values can freeze or crash the game.",
-                    );
-                    if o.changed {
-                        self.ui.advanced = adv;
-                    }
-                    let mut pin = self.tool.pin;
-                    let o = game::toggle_row(
-                        ui,
-                        &mut nav,
-                        "fd_pin",
-                        "Telemetry over the game",
-                        &mut pin,
-                        "Keeps a small telemetry window on screen when the menu is closed.",
-                    );
-                    if o.changed {
-                        self.tool.pin = pin;
-                    }
-                });
-            });
-            // Help + telemetry (right).
-            cxsfm_ui::screen::region(ui, rg.right.shrink(18.0), |ui| {
-                if let Some(a) = s.learn {
-                    game::warning(ui, &format!("BIND {}: move or press the control (A on the row cancels)", a.hint().to_uppercase()));
-                    ui.add_space(6.0);
-                }
-                if self.ui.advanced {
-                    game::warning(ui, "ADVANCED — wrong values here can freeze or crash the game");
-                    ui.add_space(6.0);
-                }
-                game::help_text(ui, nav.help.as_deref().unwrap_or("Select a setting to read what it does."));
-                ui.add_space(14.0);
-                game::dim(ui, "Edit fpv_drone.toml to choose which settings the simple view shows.");
-                ui.add_space(14.0);
-                telemetry(ui, tel);
-            });
-            nav.finish();
-        });
-        if exit.power_off {
-            cxsfm_api::get_mod_manager().set_mod_enabled(NAME, false);
-        }
+        help
     }
 }
 

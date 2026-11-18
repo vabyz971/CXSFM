@@ -25,7 +25,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Mod version (shown on the phone; bump with its features).
-pub const VERSION: &str = "0.2.0";
+pub const VERSION: &str = "0.3.0";
 
 pub struct EngineAudioMod {
     enabled: AtomicBool,
@@ -93,8 +93,12 @@ impl Mod for EngineAudioMod {
         lock(&self.rt).tick(&s, &self.status);
     }
 
-    fn on_draw_ui(&mut self, ctx: &egui::Context) {
-        self.draw_window(ctx);
+    fn app_tabs(&self) -> &'static [&'static str] {
+        ui::TABS
+    }
+
+    fn on_draw_app(&mut self, ui: &mut egui::Ui, tab: usize) -> Option<String> {
+        self.draw_app(ui, tab)
     }
 
     fn on_enable(&mut self) {
@@ -106,7 +110,7 @@ impl Mod for EngineAudioMod {
         self.enabled.store(false, Ordering::SeqCst);
         lock(&self.rt).restore();
         *lock(&self.status) = Status::default();
-        cxsfm_ui::screen::close();
+        cxsfm_ui::app::close_if("Engine Sound");
         cxsfm_api::log_line("engine_audio: off (pitch/volume restored)");
     }
 }
@@ -114,6 +118,5 @@ impl Mod for EngineAudioMod {
 /// Register disarmed: boots quiet, user opts in from the menu tile.
 pub fn register() {
     cxsfm_api::i18n::register_tile_label("mod_engine_audio", i18n::tile_label);
-    cxsfm_ui::screen::declare("Engine Sound");
     cxsfm_api::register_mod(Box::new(EngineAudioMod::new()));
 }

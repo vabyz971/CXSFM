@@ -67,6 +67,8 @@ struct EntryState {
     cached_icon: TileIcon,
     /// Version, read once at registration.
     version: &'static str,
+    /// Phone app tabs, read once at registration (empty = classic tile).
+    tabs: &'static [&'static str],
     /// Last good About description.
     cached_desc: &'static str,
     /// Last good pin flag.
@@ -191,7 +193,8 @@ impl ModRegistry {
         let (label, label_bad) = guard(&name, "menu_label_key", || mod_obj.menu_label_key());
         let (icon, icon_bad) = guard(&name, "menu_icon", || mod_obj.menu_icon());
         let (version, version_bad) = guard(&name, "version", || mod_obj.version());
-        if label_bad || icon_bad || version_bad {
+        let (tabs, tabs_bad) = guard(&name, "app_tabs", || mod_obj.app_tabs());
+        if label_bad || icon_bad || version_bad || tabs_bad {
             crate::log_line(&format!("mods: '{name}' panicked during registration"));
             return;
         }
@@ -204,6 +207,7 @@ impl ModRegistry {
                 cached_label: label,
                 cached_icon: icon,
                 version,
+                tabs,
                 cached_desc: "",
                 cached_pinned: false,
                 rev: crate::i18n::lang_rev(),
@@ -331,6 +335,7 @@ impl ModRegistry {
                             label_key: s.cached_label,
                             icon: s.cached_icon,
                             version: s.version,
+                            tabs: s.tabs,
                         };
                     }
                 }
@@ -357,6 +362,7 @@ impl ModRegistry {
                     label_key: s.cached_label,
                     icon: s.cached_icon,
                     version: s.version,
+                    tabs: s.tabs,
                 }
             })
             .collect()
@@ -502,6 +508,30 @@ impl ModRegistry {
                 quarantine(&handle);
             }
         }
+    }
+
+    /// Draw the body of phone app `name` (tab `tab`) into `ui` (render
+    /// thread, menu open). Same lock budget as [`draw_ui_all`]: a mod
+    /// busy in its tick past [`DRAW_WAIT`] skips this frame. Returns the
+    /// focused row's help line; `None` also when the mod is not
+    /// (applied-)enabled yet.
+    ///
+    /// [`draw_ui_all`]: Self::draw_ui_all
+    pub fn draw_app(&self, name: &str, ui: &mut egui::Ui, tab: usize) -> Option<String> {
+        let handle = self.snapshot().into_iter().find(|h| h.name == name)?;
+        {
+            let s = lock(&handle.state);
+            if !s.enabled || s.quarantined || s.tabs.is_empty() {
+                return None;
+            }
+        }
+        let mut inner = inner_until(&handle, Some(std::time::Instant::now() + DRAW_WAIT))?;
+        let (help, bad) = guard(&handle.name, "on_draw_app", || inner.on_draw_app(ui, tab));
+        drop(inner);
+        if bad {
+            quarantine(&handle);
+        }
+        help
     }
 
     /// Whether any applied-enabled mod is currently pinned (state only —

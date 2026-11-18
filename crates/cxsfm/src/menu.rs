@@ -86,11 +86,7 @@ fn draw_menu_inner(ctx: &egui::Context) {
     // The phone: fixed size scaled to the screen height, drag from
     // anywhere (background handle + tile forwarding). Frameless — the
     // bezel is painted by `ui::phone`.
-    // A full-screen mod screen replaces the phone (and its key hints,
-    // the screen has its own footer) until BACK.
-    if cxsfm_ui::screen::any_open() {
-        return;
-    }
+    // Phone apps (new-generation mods) draw inside the phone itself.
     let sc = crate::menu::phone::scale(ctx);
     let mut win = egui::Window::new("cxsfm_menu")
         .title_bar(false)

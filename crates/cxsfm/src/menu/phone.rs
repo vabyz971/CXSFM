@@ -110,33 +110,66 @@ pub(crate) fn draw(ui: &mut Ui, phone: Rect, s: f32, page: Page) {
         Color32::WHITE,
     );
 
-    // Banner: yellow bar + page title, HELP / BACK on the right.
+    // Open phone app (Main page only): its tile must still be an
+    // enabled app, else back to the grid.
+    let app = if page == Page::Main {
+        cxsfm_ui::app::current().and_then(|(name, tab)| {
+            let tile = mgr.tile_info().into_iter().find(|t| t.name == name && t.enabled && !t.tabs.is_empty());
+            if tile.is_none() {
+                cxsfm_ui::app::close();
+            }
+            tile.map(|t| (t, tab))
+        })
+    } else {
+        None
+    };
+    let pad = padnav::has_focus(cxsfm_ui::app::PAD_OWNER);
+    if app.is_some() && pad && padnav::events() & padnav::BACK != 0 {
+        cxsfm_ui::app::close();
+    }
+
+    // Banner: yellow bar + title, then the buttons on the right (BACK
+    // everywhere but the grid, which has HELP; apps add their power).
     let bn = Rect::from_min_size(
         Pos2::new(screen.left() + 14.0 * s, sb.bottom() + 10.0 * s),
         Vec2::new(screen.width() - 28.0 * s, 46.0 * s),
     );
     p.rect_filled(bn, rounding(6.0 * s), STRIP_BG);
     p.rect_filled(Rect::from_min_size(bn.min, Vec2::new(5.0 * s, bn.height())), rounding(2.0 * s), ACCENT);
-    let title = match page {
-        Page::Main => "MODS",
-        Page::Settings => cxsfm_api::i18n::t("tile_settings"),
-        Page::About => cxsfm_api::i18n::t("tile_about"),
+    let title = match (&app, page) {
+        (Some((t, _)), _) => cxsfm_api::i18n::t(t.label_key).to_string(),
+        (None, Page::Main) => "MODS".to_string(),
+        (None, Page::Settings) => cxsfm_api::i18n::t("tile_settings").to_string(),
+        (None, Page::About) => cxsfm_api::i18n::t("tile_about").to_string(),
     };
-    p.text(bn.left_center() + Vec2::new(18.0 * s, 0.0), Align2::LEFT_CENTER, title.to_uppercase(), fonts::title(30.0 * s), Color32::WHITE);
-    let (btn_label, btn_target) = match page {
-        Page::Main => (cxsfm_api::i18n::t("help"), Page::About),
-        _ => (cxsfm_api::i18n::t("back"), Page::Main),
-    };
-    let btn = Rect::from_center_size(
-        Pos2::new(bn.right() - 44.0 * s, bn.center().y),
-        Vec2::new(74.0 * s, 28.0 * s),
-    );
-    let br = ui.interact(btn, ui.make_persistent_id("cxsfm_phone_btn"), Sense::click());
-    p.rect_filled(btn, rounding(4.0 * s), if br.hovered() { Color32::from_rgb(0x3C, 0x3C, 0x44) } else { Color32::from_rgb(0x28, 0x28, 0x2D) });
-    p.text(btn.center(), Align2::CENTER_CENTER, btn_label.to_uppercase(), fonts::title(18.0 * s), Color32::WHITE);
-    if br.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-        set_page(btn_target);
+    let btn = Rect::from_center_size(Pos2::new(bn.right() - 44.0 * s, bn.center().y), Vec2::new(74.0 * s, 28.0 * s));
+    let mut title_right = btn.left() - 8.0 * s;
+    let label = if page == Page::Main && app.is_none() { cxsfm_api::i18n::t("help") } else { cxsfm_api::i18n::t("back") };
+    if banner_button(ui, btn, "cxsfm_phone_btn", s, |p, r| {
+        p.text(r.center(), Align2::CENTER_CENTER, label.to_uppercase(), fonts::title(18.0 * s), Color32::WHITE);
+    }) {
+        match (&app, page) {
+            (Some(_), _) => cxsfm_ui::app::close(),
+            (None, Page::Main) => set_page(Page::About),
+            _ => set_page(Page::Main),
+        }
     }
+    if let Some((t, _)) = &app {
+        // Power: turn the mod off (the app closes with it).
+        let pw = Rect::from_center_size(Pos2::new(btn.left() - 22.0 * s, bn.center().y), Vec2::splat(28.0 * s));
+        title_right = pw.left() - 8.0 * s;
+        if banner_button(ui, pw, "cxsfm_phone_power", s, |p, r| {
+            draw_icon(p, r.center(), r.width() * 0.32, TileIcon::Power, ACCENT);
+        }) {
+            mgr.set_mod_enabled(&t.name, false);
+            cxsfm_ui::app::close();
+        }
+    }
+    let tx = bn.left() + 18.0 * s;
+    let g = p.layout_no_wrap(title.to_uppercase(), fonts::title(30.0 * s), Color32::WHITE);
+    let fit = (title_right - tx) / g.size().x.max(1.0);
+    let size = if fit < 1.0 { 30.0 * s * fit.max(0.55) } else { 30.0 * s };
+    p.text(bn.left_center() + Vec2::new(18.0 * s, 0.0), Align2::LEFT_CENTER, title.to_uppercase(), fonts::title(size), Color32::WHITE);
 
     // Home bar + now-playing strip.
     let home = Rect::from_center_size(Pos2::new(screen.center().x, screen.bottom() - 12.0 * s), Vec2::new(120.0 * s, 5.0 * s));
@@ -152,13 +185,47 @@ pub(crate) fn draw(ui: &mut Ui, phone: Rect, s: f32, page: Page) {
 
     let mut now: Option<(String, String)> = None;
     ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
-        now = match page {
-            Page::Main => grid(ui, s),
-            Page::Settings => super::pages::page_settings(ui),
-            Page::About => super::pages::page_about(ui),
+        now = match (&app, page) {
+            (Some((t, tab)), _) => app_body(ui, s, t, *tab),
+            (None, Page::Main) => grid(ui, s),
+            (None, Page::Settings) => super::pages::page_settings(ui),
+            (None, Page::About) => super::pages::page_about(ui),
         };
     });
     strip_now_playing(ui, strip, s, now);
+}
+
+/// Rounded banner button; `paint` draws its face. Returns `clicked`.
+fn banner_button(ui: &Ui, rect: Rect, id: &str, s: f32, paint: impl FnOnce(&egui::Painter, Rect)) -> bool {
+    let r = ui.interact(rect, ui.make_persistent_id(id), Sense::click());
+    let p = ui.painter();
+    p.rect_filled(rect, rounding(4.0 * s), if r.hovered() { Color32::from_rgb(0x3C, 0x3C, 0x44) } else { Color32::from_rgb(0x28, 0x28, 0x2D) });
+    paint(p, rect);
+    r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
+/// Phone app: tab strip, then the mod's body for that tab (scrollable).
+/// Returns `(tab label, help)` for the bottom strip; without a focused
+/// row, the mod's description.
+fn app_body(ui: &mut Ui, s: f32, tile: &cxsfm_api::ModTile, tab: usize) -> Option<(String, String)> {
+    let tab = cxsfm_ui::app::tab_strip(ui, &tile.name, tab, tile.tabs, s);
+    ui.add_space(8.0 * s);
+    let mgr = get_mod_manager();
+    let help = egui::ScrollArea::vertical()
+        .id_salt(("cxsfm_app_body", &tile.name, tab))
+        .auto_shrink([false, false])
+        .show(ui, |ui| mgr.draw_app(&tile.name, ui, tab))
+        .inner;
+    let label = tile.tabs.get(tab).copied().unwrap_or_default().to_string();
+    let sub = help.unwrap_or_else(|| {
+        let code = cxsfm_api::i18n::current().code();
+        mgr.describe_all(code)
+            .into_iter()
+            .find(|(n, _, _)| *n == tile.name)
+            .map(|(_, _, d)| format!("v{} · {d}", tile.version))
+            .unwrap_or_default()
+    });
+    Some((label, sub))
 }
 
 /// Bottom strip: description of the hovered tile, else the lock notice.
@@ -187,6 +254,8 @@ fn grid(ui: &mut Ui, s: f32) -> Option<(String, String)> {
         lit: bool,
         version: &'static str,
         name: Option<String>,
+        /// Phone app (opens inside the phone).
+        app: bool,
         kind: u8, // 0 = mod toggle, 1 = settings, 2 = about, 3 = quit
     }
     let mut items: Vec<Item> = tiles
@@ -198,13 +267,14 @@ fn grid(ui: &mut Ui, s: f32) -> Option<(String, String)> {
             lit: t.enabled,
             version: t.version,
             name: Some(t.name.clone()),
+            app: !t.tabs.is_empty(),
             kind: 0,
         })
         .collect();
-    items.push(Item { icon: TileIcon::Globe, label: cxsfm_api::i18n::t("tile_settings").to_string(), active: false, lit: true, version: env!("CARGO_PKG_VERSION"), name: None, kind: 1 });
-    items.push(Item { icon: TileIcon::Info, label: cxsfm_api::i18n::t("tile_about").to_string(), active: false, lit: true, version: env!("CARGO_PKG_VERSION"), name: None, kind: 2 });
+    items.push(Item { icon: TileIcon::Globe, label: cxsfm_api::i18n::t("tile_settings").to_string(), active: false, lit: true, version: env!("CARGO_PKG_VERSION"), name: None, app: false, kind: 1 });
+    items.push(Item { icon: TileIcon::Info, label: cxsfm_api::i18n::t("tile_about").to_string(), active: false, lit: true, version: env!("CARGO_PKG_VERSION"), name: None, app: false, kind: 2 });
 
-    items.push(Item { icon: TileIcon::Power, label: cxsfm_api::i18n::t("tile_quit").to_string(), active: false, lit: true, version: env!("CARGO_PKG_VERSION"), name: None, kind: 3 });
+    items.push(Item { icon: TileIcon::Power, label: cxsfm_api::i18n::t("tile_quit").to_string(), active: false, lit: true, version: env!("CARGO_PKG_VERSION"), name: None, app: false, kind: 3 });
 
     let pad = padnav::has_focus("menu");
     let ev = if pad { padnav::events() } else { 0 };
@@ -270,7 +340,7 @@ fn grid(ui: &mut Ui, s: f32) -> Option<(String, String)> {
                         && let Some(name) = &item.name
                     {
                         mgr.set_mod_enabled(name, false);
-                        cxsfm_ui::screen::close();
+                        cxsfm_ui::app::close_if(name);
                         close_hit = true;
                         dirty = true;
                     }
@@ -283,18 +353,15 @@ fn grid(ui: &mut Ui, s: f32) -> Option<(String, String)> {
                         3 => quit = true,
                         _ => {
                             if let Some(name) = &item.name
-                                && cxsfm_ui::screen::is_app(name)
+                                && item.app
                             {
-                                // Full-screen mod: the tile opens its screen
-                                // (enabling the mod first); power-off lives
-                                // inside the screen.
+                                // Phone app: the tile opens it inside the
+                                // phone (enabling the mod first); power-off
+                                // lives in its banner.
                                 if !item.active {
                                     mgr.set_mod_enabled(name, true);
                                 }
-                                cxsfm_ui::screen::open(name);
-                                if pad {
-                                    padnav::set_focus(&cxsfm_ui::screen::pad_id(name));
-                                }
+                                cxsfm_ui::app::open(name);
                                 dirty = true;
                             } else if let Some(name) = &item.name {
                                 mgr.set_mod_enabled(name, !item.active);
@@ -302,7 +369,7 @@ fn grid(ui: &mut Ui, s: f32) -> Option<(String, String)> {
                                 // Turned on from the pad: its window takes
                                 // the pad (B hands it back to the menu).
                                 if pad && !item.active {
-                                    padnav::set_focus(&cxsfm_ui::screen::pad_id(name));
+                                    padnav::set_focus(&cxsfm_ui::app::pad_id(name));
                                 }
                             }
                         }
@@ -316,10 +383,11 @@ fn grid(ui: &mut Ui, s: f32) -> Option<(String, String)> {
         && it.active
         && let Some(name) = &it.name
     {
-        if cxsfm_ui::screen::is_app(name) {
-            cxsfm_ui::screen::open(name);
+        if it.app {
+            cxsfm_ui::app::open(name);
+        } else {
+            padnav::set_focus(&cxsfm_ui::app::pad_id(name));
         }
-        padnav::set_focus(&cxsfm_ui::screen::pad_id(name));
     }
     if let Some(pg) = go {
         set_page(pg);
